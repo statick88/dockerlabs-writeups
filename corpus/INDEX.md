@@ -1,4 +1,4 @@
-# Corpus index — 35 engagements
+# Corpus index — 36 engagements
 
 | # | Lab | Difficulty | Writeup | Class | Reward |
 |---|-----|-----------|---------|-------|--------|
@@ -30,6 +30,7 @@
 | 283 | Los 3 Hackers | Fácil | [`corpus/283/LOS-3-HACKERS-WRITEUP.md`](283/LOS-3-HACKERS-WRITEUP.md) | Evasión de filtro · **previene vs detecta** | — |
 | 93 | Pinguinazo | Fácil | [`corpus/93/PINGUINAZO-WRITEUP.md`](93/PINGUINAZO-WRITEUP.md) | Grant que nombra un intérprete · Werkzeug debug | — |
 | 36 | Verdejo | Fácil | [`corpus/36/VERDEJO-WRITEUP.md`](36/VERDEJO-WRITEUP.md) | Cracking offline · **la línea base es un control** | — |
+| 61 | BadPlugin | Medio | [`corpus/61/BADPLUGIN-WRITEUP.md`](61/BADPLUGIN-WRITEUP.md) | **WordPress: el plugin es código activado, no una dependencia** · no hay manifiesto, ni permisos, ni sandbox: `active_plugins` es una lista de ficheros incluidos · **el límite de confianza no está dibujado en ninguna parte del árbol** · criterio de entrada: el sink debe estar en el plugin **y** alcanzarse sin autorización previa de WordPress — aquí ninguno de los 3 plugins activos lo cumple (46 rutas REST, todas `manage_options`, **cero** `__return_true`), así que el bug es **del core** y el plugin es solo la superficie de entrega · `active` vs `present` **divergen en el momento de la compromising**: 6 presentes / 3 activos, y el fichero que me dio shell nunca se activó | — |
 | 84 | Waffy | Difícil | [`corpus/84/WAFFY-WRITEUP.md`](84/WAFFY-WRITEUP.md) | ModSecurity 2.9.7 + OWASP CRS 4.18 · **REFUTA la regla del 218**: la codificación no listada no existe contra un motor que puntúa · el hueco sí sobrevive, con otro mecanismo: el WAF puntúa cada variable por separado y el sink las compone · **el hash del cuerpo no sirve**: la página de bloqueo de ModSecurity es el 403 de Apache sin marca y no es estable en bytes (275 B vs 273 B para el mismo evento, porque embebe el Host) · `SecRequestBodyAccess` **Off**: la misma SQLi da +5 en query string y **0** en POST body | — |
 | 85 | Aidor | Fácil | [`corpus/85/AIDOR-WRITEUP.md`](85/AIDOR-WRITEUP.md) | IDOR · **IDOR ≠ no autenticado** · `session` reescrito desde el request | — |
 | 172 | Crossfi | Medio | [`corpus/172/CROSSFI-WRITEUP.md`](172/CROSSFI-WRITEUP.md) | CSRF a dos niveles · **el token vive en la cookie ⇒ es falsificable** · `flask-wtf` instalado y nunca importado · el check de `Referer` corre **después** de la escritura · `env` SUID root: `uid=1000 euid=0` | — |
