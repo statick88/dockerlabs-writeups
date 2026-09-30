@@ -1,0 +1,38 @@
+-- all 26 letters the sweep submitted for one number that was ALREADY registered --
+    71902345A mod23= K valid_check= False origin= admin@workconnect.com
+    71902345B mod23= K valid_check= False origin= dni_B@probe.invalid
+    71902345C mod23= K valid_check= False origin= dni_C@probe.invalid
+    71902345D mod23= K valid_check= False origin= dni_D@probe.invalid
+    71902345E mod23= K valid_check= False origin= dni_E@probe.invalid
+    71902345F mod23= K valid_check= False origin= dni_F@probe.invalid
+    71902345G mod23= K valid_check= False origin= dni_G@probe.invalid
+    71902345H mod23= K valid_check= False origin= dni_H@probe.invalid
+    71902345I mod23= K valid_check= False origin= dni_I@probe.invalid
+    71902345J mod23= K valid_check= False origin= dni_J@probe.invalid
+    71902345K mod23= K valid_check= True origin= dni_K@probe.invalid
+    71902345L mod23= K valid_check= False origin= dni_L@probe.invalid
+    71902345M mod23= K valid_check= False origin= dni_M@probe.invalid
+    71902345N mod23= K valid_check= False origin= dni_N@probe.invalid
+    71902345O mod23= K valid_check= False origin= dni_O@probe.invalid
+    71902345P mod23= K valid_check= False origin= dni_P@probe.invalid
+    71902345Q mod23= K valid_check= False origin= dni_Q@probe.invalid
+    71902345R mod23= K valid_check= False origin= dni_R@probe.invalid
+    71902345S mod23= K valid_check= False origin= dni_S@probe.invalid
+    71902345T mod23= K valid_check= False origin= dni_T@probe.invalid
+    71902345U mod23= K valid_check= False origin= dni_U@probe.invalid
+    71902345V mod23= K valid_check= False origin= dni_V@probe.invalid
+    71902345W mod23= K valid_check= False origin= dni_W@probe.invalid
+    71902345X mod23= K valid_check= False origin= dni_X@probe.invalid
+    71902345Y mod23= K valid_check= False origin= dni_Y@probe.invalid
+    71902345Z mod23= K valid_check= False origin= dni_Z@probe.invalid
+
+-- the four ORIGINAL accounts, check character recomputed from the public DNI algorithm --
+    71902345A mod23= K shipped= A VALID= False
+    71902223C mod23= Z shipped= C VALID= False
+    71902678E mod23= D shipped= E VALID= False
+    71902565I mod23= B shipped= I VALID= False
+   valid originals: 0 of 4
+
+-- keyspace arithmetic --
+   candidates submitted by the sweep = 26000
+   candidates satisfying the official mod-23 check character = 1000

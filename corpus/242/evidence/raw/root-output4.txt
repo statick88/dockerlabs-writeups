@@ -1,0 +1,29 @@
+uid=0 euid=0
+--- before ---
+total 24
+drwx------ 1 root root 4096 Sep 30 21:02 .
+drwxr-xr-x 1 root root 4096 May  4 08:46 ..
+-rw-r--r-- 1 root root  492 Sep 30 20:57 ROOT2-DL242-ROOT-ORACLE-1790801532-a91c.out
+-rw-r--r-- 1 root root 1003 Sep 30 20:58 ROOT3-DL242-ROOT-ORACLE-1790801532-a91c.out
+drwxr-xr-x 6 root root 4096 Sep 30 21:01 workconnect_backup_20260930_210228
+removed '/opt/backups/ROOT2-DL242-ROOT-ORACLE-1790801532-a91c.out'
+rm_rc=0
+--- after ---
+total 20
+drwx------ 1 root root 4096 Sep 30 21:02 .
+drwxr-xr-x 1 root root 4096 May  4 08:46 ..
+-rw-r--r-- 1 root root 1003 Sep 30 20:58 ROOT3-DL242-ROOT-ORACLE-1790801532-a91c.out
+drwxr-xr-x 6 root root 4096 Sep 30 21:01 workconnect_backup_20260930_210228
+REMOVED
+--- regular files searched ---
+13970
+--- total bytes ---
+291036339
+--- literal FLAG{ : count ---
+2
+--- literal FLAG{ : paths ---
+/opt/backup.py
+/opt/backups/ROOT3-DL242-ROOT-ORACLE-1790801532-a91c.out
+--- end ---
+
+--STDERR--

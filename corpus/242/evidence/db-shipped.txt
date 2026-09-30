@@ -1,0 +1,6 @@
+13f03a85914cc376a8d6ad75d48a7352  database.db
+users_count= 4
+(1, 'Admin User', 'admin@workconnect.com', '71902345A', 'SuperSecretAdmin123!')
+(2, 'Maria Garcia', 'maria@workconnect.com', '71902223C', 'Maria2026')
+(3, 'Target User', 'target@workconnect.com', '71902678E', 'chocolate')
+(4, 'David Sanchez', 'david@workconnect.com', '71902565I', 'Dav2025*')

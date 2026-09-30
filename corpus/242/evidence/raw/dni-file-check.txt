@@ -1,0 +1,22 @@
+     1	71902121G
+     2	71902223C
+     3	71902343H
+     4	71902345A
+     5	71902565I
+     6	71902654B
+     7	71902667D
+     8	71902678E
+     9	71902787J
+    10	71902887F
+--- which of these exist in the DB ---
+71902121G exists_in_db= False mod23_letter= G shipped_letter= G valid= True
+71902223C exists_in_db= True mod23_letter= Z shipped_letter= C valid= False
+71902343H exists_in_db= False mod23_letter= L shipped_letter= H valid= False
+71902345A exists_in_db= True mod23_letter= K shipped_letter= A valid= False
+71902565I exists_in_db= True mod23_letter= B shipped_letter= I valid= False
+71902654B exists_in_db= False mod23_letter= P shipped_letter= B valid= False
+71902667D exists_in_db= False mod23_letter= K shipped_letter= D valid= False
+71902678E exists_in_db= True mod23_letter= D shipped_letter= E valid= False
+71902787J exists_in_db= False mod23_letter= A shipped_letter= J valid= False
+71902887F exists_in_db= False mod23_letter= B shipped_letter= F valid= False
+listed= 10 in_db= 4

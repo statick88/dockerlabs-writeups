@@ -1,0 +1,11 @@
+users_count_after_sweep= 26001
+original_seeds= 4
+sweep_created= 25997
+schema:
+CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            dni TEXT NOT NULL UNIQUE,
+            password TEXT NOT NULL
+        )

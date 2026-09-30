@@ -1,0 +1,28 @@
+# POSITIVE CONTROL  dni=71902345A -> PRESENT  http=200 bytes=2268 present_marker=True absent_marker=False
+# NEGATIVE CONTROL  dni=00000000T -> ABSENT  http=200 bytes=1332 present_marker=False absent_marker=True
+# oracle green in both directions; control byte sizes recorded above
+# progress 2000/26000  178.0 req/s  present=0
+# progress 4000/26000  152.6 req/s  present=0
+HIT 71902223C  http=200 bytes=2268
+# progress 6000/26000  169.3 req/s  present=1
+# progress 8000/26000  176.2 req/s  present=1
+HIT 71902345A  http=200 bytes=2268
+# progress 10000/26000  182.5 req/s  present=2
+# progress 12000/26000  187.0 req/s  present=2
+# progress 14000/26000  190.5 req/s  present=2
+HIT 71902565I  http=200 bytes=2268
+# progress 16000/26000  192.4 req/s  present=3
+HIT 71902678E  http=200 bytes=2268
+# progress 18000/26000  193.9 req/s  present=4
+# progress 20000/26000  194.6 req/s  present=4
+# progress 22000/26000  195.9 req/s  present=4
+# progress 24000/26000  195.5 req/s  present=4
+# progress 26000/26000  191.7 req/s  present=4
+
+# ------------------------------------------------------------------
+# WORK COUNT: candidates submitted = 26000  (numbers 000-1000 x 26 letters)
+# WORK COUNT: requests actually completed = 26000
+# WORK COUNT: elapsed 135.6 s  rate 191.7 req/s
+# VERDICTS: PRESENT=4  ABSENT=25996  INDETERMINATE=0
+# RESPONSE SIZES: ABSENT -> [1332]  PRESENT -> [2268]
+# FOUND: 4  -> 71902223C, 71902345A, 71902565I, 71902678E

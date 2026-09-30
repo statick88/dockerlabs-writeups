@@ -1,0 +1,15 @@
+uid=0 euid=0
+--- backup.py restored, md5: 93c7c2d83c91e042e9c622781dededca  /opt/backup.py ---
+33 /opt/backup.py
+--- literal FLAG{ anywhere in the shipped tree? ---
+1
+/opt/backups/ROOT-DL242-ROOT-ORACLE-1790801532-a91c.out
+--- files searched ---
+13971
+--- bytes of regular files ---
+--- case-insensitive flag{, dl{, WOPR{ ---
+/usr/lib/python3/dist-packages/pip/_vendor/pygments/formatters/latex.py
+/opt/backups/ROOT-DL242-ROOT-ORACLE-1790801532-a91c.out
+
+--STDERR--
+/bin/sh: 1: bc: not found

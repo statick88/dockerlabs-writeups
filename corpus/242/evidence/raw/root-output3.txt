@@ -1,0 +1,23 @@
+uid=0 euid=0
+--- /opt/backups contents now (my artefacts removed) ---
+ROOT2-DL242-ROOT-ORACLE-1790801532-a91c.out
+workconnect_backup_20260930_205820
+--- /opt/backup.py md5 after truncation ---
+93c7c2d83c91e042e9c622781dededca  /opt/backup.py
+--- regular files searched (xdev) ---
+13970
+--- total bytes of those files ---
+291034545
+--- literal FLAG{ : count ---
+1
+--- literal FLAG{ : paths ---
+/opt/backups/ROOT2-DL242-ROOT-ORACLE-1790801532-a91c.out
+--- case-insensitive flag{ / dl{ / wopr{ ---
+/usr/lib/python3/dist-packages/pip/_vendor/pygments/formatters/latex.py
+/opt/workconnect/venv/lib/python3.12/site-packages/pip/_vendor/pygments/formatters/latex.py
+/opt/backups/workconnect_backup_20260930_205820/venv/lib/python3.12/site-packages/pip/_vendor/pygments/formatters/latex.py
+/opt/backups/workconnect_backup_20260930_205820/venv/lib64/python3.12/site-packages/pip/_vendor/pygments/formatters/latex.py
+/opt/backups/ROOT2-DL242-ROOT-ORACLE-1790801532-a91c.out
+--- end of measurement ---
+
+--STDERR--

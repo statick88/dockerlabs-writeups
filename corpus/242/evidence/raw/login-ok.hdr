@@ -1,0 +1,6 @@
+HTTP/1.1 302 Found
+date: Wed, 30 Sep 2026 21:04:21 GMT
+server: uvicorn
+content-length: 0
+location: /dashboard
+

@@ -1,0 +1,18 @@
+uid=0 euid=0
+removed '/opt/backups/ROOT3-DL242-ROOT-ORACLE-1790801532-a91c.out'
+--- payload file must not contain the token ---
+0
+--- md5 of restored backup.py ---
+93c7c2d83c91e042e9c622781dededca  /opt/backup.py
+33 /opt/backup.py
+--- /opt/backups now ---
+workconnect_backup_20260930_210336
+--- work counts ---
+regular files: 13969
+total bytes: 291034473
+--- literal token search: count ---
+0
+--- literal token search: paths ---
+--- end of measurement ---
+
+--STDERR--
