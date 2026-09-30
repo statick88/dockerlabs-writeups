@@ -140,9 +140,11 @@ two levels deeper than the name a flat wordlist finds.
 | Credential attack | Is there a rate budget? | A ladder of rates against a latency baseline |
 | Cron / scheduled job | Can you write what it executes? | A marker in a location only its owner can write |
 | **IDOR / BOLA** | Does the lookup by request id carry an **ownership** predicate? | Three byte-distinguishable cases: no session → unauthenticated; my session, their object → IDOR; unknown id |
-| **WAF / blocklist** | Does the filter read the request, or the string after decoding? | The discriminator is the **body**, not the status. A blocklist names what you already know; a filter that validates a *string* hands the shell a *pattern* |
+| **WAF / filter** | Is the filter a **string match** or a **scoring engine**, and is the request **body** even inspected? | A string filter is beaten by an unlisted encoding. A scoring engine is not — it has nothing unlisted to reach for. The gap that survives both: **the filter scores each variable independently while the sink composes them** |
+| **WAF attribution** | Which component blocked me, and how would I prove it? | A PHP filter gives you two distinguishable bodies. **ModSecurity's block page is Apache's stock 403, unbranded and not byte-stable** (it embeds the Host it refused) — so neither status nor hash identifies the rule. Use the **error/audit log** |
 | **CSRF** | Is there a state-changing request that proves it came from the issuing page? | A token that is **emitted but never validated** is not a control. Prove the token rejects *and* accepts. |
 | **Cache deception** | What is the cache key, and what does the origin route on? | A response stored for identity A and served to identity B. Prove the cache stores before you read a miss as evidence. |
+| **Open redirect** | Does a request value reach a `Location` such that the `Location`'s **origin is not fixed by the server**? | Ask what **consumes** it. With no chain it is a phishing enabler and nothing more (`C:N/I:N/A:N`). A filter's existence is not a control — the corpus's only two filtered handlers both fire and both are bypassed |
 | **Mobile / APK** | What does the manifest *claim* is unreachable? | On `targetSdk≥31` an explicit `exported` was **typed by the author**, not inherited — so it is a decision, not a default |
 
 ## 6–7. Chain and prove

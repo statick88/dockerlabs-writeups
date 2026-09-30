@@ -243,3 +243,69 @@ Two more instruments that answer with silence:
   reports nothing and a tool that has not looked are indistinguishable from the
   output alone. The only reliable discriminator is external: a work count, or a
   second tool that disagrees.
+## 17. The harness redirect is parsed on the wrong side
+
+`docker exec <c> wc -l < file` — the `< file` is redirected by the **host** shell,
+not inside the container. It printed an error to stderr and returned empty, so a
+log-slicing harness reported `loglines=0` for **every** probe.
+
+Believing it would have inverted the headline finding into "the CRS detects
+nothing", because the CRS was in fact blocking correctly. The tell was structural,
+not numerical: a 403 alone cannot tell you which half of the pipeline lied.
+
+**Rule.** In any two-process pipeline — host into container, client into proxy —
+count the work on **each** side independently, and prove both sides carried
+something before believing a zero from either. A redirect in a compound command
+belongs to the shell that reads it, not the one it is aimed at.
+
+## 18. A control must come from a payload that already worked
+
+"My liveness control" added one character to a working payload and produced zero
+log lines, because the one-character variant is not itself a detectable pattern.
+The control was not weak; it was **designed from nothing**, so its silence proved
+nothing about the thing it was meant to prove.
+
+**Rule.** A control is valid only if it comes from a payload you have *already
+seen succeed*. The stronger form used here instead: add a probe parameter and
+read the log's per-variable attribution, which shows a **true zero** for the
+variables under test and distinguishes it from an untested one — a distinction no
+single before/after comparison can make.
+
+## 19. A blank count is not a zero
+
+A shared `/tmp` scratch directory was **deleted by a concurrent worker**, so every
+byte count in a batch came back blank. Blank and zero look identical in a
+report, and "lab 1 returns an empty body" would have been filed as a measured
+property of the application. The real figures were 42 and 60 bytes.
+
+**Rule.** A missing or blank count is **untested**, never zero. Confirm the
+scratch path exists before trusting a batch, and write the count next to the
+result it belongs to. This is the same root as §11 through §14 and §17: the
+output cannot distinguish *found nothing* from *looked nowhere*.
+
+---
+
+## Reading this catalogue
+
+Sections 11 through 19 are not nineteen separate warnings. They are one failure
+with nineteen faces, and the corpus keeps producing new ones:
+
+| # | Instrument | What it reported |
+|---|---|---|
+| 11 | `find -writable` (busybox) | success, empty result |
+| 12 | `strings -a` on UTF-16 | success, empty result |
+| 14 | PHP `file('/dev/stdin')` empty | `candidates=0 matches=0` |
+| 15 | `htmlspecialchars` escaping `&` | 200, zero bytes written |
+| 16 | `[ -r ]` silent in both branches | a successful listing of the denied path |
+| 16 | `fail2ban-client status` | "in operation", zero of 16 failures |
+| 16 | `git` `safe.directory` refusal | empty stdout, exit 0 |
+| 17 | `docker exec … wc -l < file` | `loglines=0` for every probe |
+| 19 | `/tmp` deleted by a concurrent worker | blank where a count belonged |
+
+**The single rule that covers all of them:** a tool that found nothing and a tool
+that has not looked produce identical output. Only an external work count, or a
+second tool that disagrees, tells them apart — and a count of zero is itself
+evidence that nothing was tried.
+
+Six of the nine would have deleted a finding, three would have invented one. None
+of them looked like an error. That is the whole argument for the catalogue.
