@@ -433,3 +433,22 @@ The same shape, easier to get wrong, is *the artefact and the deployed instance 
 the same image, therefore the result transfers*. It nearly transfers, which is why
 it is tempting. It does not transfer when the missing step is a credential, a race,
 or anything that did not happen on the target.
+
+## 26. The searcher's own pattern is a match
+
+Lab 168's first reward sweep reported `grep -rIl 'FLAG{' /` → **one file**. The
+file was the worker's own probe script, which contains the literal string inside
+its own search pattern. After cleaning, the real answer across 15,132 files was
+zero.
+
+**Rule.** Before reporting a hit from a pattern search, **read the hit**. A search
+whose corpus includes your own tooling will find your own tooling, and the
+probability rises with how distinctive the pattern is — `FLAG{` is not a string
+anyone writes by accident. Two of this corpus's workers made the same shape of
+error in the same engagement: lab 82 read a `.ui-icon-flag{` CSS rule as a reward
+hit and lab 83 found a LaTeX template.
+
+Related, and the same instinct: a **verifier's absence is not the property's
+absence**. `dpkg -V` reported lab 82's tree pristine while `find` was mode 4755,
+because `dpkg -V` checks `md5sums` and not modes. The tool answered the question it
+was asked, not the question that mattered.
