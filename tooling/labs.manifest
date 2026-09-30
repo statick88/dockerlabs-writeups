@@ -73,3 +73,5 @@
 188|Wargames|facil|recon and service analysis; enumeration with control pairs, the class the corpus is thinnest on
 168|PingCTF|facil|command execution; a covered class, kept as a generalisation test
 167|WinFake|facil|source-code inspection as the entry point; the only lab where reading the code IS the first step
+82|E jotapete|facil|Drupal 8.5.0: the unit of trust is the compiled service container, not a list; third platform in the corpus
+83|Grooti|facil|enumeration as the deliverable; the decisive finding is on no service, and the advertised database leg cannot be entered
