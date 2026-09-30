@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pressenter CTF</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <h1>Welcome to Pressenter CTF</h1>
+        <p>Your gateway to the ultimate challenge</p>
+    </header>
+
+    <section class="hero">
+        <h2>Are you ready for the challenge?</h2>
+        <p>Join the most intense Capture The Flag (CTF) event ever! Test your hacking skills, solve puzzles, and compete for the top spot.</p>
+        <a href="#challenges" class="cta-button">Start the Challenge</a>
+    </section>
+
+    <section id="challenges">
+        <h2>Challenges Await</h2>
+        <div class="challenge-list">
+            <div class="challenge-item">
+                <h3>Reverse Engineering</h3>
+                <p>Dive into the world of reverse engineering. Decode and analyze binaries to uncover hidden secrets.</p>
+            </div>
+            <div class="challenge-item">
+                <h3>Web Exploitation</h3>
+                <p>Test your skills against various web vulnerabilities. Exploit flaws and learn how to secure web applications.</p>
+            </div>
+            <div class="challenge-item">
+                <h3>Cryptography</h3>
+                <p>Crack codes and decode messages. Understand cryptographic techniques and their weaknesses.</p>
+            </div>
+            <div class="challenge-item">
+                <h3>Forensics</h3>
+                <p>Analyze digital evidence and recover lost data. Piece together clues to solve complex scenarios.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="cta">
+        <h2>Ready to Prove Your Skills?</h2>
+        <p>Register now to secure your spot in Pressenter CTF. The clock is ticking, and the competition is fierce!</p>
+        <a href="register.html" class="cta-button">Register Now</a>
+    </section>
+
+    <footer>
+        <p>&copy; 2024 Pressenter CTF. All rights reserved.</p>
+        <p class="hidden-domain">Find us at <a href="http://pressenter.hl" target="_blank">pressenter.hl</a></p>
+    </footer>
+</body>
+</html>

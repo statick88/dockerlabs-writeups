@@ -1,0 +1,15 @@
+HTTP/1.1 302 Found
+Date: Wed, 30 Sep 2026 08:27:22 GMT
+Server: Apache/2.4.58 (Ubuntu)
+Expires: Wed, 11 Jan 1984 05:00:00 GMT
+Cache-Control: no-cache, must-revalidate, max-age=0
+Set-Cookie: wordpress_test_cookie=WP%20Cookie%20check; path=/
+X-Frame-Options: SAMEORIGIN
+Set-Cookie: wordpress_e7a137efe822bd6c55d151ff31374727=pressi%7C1790929642%7Cu1sgD1Hl95LaAPVIt2NCLzy2k5Y7t9DsfL82mWRBPxC%7Caeb82db59b4960d76f44b8dd0fb38fa14d9ce9d5e033478a9eec7159e2b49002; path=/wp-content/plugins; HttpOnly
+Set-Cookie: wordpress_e7a137efe822bd6c55d151ff31374727=pressi%7C1790929642%7Cu1sgD1Hl95LaAPVIt2NCLzy2k5Y7t9DsfL82mWRBPxC%7Caeb82db59b4960d76f44b8dd0fb38fa14d9ce9d5e033478a9eec7159e2b49002; path=/wp-admin; HttpOnly
+Set-Cookie: wordpress_logged_in_e7a137efe822bd6c55d151ff31374727=pressi%7C1790929642%7Cu1sgD1Hl95LaAPVIt2NCLzy2k5Y7t9DsfL82mWRBPxC%7C9c43efe725cbc207aa8a7b497008850cef208158a04166707495b60958ecea3d; path=/; HttpOnly
+X-Redirect-By: WordPress
+Location: http://pressenter.hl/wp-login.php?redirect_to=http%3A%2F%2Fpressenter.hl%2Fwp-admin%2F&action=confirm_admin_email&wp_lang=es_ES
+Content-Length: 0
+Content-Type: text/html; charset=UTF-8
+

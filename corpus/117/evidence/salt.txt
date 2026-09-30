@@ -1,0 +1,9 @@
+PE117SALT_MARKER_c3d81f60
+AUTH_KEY defined: true value='put your unique phrase here'
+LOGGED_IN_KEY defined: true
+wp_salt('auth') strlen=128 md5=f145b6d3065a3d7ffb24637b841096ad
+wp_salt('auth') md5 of CONCATENATED PLACEHOLDERS=4648834a7bc17189f18e5f539e26bf88
+DB option auth_key (raw, first 20)=q5nFbcdR0_`D;lxe}>[O
+COOKIE_VALIDATES=false
+COOKIE_NEGCTRL_VALIDATES=false
+--- END ---

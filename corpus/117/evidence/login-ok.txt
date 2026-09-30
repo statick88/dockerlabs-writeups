@@ -1,0 +1,123 @@
+HTTP/1.1 200 OK
+Date: Wed, 30 Sep 2026 08:27:08 GMT
+Server: Apache/2.4.58 (Ubuntu)
+Expires: Wed, 11 Jan 1984 05:00:00 GMT
+Cache-Control: no-cache, must-revalidate, max-age=0
+Set-Cookie: wordpress_test_cookie=WP%20Cookie%20check; path=/
+X-Frame-Options: SAMEORIGIN
+Set-Cookie: wordpress_e7a137efe822bd6c55d151ff31374727=pressi%7C1790929628%7Cwp9ee2UZk34j6G0mOiEumSZwcrumaCDGe46PMmW3VaL%7C8618650ea2d426b63c3e820b2d03786f15a8d46ee7183340d37fc49764a11c14; path=/wp-content/plugins; HttpOnly
+Set-Cookie: wordpress_e7a137efe822bd6c55d151ff31374727=pressi%7C1790929628%7Cwp9ee2UZk34j6G0mOiEumSZwcrumaCDGe46PMmW3VaL%7C8618650ea2d426b63c3e820b2d03786f15a8d46ee7183340d37fc49764a11c14; path=/wp-admin; HttpOnly
+Set-Cookie: wordpress_logged_in_e7a137efe822bd6c55d151ff31374727=pressi%7C1790929628%7Cwp9ee2UZk34j6G0mOiEumSZwcrumaCDGe46PMmW3VaL%7Cfc7d1240110e00d621d2094a26b2e3a39f62095b37c3fd39f073e45cb45aa932; path=/; HttpOnly
+Vary: Accept-Encoding
+Content-Length: 6950
+Content-Type: text/html; charset=UTF-8
+
+<!DOCTYPE html>
+	<html lang="es">
+	<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+	<title>Acceder < PressEnter — WordPress</title>
+	<meta name='robots' content='max-image-preview:large, noindex, noarchive' />
+<link rel='stylesheet' href='http://pressenter.hl/wp-admin/load-styles.php?c=0&amp;dir=ltr&amp;load%5Bchunk_0%5D=dashicons,buttons,forms,l10n,login&amp;ver=6.6.1' media='all' />
+	<meta name='referrer' content='strict-origin-when-cross-origin' />
+		<meta name="viewport" content="width=device-width" />
+		</head>
+	<body class="login no-js login-action-login wp-core-ui  locale-es-es">
+	<script>
+document.body.className = document.body.className.replace('no-js','js');
+</script>
+
+		<div id="login">
+		<h1><a href="https://es.wordpress.org/">Funciona con WordPress</a></h1>
+	<div id="login_error" class="notice notice-error"><p><strong>Error</strong>: las cookies están bloqueadas o no permitidas por tu navegador. Para usar WordPress, debes <a href="https://developer.wordpress.org/advanced-administration/wordpress/cookies/#enable-cookies-in-your-browser">permitir las cookies</a>.</p></div>
+		<form name="loginform" id="loginform" action="http://pressenter.hl/wp-login.php" method="post">
+			<p>
+				<label for="user_login">Nombre de usuario o correo electrónico</label>
+				<input type="text" name="log" id="user_login" aria-describedby="login_error" class="input" value="" size="20" autocapitalize="off" autocomplete="username" required="required" />
+			</p>
+
+			<div class="user-pass-wrap">
+				<label for="user_pass">Contraseña</label>
+				<div class="wp-pwd">
+					<input type="password" name="pwd" id="user_pass" aria-describedby="login_error" class="input password-input" value="" size="20" autocomplete="current-password" spellcheck="false" required="required" />
+					<button type="button" class="button button-secondary wp-hide-pw hide-if-no-js" data-toggle="0" aria-label="Mostrar la contraseña">
+						<span class="dashicons dashicons-visibility" aria-hidden="true"></span>
+					</button>
+				</div>
+			</div>
+						<p class="forgetmenot"><input name="rememberme" type="checkbox" id="rememberme" value="forever"  /> <label for="rememberme">Recuérdame</label></p>
+			<p class="submit">
+				<input type="submit" name="wp-submit" id="wp-submit" class="button button-primary button-large" value="Acceder" />
+									<input type="hidden" name="redirect_to" value="http://pressenter.hl/wp-admin/" />
+									<input type="hidden" name="testcookie" value="1" />
+			</p>
+		</form>
+
+					<p id="nav">
+				<a class="wp-login-lost-password" href="http://pressenter.hl/wp-login.php?action=lostpassword">¿Has olvidado tu contraseña?</a>			</p>
+			<script>
+function wp_attempt_focus() {setTimeout( function() {try {d = document.getElementById( "user_login" );d.focus(); d.select();} catch( er ) {}}, 200);}
+wp_attempt_focus();
+if ( typeof wpOnload === 'function' ) { wpOnload() }
+</script>
+		<p id="backtoblog">
+			<a href="http://pressenter.hl/">&larr; Ir a PressEnter</a>		</p>
+			</div>
+				<div class="language-switcher">
+				<form id="language-switcher" method="get">
+
+					<label for="language-switcher-locales">
+						<span class="dashicons dashicons-translation" aria-hidden="true"></span>
+						<span class="screen-reader-text">
+							Idioma						</span>
+					</label>
+
+					<select name="wp_lang" id="language-switcher-locales"><option value="en_US" lang="en" data-installed="1">English (United States)</option>
+<option value="es_ES" lang="es" selected='selected' data-installed="1">Español</option></select>
+					
+					
+					
+						<input type="submit" class="button" value="Cambiar">
+
+					</form>
+				</div>
+				
+<script>
+/* <![CDATA[ */
+var _zxcvbnSettings = {"src":"http:\/\/pressenter.hl\/wp-includes\/js\/zxcvbn.min.js"};/* ]]> */
+</script>
+<script src='http://pressenter.hl/wp-admin/load-scripts.php?c=0&amp;load%5Bchunk_0%5D=jquery-core,jquery-migrate,zxcvbn-async,wp-hooks&amp;ver=6.6.1'></script>
+<script src="http://pressenter.hl/wp-includes/js/dist/i18n.min.js?ver=5e580eb46a90c2b997e6" id="wp-i18n-js"></script>
+<script id="wp-i18n-js-after">
+wp.i18n.setLocaleData( { 'text direction\u0004ltr': [ 'ltr' ] } );
+</script>
+<script id="password-strength-meter-js-extra">
+var pwsL10n = {"unknown":"Fortaleza de la contrase\u00f1a desconocida","short":"Muy d\u00e9bil","bad":"D\u00e9bil","good":"Medio","strong":"Fuerte","mismatch":"No coinciden"};
+</script>
+<script id="password-strength-meter-js-translations">
+( function( domain, translations ) {
+	var localeData = translations.locale_data[ domain ] || translations.locale_data.messages;
+	localeData[""].domain = domain;
+	wp.i18n.setLocaleData( localeData, domain );
+} )( "default", {"translation-revision-date":"2024-08-14 09:08:21+0000","generator":"GlotPress\/4.0.1","domain":"messages","locale_data":{"messages":{"":{"domain":"messages","plural-forms":"nplurals=2; plural=n != 1;","lang":"es"},"%1$s is deprecated since version %2$s! Use %3$s instead. Please consider writing more inclusive code.":["\u00a1%1$s est\u00e1 obsoleto desde la versi\u00f3n %2$s! Usa %3$s en su lugar. Por favor, plant\u00e9ate escribir un c\u00f3digo m\u00e1s inclusivo."]}},"comment":{"reference":"wp-admin\/js\/password-strength-meter.js"}} );
+</script>
+<script src="http://pressenter.hl/wp-admin/js/password-strength-meter.min.js?ver=6.6.1" id="password-strength-meter-js"></script>
+<script src="http://pressenter.hl/wp-includes/js/underscore.min.js?ver=1.13.4" id="underscore-js"></script>
+<script id="wp-util-js-extra">
+var _wpUtilSettings = {"ajax":{"url":"\/wp-admin\/admin-ajax.php"}};
+</script>
+<script src="http://pressenter.hl/wp-includes/js/wp-util.min.js?ver=6.6.1" id="wp-util-js"></script>
+<script id="user-profile-js-extra">
+var userProfileL10n = {"user_id":"0","nonce":"4e72b06f4d"};
+</script>
+<script id="user-profile-js-translations">
+( function( domain, translations ) {
+	var localeData = translations.locale_data[ domain ] || translations.locale_data.messages;
+	localeData[""].domain = domain;
+	wp.i18n.setLocaleData( localeData, domain );
+} )( "default", {"translation-revision-date":"2024-08-14 09:08:21+0000","generator":"GlotPress\/4.0.1","domain":"messages","locale_data":{"messages":{"":{"domain":"messages","plural-forms":"nplurals=2; plural=n != 1;","lang":"es"},"Your new password has not been saved.":["No ha sido guardada tu nueva contrase\u00f1a."],"Show":["Mostrar"],"Confirm use of weak password":["Confirma el uso de una contrase\u00f1a d\u00e9bil."],"Hide password":["Ocultar la contrase\u00f1a"],"Show password":["Mostrar la contrase\u00f1a"],"Hide":["Ocultar"],"The changes you made will be lost if you navigate away from this page.":["Los cambios realizados se perder\u00e1n si sales de esta p\u00e1gina."]}},"comment":{"reference":"wp-admin\/js\/user-profile.js"}} );
+</script>
+<script src="http://pressenter.hl/wp-admin/js/user-profile.min.js?ver=6.6.1" id="user-profile-js"></script>
+	</body>
+	</html>
+	

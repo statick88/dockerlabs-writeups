@@ -1,0 +1,21 @@
+PE117_MARKER_9f3c1a7d
+--- id ---
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+--- euid/egid ---
+33
+--- /proc/self/status ---
+Name:	grep
+Uid:	33	33	33	33
+Gid:	33	33	33	33
+Groups:	33 
+--- cwd ---
+/var/www/pressenter
+--- writable probe (test -w) ---
+/root                                    readable=0 writable=0
+/root/root.txt                           readable=0 writable=0
+/etc/shadow                              readable=0 writable=0
+/home/enter                              readable=0 writable=0
+/var/www/pressenter                      readable=1 writable=1
+/var/www/pressenter/.htaccess            readable=1 writable=1
+/var/www/pressenter/wp-config.php        readable=1 writable=0
+--- END ---

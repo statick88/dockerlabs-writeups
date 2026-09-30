@@ -1,0 +1,12 @@
+HTTP/1.1 302 Found
+Date: Wed, 30 Sep 2026 08:33:06 GMT
+Server: Apache/2.4.58 (Ubuntu)
+Expires: Wed, 11 Jan 1984 05:00:00 GMT
+Cache-Control: no-cache, must-revalidate, max-age=0, no-store, private
+Referrer-Policy: strict-origin-when-cross-origin
+X-Frame-Options: SAMEORIGIN
+X-Redirect-By: WordPress
+Location: http://127.0.0.1/wp-admin/plugins.php?activate=true&plugin_status=all&paged=1&s=
+Content-Length: 0
+Content-Type: text/html; charset=UTF-8
+

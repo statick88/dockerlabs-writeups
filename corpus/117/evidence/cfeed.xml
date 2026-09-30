@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:atom="http://www.w3.org/2005/Atom"
+	xmlns:sy="http://purl.org/rss/1.0/modules/syndication/"
+	
+	>
+<channel>
+	<title>
+	Comentarios en PressEnter	</title>
+	<atom:link href="http://pressenter.hl/?feed=comments-rss2" rel="self" type="application/rss+xml" />
+	<link>http://pressenter.hl</link>
+	<description></description>
+	<lastBuildDate>Thu, 22 Aug 2024 10:48:46 +0000</lastBuildDate>
+	<sy:updatePeriod>
+	hourly	</sy:updatePeriod>
+	<sy:updateFrequency>
+	1	</sy:updateFrequency>
+	<generator>https://wordpress.org/?v=6.6.1</generator>
+	<item>
+		<title>
+		Comentario en ¡Hola, mundo! por Un comentarista de WordPress		</title>
+		<link>http://pressenter.hl/?p=1#comment-1</link>
+
+		<dc:creator><![CDATA[Un comentarista de WordPress]]></dc:creator>
+		<pubDate>Thu, 22 Aug 2024 10:48:46 +0000</pubDate>
+		<guid isPermaLink="false">http://pressenter.hl/?p=1#comment-1</guid>
+
+					<description><![CDATA[Hola, esto es un comentario.
+Para empezar a moderar, editar y borrar comentarios, por favor, visita en el escritorio la pantalla de comentarios.
+Los avatares de los comentaristas provienen de &lt;a href=&quot;https://es.gravatar.com/&quot;&gt;Gravatar&lt;/a&gt;.]]></description>
+			<content:encoded><![CDATA[<p>Hola, esto es un comentario.<br />
+Para empezar a moderar, editar y borrar comentarios, por favor, visita en el escritorio la pantalla de comentarios.<br />
+Los avatares de los comentaristas provienen de <a href="https://es.gravatar.com/">Gravatar</a>.</p>
+]]></content:encoded>
+		
+			</item>
+	</channel>
+</rss>

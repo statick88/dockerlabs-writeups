@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html class="wp-toolbar"
+	lang="es">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+	<title>Editar plugins &lt; PressEnter — WordPress</title>
+<script type="text/javascript">
+addLoadEvent = function(func){if(typeof jQuery!=='undefined')jQuery(function(){func();});else if(typeof wpOnload!=='function'){wpOnload=func;}else{var oldonload=wpOnload;wpOnload=function(){oldonload();func();}}};
+var ajaxurl = '/wp-admin/admin-ajax.php',
+	pagenow = 'plugin-editor',
+	typenow = '',
+	adminpage = 'plugin-editor-php',
+	thousandsSeparator = '.',
+	decimalPoint = ',',
+	isRtl = 0;
+</script>
+<link rel='stylesheet' href='http://pressenter.hl/wp-admin/load-styles.php?c=0&amp;dir=ltr&amp;load%5Bchunk_0%5D=dashicons,admin-bar,code-editor,common,forms,admin-menu,dashboard,list-tables,edit,revisions,media,themes,about,nav-menus,wp-poi&amp;load%5Bchunk_1%5D=nter,widgets,site-icon,l10n,buttons,wp-auth-check&amp;ver=6.6.1' media='all' />
+<style>
+@media print { #wpadminbar { display:none; } }
+</style>
+<link rel='stylesheet' id='wp-codemirror-css' href='http://pressenter.hl/wp-includes/js/codemirror/codemirror.min.css?ver=5.29.1-alpha-ee20357' media='all' />
+<style id='wp-emoji-styles-inline-css'>
+
+	img.wp-smiley, img.emoji {
+		display: inline !important;
+		border: none !important;
+		box-shadow: none !important;
+		height: 1em !important;
+		width: 1em !important;
+		margin: 0 0.07em !important;
+		vertical-align: -0.1em !important;
+		background: none !important;
+		padding: 0 !important;
+	}
+</style>
+<style id='wp-fonts-local'>
+@font-face{font-family:Inter;font-style:normal;font-weight:300 900;font-display:fallback;src:url('http://pressenter.hl/wp-content/themes/twentytwentyfour/assets/fonts/inter/Inter-VariableFont_slnt,wght.woff2') format('woff2');font-stretch:normal;}
+@font-face{font-family:Cardo;font-style:normal;font-weight:400;font-display:fallback;src:url('http://pressenter.hl/wp-content/themes/twentytwentyfour/assets/fonts/cardo/cardo_normal_400.woff2') format('woff2');}
+@font-face{font-family:Cardo;font-style:italic;font-weight:400;font-display:fallback;src:url('http://pressenter.hl/wp-content/themes/twentytwentyfour/assets/fonts/cardo/cardo_italic_400.woff2') format('woff2');}
+@font-face{font-family:Cardo;font-style:normal;font-weight:700;font-display:fallback;src:url('http://pressenter.hl/wp-content/themes/twentytwentyfour/assets/fonts/cardo/cardo_normal_700.woff2') format('woff2');}
+</style>
+<script>
+window._wpemojiSettings = {"baseUrl":"https:\/\/s.w.org\/images\/core\/emoji\/15.0.3\/72x72\/","ext":".png","svgUrl":"https:\/\/s.w.org\/images\/core\/emoji\/15.0.3\/svg\/","svgExt":".svg","source":{"concatemoji":"http:\/\/pressenter.hl\/wp-includes\/js\/wp-emoji-release.min.js?ver=6.6.1"}};
+/*! This file is auto-generated */
+!function(i,n){var o,s,e;function c(e){try{var t={supportTests:e,timestamp:(new Date).valueOf()};sessionStorage.setItem(o,JSON.stringify(t))}catch(e){}}function p(e,t,n){e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(t,0,0);var t=new Uint32Array(e.getImageData(0,0,e.canvas.width,e.canvas.height).data),r=(e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(n,0,0),new Uint32Array(e.getImageData(0,0,e.canvas.width,e.canvas.height).data));return t.every(function(e,t){return e===r[t]})}function u(e,t,n){switch(t){case"flag":return n(e,"\ud83c\udff3\ufe0f\u200d\u26a7\ufe0f","\ud83c\udff3\ufe0f\u200b\u26a7\ufe0f")?!1:!n(e,"\ud83c\uddfa\ud83c\uddf3","\ud83c\uddfa\u200b\ud83c\uddf3")&&!n(e,"\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f","\ud83c\udff4\u200b\udb40\udc67\u200b\udb40\udc62\u200b\udb40\udc65\u200b\udb40\udc6e\u200b\udb40\udc67\u200b\udb40\udc7f");case"emoji":return!n(e,"\ud83d\udc26\u200d\u2b1b","\ud83d\udc26\u200b\u2b1b")}return!1}function f(e,t,n){var r="undefined"!=typeof WorkerGlobalScope&&self instanceof WorkerGlobalScope?new OffscreenCanvas(300,150):i.createElement("canvas"),a=r.getContext("2d",{willReadFrequently:!0}),o=(a.textBaseline="top",a.font="600 32px Arial",{});return e.forEach(function(e){o[e]=t(a,e,n)}),o}function t(e){var t=i.createElement("script");t.src=e,t.defer=!0,i.head.appendChild(t)}"undefined"!=typeof Promise&&(o="wpEmojiSettingsSupports",s=["flag","emoji"],n.supports={everything:!0,everythingExceptFlag:!0},e=new Promise(function(e){i.addEventListener("DOMContentLoaded",e,{once:!0})}),new Promise(function(t){var n=function(){try{var e=JSON.parse(sessionStorage.getItem(o));if("object"==typeof e&&"number"==typeof e.timestamp&&(new Date).valueOf()<e.timestamp+604800&&"object"==typeof e.supportTests)return e.supportTests}catch(e){}return null}();if(!n){if("undefined"!=typeof Worker&&"undefined"!=typeof OffscreenCanvas&&"undefined"!=typeof URL&&URL.createObjectURL&&"undefined"!=typeof Blob)try{var e="postMessage("+f.toString()+"("+[JSON.stringify(s),u.toString(),p.toString()].join(",")+"));",r=new Blob([e],{type:"text/javascript"}),a=new Worker(URL.createObjectURL(r),{name:"wpTestEmojiSupports"});return void(a.onmessage=function(e){c(n=e.data),a.terminate(),t(n)})}catch(e){}c(n=f(s,u,p))}t(n)}).then(function(e){for(var t in e)n.supports[t]=e[t],n.supports.everything=n.supports.everything&&n.supports[t],"flag"!==t&&(n.supports.everythingExceptFlag=n.supports.everythingExceptFlag&&n.supports[t]);n.supports.everythingExceptFlag=n.supports.everythingExceptFlag&&!n.supports.flag,n.DOMReady=!1,n.readyCallback=function(){n.DOMReady=!0}}).then(function(){return e}).then(function(){var e;n.supports.everything||(n.readyCallback(),(e=n.source||{}).concatemoji?t(e.concatemoji):e.wpemoji&&e.twemoji&&(t(e.twemoji),t(e.wpemoji)))}))}((window,document),window._wpemojiSettings);
+</script>
+
+<script>
+/* <![CDATA[ */
+var userSettings = {"url":"\/","uid":"1","time":"1790756850","secure":""};/* ]]> */
+</script>
+<script src='http://pressenter.hl/wp-admin/load-scripts.php?c=0&amp;load%5Bchunk_0%5D=jquery-core,jquery-migrate,utils,wp-codemirror,underscore&amp;ver=6.6.1'></script>
+<script src="http://pressenter.hl/wp-admin/js/code-editor.min.js?ver=6.6.1" id="code-editor-js"></script>
+<script id="code-editor-js-after">
+jQuery.extend( wp.codeEditor.defaultSettings, {"codemirror":{"indentUnit":4,"indentWithTabs":true,"inputStyle":"contenteditable","lineNumbers":true,"lineWrapping":true,"styleActiveLine":true,"continueComments":true,"extraKeys":{"Ctrl-Space":"autocomplete","Ctrl-\/":"toggleComment","Cmd-\/":"toggleComment","Alt-F":"findPersistent","Ctrl-F":"findPersistent","Cmd-F":"findPersistent"},"direction":"ltr","gutters":[],"mode":"php","autoCloseBrackets":true,"autoCloseTags":true,"matchBrackets":true,"matchTags":{"bothTags":true}},"csslint":{"errors":true,"box-model":true,"display-property-grouping":true,"duplicate-properties":true,"known-properties":true,"outline-none":true},"jshint":{"boss":true,"curly":true,"eqeqeq":true,"eqnull":true,"es3":true,"expr":true,"immed":true,"noarg":true,"nonbsp":true,"onevar":true,"quotmark":"single","trailing":true,"undef":true,"unused":true,"browser":true,"globals":{"_":false,"Backbone":false,"jQuery":false,"JSON":false,"wp":false}},"htmlhint":{"tagname-lowercase":true,"attr-lowercase":true,"attr-value-double-quotes":false,"doctype-first":false,"tag-pair":true,"spec-char-escape":true,"id-unique":true,"src-not-empty":true,"attr-no-duplication":true,"alt-require":true,"space-tab-mixed-disabled":"tab","attr-unsafe-chars":true}} );
+</script>
+<script type="text/javascript">var _wpColorScheme = {"icons":{"base":"#a7aaad","focus":"#72aee6","current":"#fff"}};</script>
+	<link id="wp-admin-canonical" rel="canonical" href="http://pressenter.hl/wp-admin/plugin-editor.php" />
+	<script>
+		if ( window.history.replaceState ) {
+			window.history.replaceState( null, null, document.getElementById( 'wp-admin-canonical' ).href + window.location.hash );
+		}
+	</script>
+	<meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body class="wp-admin wp-core-ui no-js plugin-editor-php auto-fold admin-bar branch-6-6 version-6-6-1 admin-color-fresh locale-es-es no-customize-support no-svg">
+<script type="text/javascript">
+	document.body.className = document.body.className.replace('no-js','js');
+</script>
+
+<script>
+		(function() {
+			var request, b = document.body, c = 'className', cs = 'customize-support', rcs = new RegExp('(^|\\s+)(no-)?'+cs+'(\\s+|$)');
+
+				request = true;
+	
+			b[c] = b[c].replace( rcs, ' ' );
+			// The customizer requires postMessage and CORS (if the site is cross domain).
+			b[c] += ( window.postMessage && request ? ' ' : ' no-' ) + cs;
+		}());
+	
+</script>
+
+<div id="wpwrap">
+
+<div id="adminmenumain" role="navigation" aria-label="Menú principal">
+<a href="#wpbody-content" class="screen-reader-shortcut">Saltar al contenido principal</a>
+<a href="#wp-toolbar" class="screen-reader-shortcut">Ir a la barra de herramientas</a>
+<div id="adminmenuback"></div>
+<div id="adminmenuwrap">
+<ul id="adminmenu">
+
+
+	<li class="wp-first-item wp-has-submenu wp-not-current-submenu menu-top menu-top-first menu-icon-dashboard menu-top-last" id="menu-dashboard">
+	<a href='index.php' class="wp-first-item wp-has-submenu wp-not-current-submenu menu-top menu-top-first menu-icon-dashboard menu-top-last" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-dashboard' aria-hidden='true'><br /></div><div class='wp-menu-name'>Escritorio</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Escritorio</li><li class="wp-first-item"><a href='index.php' class="wp-first-item">Inicio</a></li><li><a href='update-core.php'>Actualizaciones <span class="update-plugins count-5"><span class="update-count">5</span></span></a></li></ul></li>
+	<li class="wp-not-current-submenu wp-menu-separator" aria-hidden="true"><div class="separator"></div></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-post open-if-no-js menu-top-first" id="menu-posts">
+	<a href='edit.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-post open-if-no-js menu-top-first" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-post' aria-hidden='true'><br /></div><div class='wp-menu-name'>Entradas</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Entradas</li><li class="wp-first-item"><a href='edit.php' class="wp-first-item">Todas las entradas</a></li><li><a href='post-new.php'>Añadir una nueva entrada</a></li><li><a href='edit-tags.php?taxonomy=category'>Categorías</a></li><li><a href='edit-tags.php?taxonomy=post_tag'>Etiquetas</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-media" id="menu-media">
+	<a href='upload.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-media" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-media' aria-hidden='true'><br /></div><div class='wp-menu-name'>Medios</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Medios</li><li class="wp-first-item"><a href='upload.php' class="wp-first-item">Biblioteca</a></li><li><a href='media-new.php'>Añadir nuevo archivo de medios</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-page" id="menu-pages">
+	<a href='edit.php?post_type=page' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-page" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-page' aria-hidden='true'><br /></div><div class='wp-menu-name'>Páginas</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Páginas</li><li class="wp-first-item"><a href='edit.php?post_type=page' class="wp-first-item">Todas las páginas</a></li><li><a href='post-new.php?post_type=page'>Añadir una nueva página</a></li></ul></li>
+	<li class="wp-not-current-submenu menu-top menu-icon-comments menu-top-last" id="menu-comments">
+	<a href='edit-comments.php' class="wp-not-current-submenu menu-top menu-icon-comments menu-top-last" ><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-comments' aria-hidden='true'><br /></div><div class='wp-menu-name'>Comentarios <span class="awaiting-mod count-0"><span class="pending-count" aria-hidden="true">0</span><span class="comments-in-moderation-text screen-reader-text">0 comentarios en moderación</span></span></div></a></li>
+	<li class="wp-not-current-submenu wp-menu-separator" aria-hidden="true"><div class="separator"></div></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-appearance menu-top-first" id="menu-appearance">
+	<a href='themes.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-appearance menu-top-first" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-appearance' aria-hidden='true'><br /></div><div class='wp-menu-name'>Apariencia</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Apariencia</li><li class="wp-first-item"><a href='themes.php' class="wp-first-item">Temas <span class="update-plugins count-3"><span class="theme-count">3</span></span></a></li><li><a href='site-editor.php'>Editor</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-plugins" id="menu-plugins">
+	<a href='plugins.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-plugins" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-plugins' aria-hidden='true'><br /></div><div class='wp-menu-name'>Plugins <span class="update-plugins count-0"><span class="plugin-count">0</span></span></div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Plugins <span class="update-plugins count-0"><span class="plugin-count">0</span></span></li><li class="wp-first-item"><a href='plugins.php' class="wp-first-item">Plugins instalados</a></li><li><a href='plugin-install.php'>Añadir nuevo plugin</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-users" id="menu-users">
+	<a href='users.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-users" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-users' aria-hidden='true'><br /></div><div class='wp-menu-name'>Usuarios</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Usuarios</li><li class="wp-first-item"><a href='users.php' class="wp-first-item">Todos los usuarios</a></li><li><a href='user-new.php'>Añadir nuevo usuario</a></li><li><a href='profile.php'>Perfil</a></li></ul></li>
+	<li class="wp-has-submenu wp-has-current-submenu wp-menu-open menu-top menu-icon-tools" id="menu-tools">
+	<a href='tools.php' class="wp-has-submenu wp-has-current-submenu wp-menu-open menu-top menu-icon-tools" ><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-tools' aria-hidden='true'><br /></div><div class='wp-menu-name'>Herramientas</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Herramientas</li><li class="wp-first-item"><a href='tools.php' class="wp-first-item">Herramientas disponibles</a></li><li><a href='import.php'>Importar</a></li><li><a href='export.php'>Exportar</a></li><li><a href='site-health.php'>Salud del sitio <span class="menu-counter site-health-counter count-0"><span class="count">0</span></span></a></li><li><a href='export-personal-data.php'>Exportar los datos personales</a></li><li><a href='erase-personal-data.php'>Borrar los datos personales</a></li><li><a href='tools.php?page=wpe-php-compat'>PHP Compatibility</a></li><li><a href='theme-editor.php'>Editor de archivos de temas</a></li><li class="current"><a href='plugin-editor.php' class="current" aria-current="page">Editor de archivos de plugins</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-settings menu-top-last" id="menu-settings">
+	<a href='options-general.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-settings menu-top-last" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-settings' aria-hidden='true'><br /></div><div class='wp-menu-name'>Ajustes</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Ajustes</li><li class="wp-first-item"><a href='options-general.php' class="wp-first-item">Generales</a></li><li><a href='options-writing.php'>Escritura</a></li><li><a href='options-reading.php'>Lectura</a></li><li><a href='options-discussion.php'>Comentarios</a></li><li><a href='options-media.php'>Medios</a></li><li><a href='options-permalink.php'>Enlaces permanentes</a></li><li><a href='options-privacy.php'>Privacidad</a></li></ul></li><li id="collapse-menu" class="hide-if-no-js"><button type="button" id="collapse-button" aria-label="Contraer el menú principal" aria-expanded="true"><span class="collapse-button-icon" aria-hidden="true"></span><span class="collapse-button-label">Cerrar menú</span></button></li></ul>
+</div>
+</div>
+<div id="wpcontent">
+
+		<div id="wpadminbar" class="nojq nojs">
+						<div class="quicklinks" id="wp-toolbar" role="navigation" aria-label="Barra de herramientas">
+				<ul role='menu' id='wp-admin-bar-root-default' class="ab-top-menu"><li role='group' id='wp-admin-bar-menu-toggle'><a class='ab-item' role="menuitem" href='#'><span class="ab-icon" aria-hidden="true"></span><span class="screen-reader-text">Menú</span></a></li><li role='group' id='wp-admin-bar-wp-logo' class="menupop"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://pressenter.hl/wp-admin/about.php'><span class="ab-icon" aria-hidden="true"></span><span class="screen-reader-text">Acerca de WordPress</span></a><div class="ab-sub-wrapper"><ul role='menu' aria-label='Acerca de WordPress' id='wp-admin-bar-wp-logo-default' class="ab-submenu"><li role='group' id='wp-admin-bar-about'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/about.php'>Acerca de WordPress</a></li><li role='group' id='wp-admin-bar-contribute'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/contribute.php'>Únete</a></li></ul><ul role='menu' aria-label='Acerca de WordPress' id='wp-admin-bar-wp-logo-external' class="ab-sub-secondary ab-submenu"><li role='group' id='wp-admin-bar-wporg'><a class='ab-item' role="menuitem" href='https://es.wordpress.org/'>WordPress.org</a></li><li role='group' id='wp-admin-bar-documentation'><a class='ab-item' role="menuitem" href='https://wordpress.org/documentation/'>Documentación</a></li><li role='group' id='wp-admin-bar-learn'><a class='ab-item' role="menuitem" href='https://learn.wordpress.org/'>Aprende WordPress</a></li><li role='group' id='wp-admin-bar-support-forums'><a class='ab-item' role="menuitem" href='https://es.wordpress.org/support/'>Soporte</a></li><li role='group' id='wp-admin-bar-feedback'><a class='ab-item' role="menuitem" href='https://es.wordpress.org/support/forum/comunidad/peticiones-y-feedback/'>Sugerencias</a></li></ul></div></li><li role='group' id='wp-admin-bar-site-name' class="menupop"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://pressenter.hl/'>PressEnter</a><div class="ab-sub-wrapper"><ul role='menu' aria-label='PressEnter' id='wp-admin-bar-site-name-default' class="ab-submenu"><li role='group' id='wp-admin-bar-view-site'><a class='ab-item' role="menuitem" href='http://pressenter.hl/'>Visitar el sitio</a></li></ul></div></li><li role='group' id='wp-admin-bar-updates'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/update-core.php'><span class="ab-icon" aria-hidden="true"></span><span class="ab-label" aria-hidden="true">5</span><span class="screen-reader-text updates-available-text">5 actualizaciones disponibles</span></a></li><li role='group' id='wp-admin-bar-comments'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/edit-comments.php'><span class="ab-icon" aria-hidden="true"></span><span class="ab-label awaiting-mod pending-count count-0" aria-hidden="true">0</span><span class="screen-reader-text comments-in-moderation-text">0 comentarios en moderación</span></a></li><li role='group' id='wp-admin-bar-new-content' class="menupop"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://pressenter.hl/wp-admin/post-new.php'><span class="ab-icon" aria-hidden="true"></span><span class="ab-label">Añadir</span></a><div class="ab-sub-wrapper"><ul role='menu' aria-label='Añadir' id='wp-admin-bar-new-content-default' class="ab-submenu"><li role='group' id='wp-admin-bar-new-post'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/post-new.php'>Entrada</a></li><li role='group' id='wp-admin-bar-new-media'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/media-new.php'>Medio</a></li><li role='group' id='wp-admin-bar-new-page'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/post-new.php?post_type=page'>Página</a></li><li role='group' id='wp-admin-bar-new-user'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/user-new.php'>Usuario</a></li></ul></div></li></ul><ul role='menu' id='wp-admin-bar-top-secondary' class="ab-top-secondary ab-top-menu"><li role='group' id='wp-admin-bar-my-account' class="menupop with-avatar"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://pressenter.hl/wp-admin/profile.php'>Hola, <span class="display-name">pressi</span><img alt='' src='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=26&#038;d=mm&#038;r=g' srcset='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=52&#038;d=mm&#038;r=g 2x' class='avatar avatar-26 photo' height='26' width='26' loading='lazy' decoding='async'/></a><div class="ab-sub-wrapper"><ul role='menu' aria-label='Hola, pressi' id='wp-admin-bar-user-actions' class="ab-submenu"><li role='group' id='wp-admin-bar-user-info'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/profile.php'><img alt='' src='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=64&#038;d=mm&#038;r=g' srcset='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=128&#038;d=mm&#038;r=g 2x' class='avatar avatar-64 photo' height='64' width='64' loading='lazy' decoding='async'/><span class='display-name'>pressi</span><span class='display-name edit-profile'>Editar perfil</span></a></li><li role='group' id='wp-admin-bar-logout'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-login.php?action=logout&#038;_wpnonce=8a3c394c03'>Salir</a></li></ul></div></li></ul>			</div>
+		</div>
+
+		
+<div id="wpbody" role="main">
+
+<div id="wpbody-content">
+		<div id="screen-meta" class="metabox-prefs">
+
+			<div id="contextual-help-wrap" class="hidden" tabindex="-1" aria-label="Pestaña de ayuda contextual">
+				<div id="contextual-help-back"></div>
+				<div id="contextual-help-columns">
+					<div class="contextual-help-tabs">
+						<ul>
+						
+							<li id="tab-link-overview" class="active">
+								<a href="#tab-panel-overview" aria-controls="tab-panel-overview">
+									Resumen								</a>
+							</li>
+													</ul>
+					</div>
+
+										<div class="contextual-help-sidebar">
+						<p><strong>Para más información:</strong></p><p><a href="https://developer.wordpress.org/advanced-administration/plugins/editor-screen/">Documentación sobre la edición de plugins</a></p><p><a href="https://developer.wordpress.org/plugins/">Documentación sobre la creación de plugins</a></p><p><a href="https://es.wordpress.org/support/forums/">Foros de soporte</a></p>					</div>
+					
+					<div class="contextual-help-tabs-wrap">
+						
+							<div id="tab-panel-overview" class="help-tab-content active">
+								<p>Puedes usar el editor de archivos de plugins para hacer cambios a cualquier archivo PHP individual de tus plugins. Ten en cuenta que si haces cambios, las actualizaciones de los plugins sobrescribirán tus personalizaciones.</p><p>Elige un plugin a editar en el menú desplegable y haz clic en el botón «Seleccionar». Haz clic una vez sobre cualquier nombre de archivo para cargarlo en el editor y hacer tus cambios. No olvides guardar tus cambios (actualizar el archivo) cuando acabes.</p><p>El menú de documentación, debajo del editor, lista las funciones PHP reconocidas en el archivo del plugin. Al hacer clic en la búsqueda, te lleva a una página web sobre esa función particular.</p><p id="editor-keyboard-trap-help-1">Cuando se usa un teclado para navegar:</p><ul><li id="editor-keyboard-trap-help-2">En el área de edición, la tecla Tab introduce un carácter de tabulación.</li><li id="editor-keyboard-trap-help-3">Para salir de este área, pulsa la tecla Esc seguida de la tecla Tab.</li><li id="editor-keyboard-trap-help-4">Usuarios con lector de pantalla: al estar en el modo de formulario, puede que necesites pulsar la tecla Esc dos veces.</li></ul><p>Si quieres hacer cambios, pero no quieres que se sobreescriban cuando se actualice el plugin, puede que estés listo para pensar en escribir tu propio plugin. Para obtener información sobre cómo editar plugins, escribir desde cero el tuyo o, simplemente, entender mejor su anatomía, echa un vistazo a los siguientes enlaces.</p>							</div>
+												</div>
+				</div>
+			</div>
+				</div>
+				<div id="screen-meta-links">
+					<div id="contextual-help-link-wrap" class="hide-if-no-js screen-meta-toggle">
+			<button type="button" id="contextual-help-link" class="button show-settings" aria-controls="contextual-help-wrap" aria-expanded="false">Ayuda</button>
+			</div>
+				</div>
+		<div class="notice notice-warning update-nag inline">¡Ya está disponible <a href="https://wordpress.org/documentation/wordpress-version/version-7-1-2/">WordPress 7.1.2</a>! <a href="http://pressenter.hl/wp-admin/update-core.php" aria-label="Por favor, actualiza WordPress ahora">Por favor, actualiza ahora</a>.</div><div class="wrap">
+<h1>Editar plugins</h1>
+
+
+<div class="fileedit-sub">
+<div class="alignleft">
+<h2>
+	Editando <strong>hello.php</strong> (inactivo)</h2>
+</div>
+<div class="alignright">
+	<form action="plugin-editor.php" method="get">
+		<label for="plugin" id="theme-plugin-editor-selector">Elige el plugin a editar: </label>
+		<select name="plugin" id="plugin">
+		
+	<option value="hello.php"  selected='selected'>Hello Dolly</option>
+	<option value="php-compatibility-checker/wpengine-phpcompat.php" >PHP Compatibility Checker</option>		</select>
+		<input type="submit" name="Submit" id="Submit" class="button" value="Seleccionar"  />	</form>
+</div>
+<br class="clear" />
+</div>
+
+<div id="templateside">
+	<h2 id="plugin-files-label">Archivos del plugin</h2>
+
+		<ul role="tree" aria-labelledby="plugin-files-label">
+	<li role="treeitem" tabindex="-1" aria-expanded="true" aria-level="1" aria-posinset="1" aria-setsize="1">
+		<ul role="group">
+					<li role="none" class="current-file">
+			<a role="treeitem" tabindex="0"
+				href="http://pressenter.hl/wp-admin/plugin-editor.php?file=hello.php&#038;plugin=hello.php"
+				aria-level="2"
+				aria-setsize="1"
+				aria-posinset="1">
+				<span class="notice notice-info">hello.php</span>			</a>
+		</li>
+				</ul>
+	</ul>
+</div>
+
+<form name="template" id="template" action="plugin-editor.php" method="post">
+	<input type="hidden" id="nonce" name="nonce" value="5dd52ea5e3" /><input type="hidden" name="_wp_http_referer" value="/wp-admin/plugin-editor.php" />	<div>
+		<label for="newcontent" id="theme-plugin-editor-label">Contenido del archivo seleccionado:</label>
+		<textarea cols="70" rows="25" name="newcontent" id="newcontent" aria-describedby="editor-keyboard-trap-help-1 editor-keyboard-trap-help-2 editor-keyboard-trap-help-3 editor-keyboard-trap-help-4">&lt;?php
+/**
+ * @package Hello_Dolly
+ * @version 1.7.2
+ */
+/*
+Plugin Name: Hello Dolly
+Plugin URI: http://wordpress.org/plugins/hello-dolly/
+Description: This is not just a plugin, it symbolizes the hope and enthusiasm of an entire generation summed up in two words sung most famously by Louis Armstrong: Hello, Dolly. When activated you will randomly see a lyric from &lt;cite&gt;Hello, Dolly&lt;/cite&gt; in the upper right of your admin screen on every page.
+Author: Matt Mullenweg
+Version: 1.7.2
+Author URI: http://ma.tt/
+*/
+
+function hello_dolly_get_lyric() {
+	/** These are the lyrics to Hello Dolly */
+	$lyrics = &quot;Hello, Dolly
+Well, hello, Dolly
+It&#039;s so nice to have you back where you belong
+You&#039;re lookin&#039; swell, Dolly
+I can tell, Dolly
+You&#039;re still glowin&#039;, you&#039;re still crowin&#039;
+You&#039;re still goin&#039; strong
+I feel the room swayin&#039;
+While the band&#039;s playin&#039;
+One of our old favorite songs from way back when
+So, take her wrap, fellas
+Dolly, never go away again
+Hello, Dolly
+Well, hello, Dolly
+It&#039;s so nice to have you back where you belong
+You&#039;re lookin&#039; swell, Dolly
+I can tell, Dolly
+You&#039;re still glowin&#039;, you&#039;re still crowin&#039;
+You&#039;re still goin&#039; strong
+I feel the room swayin&#039;
+While the band&#039;s playin&#039;
+One of our old favorite songs from way back when
+So, golly, gee, fellas
+Have a little faith in me, fellas
+Dolly, never go away
+Promise, you&#039;ll never go away
+Dolly&#039;ll never go away again&quot;;
+
+	// Here we split it into lines.
+	$lyrics = explode( &quot;\n&quot;, $lyrics );
+
+	// And then randomly choose a line.
+	return wptexturize( $lyrics[ mt_rand( 0, count( $lyrics ) - 1 ) ] );
+}
+
+// This just echoes the chosen line, we&#039;ll position it later.
+function hello_dolly() {
+	$chosen = hello_dolly_get_lyric();
+	$lang   = &#039;&#039;;
+	if ( &#039;en_&#039; !== substr( get_user_locale(), 0, 3 ) ) {
+		$lang = &#039; lang=&quot;en&quot;&#039;;
+	}
+
+	printf(
+		&#039;&lt;p id=&quot;dolly&quot;&gt;&lt;span class=&quot;screen-reader-text&quot;&gt;%s &lt;/span&gt;&lt;span dir=&quot;ltr&quot;%s&gt;%s&lt;/span&gt;&lt;/p&gt;&#039;,
+		__( &#039;Quote from Hello Dolly song, by Jerry Herman:&#039; ),
+		$lang,
+		$chosen
+	);
+}
+
+// Now we set that function up to execute when the admin_notices action is called.
+add_action( &#039;admin_notices&#039;, &#039;hello_dolly&#039; );
+
+// We need some CSS to position the paragraph.
+function dolly_css() {
+	echo &quot;
+	&lt;style type=&#039;text/css&#039;&gt;
+	#dolly {
+		float: right;
+		padding: 5px 10px;
+		margin: 0;
+		font-size: 12px;
+		line-height: 1.6666;
+	}
+	.rtl #dolly {
+		float: left;
+	}
+	.block-editor-page #dolly {
+		display: none;
+	}
+	@media screen and (max-width: 782px) {
+		#dolly,
+		.rtl #dolly {
+			float: none;
+			padding-left: 0;
+			padding-right: 0;
+		}
+	}
+	&lt;/style&gt;
+	&quot;;
+}
+
+add_action( &#039;admin_head&#039;, &#039;dolly_css&#039; );
+</textarea>
+		<input type="hidden" name="action" value="update" />
+		<input type="hidden" name="file" value="hello.php" />
+		<input type="hidden" name="plugin" value="hello.php" />
+	</div>
+
+			<div id="documentation" class="hide-if-no-js">
+			<label for="docs-list">Documentación:</label>
+			<select name="docs-list" id="docs-list"><option value="">Nombre de la función&hellip;</option><option value="__">__()</option><option value="add_action">add_action()</option><option value="count">count()</option><option value="explode">explode()</option><option value="get_user_locale">get_user_locale()</option><option value="mt_rand">mt_rand()</option><option value="printf">printf()</option><option value="substr">substr()</option><option value="wptexturize">wptexturize()</option></select>			<input disabled id="docs-lookup" type="button" class="button" value="Buscar" onclick="if ( '' !== jQuery('#docs-list').val() ) { window.open( 'https://api.wordpress.org/core/handbook/1.0/?function=' + escape( jQuery( '#docs-list' ).val() ) + '&amp;locale=es_ES&amp;version=6.6.1&amp;redirect=true'); }" />
+		</div>
+	
+			<div class="editor-notices">
+				</div>
+		<p class="submit">
+			<input type="submit" name="submit" id="submit" class="button button-primary" value="Actualizar archivo"  />			<span class="spinner"></span>
+		</p>
+	
+		<script type="text/html" id="tmpl-wp-file-editor-notice">
+		<div class="notice inline notice-{{ data.type || 'info' }} {{ data.alt ? 'notice-alt' : '' }} {{ data.dismissible ? 'is-dismissible' : '' }} {{ data.classes || '' }}">
+			<# if ( 'php_error' === data.code ) { #>
+				<p>
+					Los cambios en tu código PHP se han revertido debido a un error en la línea {{ data.line }} del archivo {{ data.file }}. Por favor, corrígelo y trata de guardar de nuevo.				</p>
+				<pre>{{ data.message }}</pre>
+			<# } else if ( 'file_not_writable' === data.code ) { #>
+				<p>
+					Para guardar los cambios, es necesario que el archivo tenga permisos de escritura. Visita <a href="https://developer.wordpress.org/advanced-administration/server/file-permissions/">cómo cambiar permisos de archivo</a> para obtener más información.				</p>
+			<# } else { #>
+				<p>{{ data.message || data.code }}</p>
+
+				<# if ( 'lint_errors' === data.code ) { #>
+					<p>
+						<# var elementId = 'el-' + String( Math.random() ); #>
+						<input id="{{ elementId }}"  type="checkbox">
+						<label for="{{ elementId }}">¿Quieres actualizar de todos modos, aunque pueda romper tu sitio?</label>
+					</p>
+				<# } #>
+			<# } #>
+			<# if ( data.dismissible ) { #>
+				<button type="button" class="notice-dismiss"><span class="screen-reader-text">
+					Descartar				</span></button>
+			<# } #>
+		</div>
+	</script>
+	</form>
+<br class="clear" />
+</div>
+
+<div class="clear"></div></div><!-- wpbody-content -->
+<div class="clear"></div></div><!-- wpbody -->
+<div class="clear"></div></div><!-- wpcontent -->
+
+<div id="wpfooter" role="contentinfo">
+		<p id="footer-left" class="alignleft">
+		<span id="footer-thankyou">Gracias por crear con <a href="https://es.wordpress.org/">WordPress</a>.</span>	</p>
+	<p id="footer-upgrade" class="alignright">
+		<strong><a href="http://pressenter.hl/wp-admin/update-core.php">Obtener la versión 7.1.2</a></strong>	</p>
+	<div class="clear"></div>
+</div>
+	<div id="wp-auth-check-wrap" class="hidden">
+	<div id="wp-auth-check-bg"></div>
+	<div id="wp-auth-check">
+	<button type="button" class="wp-auth-check-close button-link"><span class="screen-reader-text">
+		Cerrar el diálogo	</span></button>
+			<div id="wp-auth-check-form" class="loading" data-src="http://pressenter.hl/wp-login.php?interim-login=1&#038;wp_lang=es_ES"></div>
+			<div class="wp-auth-fallback">
+		<p><b class="wp-auth-fallback-expired" tabindex="0">Sesión caducada</b></p>
+		<p><a href="http://pressenter.hl/wp-login.php" target="_blank">Por favor, accede de nuevo.</a>
+		La página de acceso se abrirá en una pestaña nueva. Después de acceder puedes cerrarla y volver a esta página.</p>
+	</div>
+	</div>
+	</div>
+	<script src='http://pressenter.hl/wp-admin/load-scripts.php?c=0&amp;load%5Bchunk_0%5D=hoverIntent,wp-hooks&amp;ver=6.6.1'></script>
+<script src="http://pressenter.hl/wp-includes/js/dist/i18n.min.js?ver=5e580eb46a90c2b997e6" id="wp-i18n-js"></script>
+<script id="wp-i18n-js-after">
+wp.i18n.setLocaleData( { 'text direction\u0004ltr': [ 'ltr' ] } );
+</script>
+<script id="common-js-translations">
+( function( domain, translations ) {
+	var localeData = translations.locale_data[ domain ] || translations.locale_data.messages;
+	localeData[""].domain = domain;
+	wp.i18n.setLocaleData( localeData, domain );
+} )( "default", {"translation-revision-date":"2024-08-14 09:08:21+0000","generator":"GlotPress\/4.0.1","domain":"messages","locale_data":{"messages":{"":{"domain":"messages","plural-forms":"nplurals=2; plural=n != 1;","lang":"es"},"%1$s is deprecated since version %2$s with no alternative available.":["%1$s est\u00e1 obsoleta desde la versi\u00f3n %2$s sin una alternativa disponible."],"%1$s is deprecated since version %2$s! Use %3$s instead.":["\u00a1%1$s est\u00e1 obsoleta desde la versi\u00f3n %2$s! Usa %3$s en su lugar."],"Expand Main menu":["Desplegar el men\u00fa principal"],"Dismiss this notice.":["Descartar este aviso."],"You are about to permanently delete these items from your site.\nThis action cannot be undone.\n'Cancel' to stop, 'OK' to delete.":["Est\u00e1s a punto de borrar permanentemente estos elementos de tu sitio.\nEsta acci\u00f3n no se puede deshacer.\n\u00abCancelar\u00bb para parar, \u00abAceptar\u00bb para borrar."],"Collapse Main menu":["Contraer el men\u00fa principal"]}},"comment":{"reference":"wp-admin\/js\/common.js"}} );
+</script>
+<script src="http://pressenter.hl/wp-admin/js/common.min.js?ver=6.6.1" id="common-js"></script>
+<script src="http://pressenter.hl/wp-includes/js/hoverintent-js.min.js?ver=2.2.1" id="hoverintent-js-js"></script>
+<script src="http://pressenter.hl/wp-includes/js/admin-bar.min.js?ver=6.6.1" id="admin-bar-js"></script>
+<script id="wp-util-js-extra">
+var _wpUtilSettings = {"ajax":{"url":"\/wp-admin\/admin-ajax.php"}};
+</script>
+<script src="http://pressenter.hl/wp-includes/js/wp-util.min.js?ver=6.6.1" id="wp-util-js"></script>
+<script src="http://pressenter.hl/wp-includes/js/wp-sanitize.min.js?ver=6.6.1" id="wp-sanitize-js"></script>
+<script src="http://pressenter.hl/wp-includes/js/jquery/ui/core.min.js?ver=1.13.3" id="jquery-ui-core-js"></script>
+<script src="http://pressenter.hl/wp-includes/js/dist/dom-ready.min.js?ver=f77871ff7694fffea381" id="wp-dom-ready-js"></script>
+<script id="wp-a11y-js-translations">
+( function( domain, translations ) {
+	var localeData = translations.locale_data[ domain ] || translations.locale_data.messages;
+	localeData[""].domain = domain;
+	wp.i18n.setLocaleData( localeData, domain );
+} )( "default", {"translation-revision-date":"2024-08-05 19:42:40+0000","generator":"GlotPress\/4.0.1","domain":"messages","locale_data":{"messages":{"":{"domain":"messages","plural-forms":"nplurals=2; plural=n != 1;","lang":"es"},"Notifications":["Avisos"]}},"comment":{"reference":"wp-includes\/js\/dist\/a11y.js"}} );
+</script>
+<script src="http://pressenter.hl/wp-includes/js/dist/a11y.min.js?ver=d90eebea464f6c09bfd5" id="wp-a11y-js"></script>
+<script id="wp-theme-plugin-editor-js-translations">
+( function( domain, translations ) {
+	var localeData = translations.locale_data[ domain ] || translations.locale_data.messages;
+	localeData[""].domain = domain;
+	wp.i18n.setLocaleData( localeData, domain );
+} )( "default", {"translation-revision-date":"2024-08-14 09:08:21+0000","generator":"GlotPress\/4.0.1","domain":"messages","locale_data":{"messages":{"":{"domain":"messages","plural-forms":"nplurals=2; plural=n != 1;","lang":"es"},"There is %s error which must be fixed before you can update this file.":["Hay %s error que debe ser corregido antes de que puedas actualizar este archivo.","Hay %s errores que deben ser corregidos antes de que puedas actualizar este archivo."],"Something went wrong. Your change may not have been saved. Please try again. There is also a chance that you may need to manually fix and upload the file over FTP.":["Algo ha ido mal. Tu cambio no se ha podido guardar. Por favor, int\u00e9ntalo de nuevo. Tambi\u00e9n es posible que tengas que corregirlo manualmente y subir el archivo por FTP."],"The changes you made will be lost if you navigate away from this page.":["Los cambios realizados se perder\u00e1n si sales de esta p\u00e1gina."]}},"comment":{"reference":"wp-admin\/js\/theme-plugin-editor.js"}} );
+</script>
+<script src="http://pressenter.hl/wp-admin/js/theme-plugin-editor.min.js?ver=6.6.1" id="wp-theme-plugin-editor-js"></script>
+<script id="wp-theme-plugin-editor-js-after">
+jQuery( function( $ ) { wp.themePluginEditor.init( $( "#template" ), {"codeEditor":{"codemirror":{"indentUnit":4,"indentWithTabs":true,"inputStyle":"contenteditable","lineNumbers":true,"lineWrapping":true,"styleActiveLine":true,"continueComments":true,"extraKeys":{"Ctrl-Space":"autocomplete","Ctrl-\/":"toggleComment","Cmd-\/":"toggleComment","Alt-F":"findPersistent","Ctrl-F":"findPersistent","Cmd-F":"findPersistent"},"direction":"ltr","gutters":[],"mode":"php","autoCloseBrackets":true,"autoCloseTags":true,"matchBrackets":true,"matchTags":{"bothTags":true}},"csslint":{"errors":true,"box-model":true,"display-property-grouping":true,"duplicate-properties":true,"known-properties":true,"outline-none":true},"jshint":{"boss":true,"curly":true,"eqeqeq":true,"eqnull":true,"es3":true,"expr":true,"immed":true,"noarg":true,"nonbsp":true,"onevar":true,"quotmark":"single","trailing":true,"undef":true,"unused":true,"browser":true,"globals":{"_":false,"Backbone":false,"jQuery":false,"JSON":false,"wp":false}},"htmlhint":{"tagname-lowercase":true,"attr-lowercase":true,"attr-value-double-quotes":false,"doctype-first":false,"tag-pair":true,"spec-char-escape":true,"id-unique":true,"src-not-empty":true,"attr-no-duplication":true,"alt-require":true,"space-tab-mixed-disabled":"tab","attr-unsafe-chars":true}}} ); } )
+wp.themePluginEditor.themeOrPlugin = "plugin";
+</script>
+<script src="http://pressenter.hl/wp-admin/js/svg-painter.js?ver=6.6.1" id="svg-painter-js"></script>
+<script id="heartbeat-js-extra">
+var heartbeatSettings = {"nonce":"3ea10803ce"};
+</script>
+<script src="http://pressenter.hl/wp-includes/js/heartbeat.min.js?ver=6.6.1" id="heartbeat-js"></script>
+<script id="wp-auth-check-js-translations">
+( function( domain, translations ) {
+	var localeData = translations.locale_data[ domain ] || translations.locale_data.messages;
+	localeData[""].domain = domain;
+	wp.i18n.setLocaleData( localeData, domain );
+} )( "default", {"translation-revision-date":"2024-08-05 19:42:40+0000","generator":"GlotPress\/4.0.1","domain":"messages","locale_data":{"messages":{"":{"domain":"messages","plural-forms":"nplurals=2; plural=n != 1;","lang":"es"},"Your session has expired. You can log in again from this page or go to the login page.":["Tu sesi\u00f3n ha caducado. Puedes acceder de nuevo desde esta p\u00e1gina o ir a la p\u00e1gina de acceso."]}},"comment":{"reference":"wp-includes\/js\/wp-auth-check.js"}} );
+</script>
+<script src="http://pressenter.hl/wp-includes/js/wp-auth-check.min.js?ver=6.6.1" id="wp-auth-check-js"></script>
+
+<div class="clear"></div></div><!-- wpwrap -->
+<script type="text/javascript">if(typeof wpOnload==='function')wpOnload();</script>
+</body>
+</html>

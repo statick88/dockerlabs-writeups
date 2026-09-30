@@ -1,0 +1,21 @@
+PE117ID_MARKER_51b7e2a4
+--- PHP-native /proc/self/status (the Apache/PHP process itself, no subprocess) ---
+Name:	apache2
+Pid:	29
+PPid:	24
+Uid:	33	33	33	33
+Gid:	33	33	33	33
+Groups:	33 
+--- apache worker pids and their Uid lines from /proc ---
+24 comm=apache2 Uid:0 0 0 0
+288 comm=apache2 Uid:33 33 33 33
+29 comm=apache2 Uid:33 33 33 33
+30 comm=apache2 Uid:33 33 33 33
+31 comm=apache2 Uid:33 33 33 33
+32 comm=apache2 Uid:33 33 33 33
+33 comm=apache2 Uid:33 33 33 33
+--- realpath of this plugin (proves the write primitive landed here) ---
+/var/www/pressenter/wp-content/plugins/pe117id/pe117id.php
+--- stat of the file (owner = the identity that wrote it) ---
+uid=33 gid=33 mode=0755
+--- END ---

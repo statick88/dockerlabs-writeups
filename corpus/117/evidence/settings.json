@@ -1,0 +1,16 @@
+{
+"option_page": "general",
+"action": "update",
+"_wpnonce": "284cf2fda8",
+"_wp_http_referer": "/wp-admin/options-general.php",
+"blogname": "PressEnter",
+"blogdescription": "",
+"site_icon": "0",
+"siteurl": "http://127.0.0.1",
+"home": "http://127.0.0.1",
+"new_admin_email": "pressenter@gmail.com",
+"date_format": "j \\d\\e F \\d\\e Y",
+"date_format_custom": "j \\d\\e F \\d\\e Y",
+"time_format": "H:i",
+"time_format_custom": "H:i"
+}

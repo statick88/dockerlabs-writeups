@@ -1,0 +1,1247 @@
+<!DOCTYPE html>
+<html class="wp-toolbar"
+	lang="es">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+	<title>Ajustes &lt; PressEnter — WordPress</title>
+<script type="text/javascript">
+addLoadEvent = function(func){if(typeof jQuery!=='undefined')jQuery(function(){func();});else if(typeof wpOnload!=='function'){wpOnload=func;}else{var oldonload=wpOnload;wpOnload=function(){oldonload();func();}}};
+var ajaxurl = '/wp-admin/admin-ajax.php',
+	pagenow = 'options',
+	typenow = '',
+	adminpage = 'options-php',
+	thousandsSeparator = '.',
+	decimalPoint = ',',
+	isRtl = 0;
+</script>
+<link rel='stylesheet' href='http://pressenter.hl/wp-admin/load-styles.php?c=0&amp;dir=ltr&amp;load%5Bchunk_0%5D=dashicons,admin-bar,common,forms,admin-menu,dashboard,list-tables,edit,revisions,media,themes,about,nav-menus,wp-pointer,widgets&amp;load%5Bchunk_1%5D=,site-icon,l10n,buttons,wp-auth-check&amp;ver=6.6.1' media='all' />
+<style>
+@media print { #wpadminbar { display:none; } }
+</style>
+<style id='wp-emoji-styles-inline-css'>
+
+	img.wp-smiley, img.emoji {
+		display: inline !important;
+		border: none !important;
+		box-shadow: none !important;
+		height: 1em !important;
+		width: 1em !important;
+		margin: 0 0.07em !important;
+		vertical-align: -0.1em !important;
+		background: none !important;
+		padding: 0 !important;
+	}
+</style>
+<style id='wp-fonts-local'>
+@font-face{font-family:Inter;font-style:normal;font-weight:300 900;font-display:fallback;src:url('http://pressenter.hl/wp-content/themes/twentytwentyfour/assets/fonts/inter/Inter-VariableFont_slnt,wght.woff2') format('woff2');font-stretch:normal;}
+@font-face{font-family:Cardo;font-style:normal;font-weight:400;font-display:fallback;src:url('http://pressenter.hl/wp-content/themes/twentytwentyfour/assets/fonts/cardo/cardo_normal_400.woff2') format('woff2');}
+@font-face{font-family:Cardo;font-style:italic;font-weight:400;font-display:fallback;src:url('http://pressenter.hl/wp-content/themes/twentytwentyfour/assets/fonts/cardo/cardo_italic_400.woff2') format('woff2');}
+@font-face{font-family:Cardo;font-style:normal;font-weight:700;font-display:fallback;src:url('http://pressenter.hl/wp-content/themes/twentytwentyfour/assets/fonts/cardo/cardo_normal_700.woff2') format('woff2');}
+</style>
+<script>
+window._wpemojiSettings = {"baseUrl":"https:\/\/s.w.org\/images\/core\/emoji\/15.0.3\/72x72\/","ext":".png","svgUrl":"https:\/\/s.w.org\/images\/core\/emoji\/15.0.3\/svg\/","svgExt":".svg","source":{"concatemoji":"http:\/\/pressenter.hl\/wp-includes\/js\/wp-emoji-release.min.js?ver=6.6.1"}};
+/*! This file is auto-generated */
+!function(i,n){var o,s,e;function c(e){try{var t={supportTests:e,timestamp:(new Date).valueOf()};sessionStorage.setItem(o,JSON.stringify(t))}catch(e){}}function p(e,t,n){e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(t,0,0);var t=new Uint32Array(e.getImageData(0,0,e.canvas.width,e.canvas.height).data),r=(e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(n,0,0),new Uint32Array(e.getImageData(0,0,e.canvas.width,e.canvas.height).data));return t.every(function(e,t){return e===r[t]})}function u(e,t,n){switch(t){case"flag":return n(e,"\ud83c\udff3\ufe0f\u200d\u26a7\ufe0f","\ud83c\udff3\ufe0f\u200b\u26a7\ufe0f")?!1:!n(e,"\ud83c\uddfa\ud83c\uddf3","\ud83c\uddfa\u200b\ud83c\uddf3")&&!n(e,"\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f","\ud83c\udff4\u200b\udb40\udc67\u200b\udb40\udc62\u200b\udb40\udc65\u200b\udb40\udc6e\u200b\udb40\udc67\u200b\udb40\udc7f");case"emoji":return!n(e,"\ud83d\udc26\u200d\u2b1b","\ud83d\udc26\u200b\u2b1b")}return!1}function f(e,t,n){var r="undefined"!=typeof WorkerGlobalScope&&self instanceof WorkerGlobalScope?new OffscreenCanvas(300,150):i.createElement("canvas"),a=r.getContext("2d",{willReadFrequently:!0}),o=(a.textBaseline="top",a.font="600 32px Arial",{});return e.forEach(function(e){o[e]=t(a,e,n)}),o}function t(e){var t=i.createElement("script");t.src=e,t.defer=!0,i.head.appendChild(t)}"undefined"!=typeof Promise&&(o="wpEmojiSettingsSupports",s=["flag","emoji"],n.supports={everything:!0,everythingExceptFlag:!0},e=new Promise(function(e){i.addEventListener("DOMContentLoaded",e,{once:!0})}),new Promise(function(t){var n=function(){try{var e=JSON.parse(sessionStorage.getItem(o));if("object"==typeof e&&"number"==typeof e.timestamp&&(new Date).valueOf()<e.timestamp+604800&&"object"==typeof e.supportTests)return e.supportTests}catch(e){}return null}();if(!n){if("undefined"!=typeof Worker&&"undefined"!=typeof OffscreenCanvas&&"undefined"!=typeof URL&&URL.createObjectURL&&"undefined"!=typeof Blob)try{var e="postMessage("+f.toString()+"("+[JSON.stringify(s),u.toString(),p.toString()].join(",")+"));",r=new Blob([e],{type:"text/javascript"}),a=new Worker(URL.createObjectURL(r),{name:"wpTestEmojiSupports"});return void(a.onmessage=function(e){c(n=e.data),a.terminate(),t(n)})}catch(e){}c(n=f(s,u,p))}t(n)}).then(function(e){for(var t in e)n.supports[t]=e[t],n.supports.everything=n.supports.everything&&n.supports[t],"flag"!==t&&(n.supports.everythingExceptFlag=n.supports.everythingExceptFlag&&n.supports[t]);n.supports.everythingExceptFlag=n.supports.everythingExceptFlag&&!n.supports.flag,n.DOMReady=!1,n.readyCallback=function(){n.DOMReady=!0}}).then(function(){return e}).then(function(){var e;n.supports.everything||(n.readyCallback(),(e=n.source||{}).concatemoji?t(e.concatemoji):e.wpemoji&&e.twemoji&&(t(e.twemoji),t(e.wpemoji)))}))}((window,document),window._wpemojiSettings);
+</script>
+
+<script>
+/* <![CDATA[ */
+var userSettings = {"url":"\/","uid":"1","time":"1790757039","secure":""};/* ]]> */
+</script>
+<script src='http://pressenter.hl/wp-admin/load-scripts.php?c=0&amp;load%5Bchunk_0%5D=jquery-core,jquery-migrate,utils&amp;ver=6.6.1'></script>
+<script type="text/javascript">var _wpColorScheme = {"icons":{"base":"#a7aaad","focus":"#72aee6","current":"#fff"}};</script>
+	<link id="wp-admin-canonical" rel="canonical" href="http://pressenter.hl/wp-admin/options.php" />
+	<script>
+		if ( window.history.replaceState ) {
+			window.history.replaceState( null, null, document.getElementById( 'wp-admin-canonical' ).href + window.location.hash );
+		}
+	</script>
+	<meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body class="wp-admin wp-core-ui no-js options-php auto-fold admin-bar branch-6-6 version-6-6-1 admin-color-fresh locale-es-es no-customize-support no-svg">
+<script type="text/javascript">
+	document.body.className = document.body.className.replace('no-js','js');
+</script>
+
+<script>
+		(function() {
+			var request, b = document.body, c = 'className', cs = 'customize-support', rcs = new RegExp('(^|\\s+)(no-)?'+cs+'(\\s+|$)');
+
+				request = true;
+	
+			b[c] = b[c].replace( rcs, ' ' );
+			// The customizer requires postMessage and CORS (if the site is cross domain).
+			b[c] += ( window.postMessage && request ? ' ' : ' no-' ) + cs;
+		}());
+	
+</script>
+
+<div id="wpwrap">
+
+<div id="adminmenumain" role="navigation" aria-label="Menú principal">
+<a href="#wpbody-content" class="screen-reader-shortcut">Saltar al contenido principal</a>
+<a href="#wp-toolbar" class="screen-reader-shortcut">Ir a la barra de herramientas</a>
+<div id="adminmenuback"></div>
+<div id="adminmenuwrap">
+<ul id="adminmenu">
+
+
+	<li class="wp-first-item wp-has-submenu wp-not-current-submenu menu-top menu-top-first menu-icon-dashboard menu-top-last" id="menu-dashboard">
+	<a href='index.php' class="wp-first-item wp-has-submenu wp-not-current-submenu menu-top menu-top-first menu-icon-dashboard menu-top-last" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-dashboard' aria-hidden='true'><br /></div><div class='wp-menu-name'>Escritorio</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Escritorio</li><li class="wp-first-item"><a href='index.php' class="wp-first-item">Inicio</a></li><li><a href='update-core.php'>Actualizaciones <span class="update-plugins count-5"><span class="update-count">5</span></span></a></li></ul></li>
+	<li class="wp-not-current-submenu wp-menu-separator" aria-hidden="true"><div class="separator"></div></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-post open-if-no-js menu-top-first" id="menu-posts">
+	<a href='edit.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-post open-if-no-js menu-top-first" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-post' aria-hidden='true'><br /></div><div class='wp-menu-name'>Entradas</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Entradas</li><li class="wp-first-item"><a href='edit.php' class="wp-first-item">Todas las entradas</a></li><li><a href='post-new.php'>Añadir una nueva entrada</a></li><li><a href='edit-tags.php?taxonomy=category'>Categorías</a></li><li><a href='edit-tags.php?taxonomy=post_tag'>Etiquetas</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-media" id="menu-media">
+	<a href='upload.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-media" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-media' aria-hidden='true'><br /></div><div class='wp-menu-name'>Medios</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Medios</li><li class="wp-first-item"><a href='upload.php' class="wp-first-item">Biblioteca</a></li><li><a href='media-new.php'>Añadir nuevo archivo de medios</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-page" id="menu-pages">
+	<a href='edit.php?post_type=page' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-page" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-page' aria-hidden='true'><br /></div><div class='wp-menu-name'>Páginas</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Páginas</li><li class="wp-first-item"><a href='edit.php?post_type=page' class="wp-first-item">Todas las páginas</a></li><li><a href='post-new.php?post_type=page'>Añadir una nueva página</a></li></ul></li>
+	<li class="wp-not-current-submenu menu-top menu-icon-comments menu-top-last" id="menu-comments">
+	<a href='edit-comments.php' class="wp-not-current-submenu menu-top menu-icon-comments menu-top-last" ><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-comments' aria-hidden='true'><br /></div><div class='wp-menu-name'>Comentarios <span class="awaiting-mod count-0"><span class="pending-count" aria-hidden="true">0</span><span class="comments-in-moderation-text screen-reader-text">0 comentarios en moderación</span></span></div></a></li>
+	<li class="wp-not-current-submenu wp-menu-separator" aria-hidden="true"><div class="separator"></div></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-appearance menu-top-first" id="menu-appearance">
+	<a href='themes.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-appearance menu-top-first" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-appearance' aria-hidden='true'><br /></div><div class='wp-menu-name'>Apariencia</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Apariencia</li><li class="wp-first-item"><a href='themes.php' class="wp-first-item">Temas <span class="update-plugins count-3"><span class="theme-count">3</span></span></a></li><li><a href='site-editor.php'>Editor</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-plugins" id="menu-plugins">
+	<a href='plugins.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-plugins" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-plugins' aria-hidden='true'><br /></div><div class='wp-menu-name'>Plugins <span class="update-plugins count-0"><span class="plugin-count">0</span></span></div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Plugins <span class="update-plugins count-0"><span class="plugin-count">0</span></span></li><li class="wp-first-item"><a href='plugins.php' class="wp-first-item">Plugins instalados</a></li><li><a href='plugin-install.php'>Añadir nuevo plugin</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-users" id="menu-users">
+	<a href='users.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-users" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-users' aria-hidden='true'><br /></div><div class='wp-menu-name'>Usuarios</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Usuarios</li><li class="wp-first-item"><a href='users.php' class="wp-first-item">Todos los usuarios</a></li><li><a href='user-new.php'>Añadir nuevo usuario</a></li><li><a href='profile.php'>Perfil</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-tools" id="menu-tools">
+	<a href='tools.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-tools" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-tools' aria-hidden='true'><br /></div><div class='wp-menu-name'>Herramientas</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Herramientas</li><li class="wp-first-item"><a href='tools.php' class="wp-first-item">Herramientas disponibles</a></li><li><a href='import.php'>Importar</a></li><li><a href='export.php'>Exportar</a></li><li><a href='site-health.php'>Salud del sitio <span class="menu-counter site-health-counter count-0"><span class="count">0</span></span></a></li><li><a href='export-personal-data.php'>Exportar los datos personales</a></li><li><a href='erase-personal-data.php'>Borrar los datos personales</a></li><li><a href='tools.php?page=wpe-php-compat'>PHP Compatibility</a></li><li><a href='theme-editor.php'>Editor de archivos de temas</a></li><li><a href='plugin-editor.php'>Editor de archivos de plugins</a></li></ul></li>
+	<li class="wp-has-submenu wp-has-current-submenu wp-menu-open menu-top menu-icon-settings menu-top-last" id="menu-settings">
+	<a href='options-general.php' class="wp-has-submenu wp-has-current-submenu wp-menu-open menu-top menu-icon-settings menu-top-last" ><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-settings' aria-hidden='true'><br /></div><div class='wp-menu-name'>Ajustes</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Ajustes</li><li class="wp-first-item"><a href='options-general.php' class="wp-first-item">Generales</a></li><li><a href='options-writing.php'>Escritura</a></li><li><a href='options-reading.php'>Lectura</a></li><li><a href='options-discussion.php'>Comentarios</a></li><li><a href='options-media.php'>Medios</a></li><li><a href='options-permalink.php'>Enlaces permanentes</a></li><li><a href='options-privacy.php'>Privacidad</a></li></ul></li><li id="collapse-menu" class="hide-if-no-js"><button type="button" id="collapse-button" aria-label="Contraer el menú principal" aria-expanded="true"><span class="collapse-button-icon" aria-hidden="true"></span><span class="collapse-button-label">Cerrar menú</span></button></li></ul>
+</div>
+</div>
+<div id="wpcontent">
+
+		<div id="wpadminbar" class="nojq nojs">
+						<div class="quicklinks" id="wp-toolbar" role="navigation" aria-label="Barra de herramientas">
+				<ul role='menu' id='wp-admin-bar-root-default' class="ab-top-menu"><li role='group' id='wp-admin-bar-menu-toggle'><a class='ab-item' role="menuitem" href='#'><span class="ab-icon" aria-hidden="true"></span><span class="screen-reader-text">Menú</span></a></li><li role='group' id='wp-admin-bar-wp-logo' class="menupop"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://pressenter.hl/wp-admin/about.php'><span class="ab-icon" aria-hidden="true"></span><span class="screen-reader-text">Acerca de WordPress</span></a><div class="ab-sub-wrapper"><ul role='menu' aria-label='Acerca de WordPress' id='wp-admin-bar-wp-logo-default' class="ab-submenu"><li role='group' id='wp-admin-bar-about'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/about.php'>Acerca de WordPress</a></li><li role='group' id='wp-admin-bar-contribute'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/contribute.php'>Únete</a></li></ul><ul role='menu' aria-label='Acerca de WordPress' id='wp-admin-bar-wp-logo-external' class="ab-sub-secondary ab-submenu"><li role='group' id='wp-admin-bar-wporg'><a class='ab-item' role="menuitem" href='https://es.wordpress.org/'>WordPress.org</a></li><li role='group' id='wp-admin-bar-documentation'><a class='ab-item' role="menuitem" href='https://wordpress.org/documentation/'>Documentación</a></li><li role='group' id='wp-admin-bar-learn'><a class='ab-item' role="menuitem" href='https://learn.wordpress.org/'>Aprende WordPress</a></li><li role='group' id='wp-admin-bar-support-forums'><a class='ab-item' role="menuitem" href='https://es.wordpress.org/support/'>Soporte</a></li><li role='group' id='wp-admin-bar-feedback'><a class='ab-item' role="menuitem" href='https://es.wordpress.org/support/forum/comunidad/peticiones-y-feedback/'>Sugerencias</a></li></ul></div></li><li role='group' id='wp-admin-bar-site-name' class="menupop"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://pressenter.hl/'>PressEnter</a><div class="ab-sub-wrapper"><ul role='menu' aria-label='PressEnter' id='wp-admin-bar-site-name-default' class="ab-submenu"><li role='group' id='wp-admin-bar-view-site'><a class='ab-item' role="menuitem" href='http://pressenter.hl/'>Visitar el sitio</a></li></ul></div></li><li role='group' id='wp-admin-bar-updates'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/update-core.php'><span class="ab-icon" aria-hidden="true"></span><span class="ab-label" aria-hidden="true">5</span><span class="screen-reader-text updates-available-text">5 actualizaciones disponibles</span></a></li><li role='group' id='wp-admin-bar-comments'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/edit-comments.php'><span class="ab-icon" aria-hidden="true"></span><span class="ab-label awaiting-mod pending-count count-0" aria-hidden="true">0</span><span class="screen-reader-text comments-in-moderation-text">0 comentarios en moderación</span></a></li><li role='group' id='wp-admin-bar-new-content' class="menupop"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://pressenter.hl/wp-admin/post-new.php'><span class="ab-icon" aria-hidden="true"></span><span class="ab-label">Añadir</span></a><div class="ab-sub-wrapper"><ul role='menu' aria-label='Añadir' id='wp-admin-bar-new-content-default' class="ab-submenu"><li role='group' id='wp-admin-bar-new-post'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/post-new.php'>Entrada</a></li><li role='group' id='wp-admin-bar-new-media'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/media-new.php'>Medio</a></li><li role='group' id='wp-admin-bar-new-page'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/post-new.php?post_type=page'>Página</a></li><li role='group' id='wp-admin-bar-new-user'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/user-new.php'>Usuario</a></li></ul></div></li></ul><ul role='menu' id='wp-admin-bar-top-secondary' class="ab-top-secondary ab-top-menu"><li role='group' id='wp-admin-bar-my-account' class="menupop with-avatar"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://pressenter.hl/wp-admin/profile.php'>Hola, <span class="display-name">pressi</span><img alt='' src='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=26&#038;d=mm&#038;r=g' srcset='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=52&#038;d=mm&#038;r=g 2x' class='avatar avatar-26 photo' height='26' width='26' loading='lazy' decoding='async'/></a><div class="ab-sub-wrapper"><ul role='menu' aria-label='Hola, pressi' id='wp-admin-bar-user-actions' class="ab-submenu"><li role='group' id='wp-admin-bar-user-info'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-admin/profile.php'><img alt='' src='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=64&#038;d=mm&#038;r=g' srcset='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=128&#038;d=mm&#038;r=g 2x' class='avatar avatar-64 photo' height='64' width='64' loading='lazy' decoding='async'/><span class='display-name'>pressi</span><span class='display-name edit-profile'>Editar perfil</span></a></li><li role='group' id='wp-admin-bar-logout'><a class='ab-item' role="menuitem" href='http://pressenter.hl/wp-login.php?action=logout&#038;_wpnonce=2b95c4f94f'>Salir</a></li></ul></div></li></ul>			</div>
+		</div>
+
+		
+<div id="wpbody" role="main">
+
+<div id="wpbody-content">
+		<div id="screen-meta" class="metabox-prefs">
+
+			<div id="contextual-help-wrap" class="hidden no-sidebar" tabindex="-1" aria-label="Pestaña de ayuda contextual">
+				<div id="contextual-help-back"></div>
+				<div id="contextual-help-columns">
+					<div class="contextual-help-tabs">
+						<ul>
+												</ul>
+					</div>
+
+					
+					<div class="contextual-help-tabs-wrap">
+											</div>
+				</div>
+			</div>
+				</div>
+		<div class="notice notice-warning update-nag inline">¡Ya está disponible <a href="https://wordpress.org/documentation/wordpress-version/version-7-1-2/">WordPress 7.1.2</a>! <a href="http://pressenter.hl/wp-admin/update-core.php" aria-label="Por favor, actualiza WordPress ahora">Por favor, actualiza ahora</a>.</div>
+<div class="wrap">
+	<h1>Todos los ajustes</h1>
+
+	<div class="notice notice-warning"><p><strong>Aviso:</strong> Esta página te permite acceder directamente a los ajustes de tu sitio. Aquí puedes romper cosas. ¡Por favor, sé precavido!</p></div>	<form name="form" action="options.php" method="post" id="all-options">
+		<input type="hidden" id="_wpnonce" name="_wpnonce" value="c7e26354c3" /><input type="hidden" name="_wp_http_referer" value="/wp-admin/options.php" />		<input type="hidden" name="action" value="update" />
+		<input type="hidden" name="option_page" value="options" />
+		<table class="form-table" role="presentation">
+<tr>
+	<th scope="row"><label for="_site_transient_available_translations">_site_transient_available_translations</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_available_translations" id="_site_transient_available_translations" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_browser_8b22db8230f1be67c8822620b4285bb1">_site_transient_browser_8b22db8230f1be67c8822620b4285bb1</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_browser_8b22db8230f1be67c8822620b4285bb1" id="_site_transient_browser_8b22db8230f1be67c8822620b4285bb1" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_community-events-e2f2ed925cc0dc7eddd67ec58c0404fa">_site_transient_community-events-e2f2ed925cc0dc7eddd67ec58c0404fa</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_community-events-e2f2ed925cc0dc7eddd67ec58c0404fa" id="_site_transient_community-events-e2f2ed925cc0dc7eddd67ec58c0404fa" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_php_check_76d2cd2a5eb29facccd351abf19ed9c8">_site_transient_php_check_76d2cd2a5eb29facccd351abf19ed9c8</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_php_check_76d2cd2a5eb29facccd351abf19ed9c8" id="_site_transient_php_check_76d2cd2a5eb29facccd351abf19ed9c8" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_poptags_40cd750bba9870f18aada2478b24840a">_site_transient_poptags_40cd750bba9870f18aada2478b24840a</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_poptags_40cd750bba9870f18aada2478b24840a" id="_site_transient_poptags_40cd750bba9870f18aada2478b24840a" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_popular_importers_f78aa61a2738054f10b656e09c2252fc">_site_transient_popular_importers_f78aa61a2738054f10b656e09c2252fc</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_popular_importers_f78aa61a2738054f10b656e09c2252fc" id="_site_transient_popular_importers_f78aa61a2738054f10b656e09c2252fc" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_theme_roots">_site_transient_theme_roots</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_theme_roots" id="_site_transient_theme_roots" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_available_translations">_site_transient_timeout_available_translations</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_available_translations" id="_site_transient_timeout_available_translations" value="1790767819" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_browser_8b22db8230f1be67c8822620b4285bb1">_site_transient_timeout_browser_8b22db8230f1be67c8822620b4285bb1</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_browser_8b22db8230f1be67c8822620b4285bb1" id="_site_transient_timeout_browser_8b22db8230f1be67c8822620b4285bb1" value="1724928554" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_community-events-e2f2ed925cc0dc7eddd67ec58c0404fa">_site_transient_timeout_community-events-e2f2ed925cc0dc7eddd67ec58c0404fa</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_community-events-e2f2ed925cc0dc7eddd67ec58c0404fa" id="_site_transient_timeout_community-events-e2f2ed925cc0dc7eddd67ec58c0404fa" value="1724366956" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_php_check_76d2cd2a5eb29facccd351abf19ed9c8">_site_transient_timeout_php_check_76d2cd2a5eb29facccd351abf19ed9c8</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_php_check_76d2cd2a5eb29facccd351abf19ed9c8" id="_site_transient_timeout_php_check_76d2cd2a5eb29facccd351abf19ed9c8" value="1724928554" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_poptags_40cd750bba9870f18aada2478b24840a">_site_transient_timeout_poptags_40cd750bba9870f18aada2478b24840a</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_poptags_40cd750bba9870f18aada2478b24840a" id="_site_transient_timeout_poptags_40cd750bba9870f18aada2478b24840a" value="1724335218" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_popular_importers_f78aa61a2738054f10b656e09c2252fc">_site_transient_timeout_popular_importers_f78aa61a2738054f10b656e09c2252fc</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_popular_importers_f78aa61a2738054f10b656e09c2252fc" id="_site_transient_timeout_popular_importers_f78aa61a2738054f10b656e09c2252fc" value="1724497042" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_theme_roots">_site_transient_timeout_theme_roots</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_theme_roots" id="_site_transient_timeout_theme_roots" value="1790758820" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_wp_remote_block_patterns_3f8b3f9a35eb8fb81db723213e806281">_site_transient_timeout_wp_remote_block_patterns_3f8b3f9a35eb8fb81db723213e806281</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_wp_remote_block_patterns_3f8b3f9a35eb8fb81db723213e806281" id="_site_transient_timeout_wp_remote_block_patterns_3f8b3f9a35eb8fb81db723213e806281" value="1724327378" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_wp_remote_block_patterns_a6734e73ac9c8149bc98caa37b2b1c12">_site_transient_timeout_wp_remote_block_patterns_a6734e73ac9c8149bc98caa37b2b1c12</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_wp_remote_block_patterns_a6734e73ac9c8149bc98caa37b2b1c12" id="_site_transient_timeout_wp_remote_block_patterns_a6734e73ac9c8149bc98caa37b2b1c12" value="1724327378" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_wp_remote_block_patterns_c2c9b95b9f1767f72aa6931055c04493">_site_transient_timeout_wp_remote_block_patterns_c2c9b95b9f1767f72aa6931055c04493</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_wp_remote_block_patterns_c2c9b95b9f1767f72aa6931055c04493" id="_site_transient_timeout_wp_remote_block_patterns_c2c9b95b9f1767f72aa6931055c04493" value="1724327377" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_timeout_wp_theme_files_patterns-3e761354c9808da1d36aa19150057b7f">_site_transient_timeout_wp_theme_files_patterns-3e761354c9808da1d36aa19150057b7f</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_site_transient_timeout_wp_theme_files_patterns-3e761354c9808da1d36aa19150057b7f" id="_site_transient_timeout_wp_theme_files_patterns-3e761354c9808da1d36aa19150057b7f" value="1790758818" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_update_core">_site_transient_update_core</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_update_core" id="_site_transient_update_core" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_update_plugins">_site_transient_update_plugins</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_update_plugins" id="_site_transient_update_plugins" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_update_themes">_site_transient_update_themes</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_update_themes" id="_site_transient_update_themes" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_wp_plugin_dependencies_plugin_data">_site_transient_wp_plugin_dependencies_plugin_data</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_wp_plugin_dependencies_plugin_data" id="_site_transient_wp_plugin_dependencies_plugin_data" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_wp_remote_block_patterns_3f8b3f9a35eb8fb81db723213e806281">_site_transient_wp_remote_block_patterns_3f8b3f9a35eb8fb81db723213e806281</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_wp_remote_block_patterns_3f8b3f9a35eb8fb81db723213e806281" id="_site_transient_wp_remote_block_patterns_3f8b3f9a35eb8fb81db723213e806281" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_wp_remote_block_patterns_a6734e73ac9c8149bc98caa37b2b1c12">_site_transient_wp_remote_block_patterns_a6734e73ac9c8149bc98caa37b2b1c12</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_wp_remote_block_patterns_a6734e73ac9c8149bc98caa37b2b1c12" id="_site_transient_wp_remote_block_patterns_a6734e73ac9c8149bc98caa37b2b1c12" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_wp_remote_block_patterns_c2c9b95b9f1767f72aa6931055c04493">_site_transient_wp_remote_block_patterns_c2c9b95b9f1767f72aa6931055c04493</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_wp_remote_block_patterns_c2c9b95b9f1767f72aa6931055c04493" id="_site_transient_wp_remote_block_patterns_c2c9b95b9f1767f72aa6931055c04493" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_site_transient_wp_theme_files_patterns-3e761354c9808da1d36aa19150057b7f">_site_transient_wp_theme_files_patterns-3e761354c9808da1d36aa19150057b7f</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_site_transient_wp_theme_files_patterns-3e761354c9808da1d36aa19150057b7f" id="_site_transient_wp_theme_files_patterns-3e761354c9808da1d36aa19150057b7f" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_dash_v2_c05853b002c443ec8e57ff884f56cdde">_transient_dash_v2_c05853b002c443ec8e57ff884f56cdde</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_transient_dash_v2_c05853b002c443ec8e57ff884f56cdde" id="_transient_dash_v2_c05853b002c443ec8e57ff884f56cdde" value="&lt;div class=&quot;rss-widget&quot;&gt;&lt;ul&gt;&lt;li&gt;&lt;a class=&#039;rsswidget&#039; href=&#039;https://es.wordpress.org/2024/07/23/wordpress-6-6-1-actualizacion-de-mantenimiento/&#039;&gt;WordPress 6.6.1 – Actualización de mantenimiento&lt;/a&gt;&lt;/li&gt;&lt;li&gt;&lt;a class=&#039;rsswidget&#039; href=&#039;https://es.wordpress.org/2024/07/16/wordpress-6-6-dorsey/&#039;&gt;WordPress 6.6 «Dorsey»&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;&lt;div class=&quot;rss-widget&quot;&gt;&lt;ul&gt;&lt;li&gt;&lt;a class=&#039;rsswidget&#039; href=&#039;https://dothewoo.io/development-digital-accessibility-and-ai-with-niels-de-blaauw-and-marius-vetrici/&#039;&gt;Do The Woo Community: Development, Digital Accessibility and AI with Niels de Blaauw and Marius Vetrici&lt;/a&gt;&lt;/li&gt;&lt;li&gt;&lt;a class=&#039;rsswidget&#039; href=&#039;https://wptavern.com/jamie-marsland-joins-automattic-as-head-of-wordpress-youtube&#039;&gt;WPTavern: Jamie Marsland Joins Automattic as Head of WordPress YouTube&lt;/a&gt;&lt;/li&gt;&lt;li&gt;&lt;a class=&#039;rsswidget&#039; href=&#039;https://wptavern.com/podcast/133-blake-bertuccelli-booth-on-automated-accessibility-testing-in-wordpress&#039;&gt;WPTavern: #133 – Blake Bertuccelli-Booth on Automated Accessibility Testing in WordPress&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_doing_cron">_transient_doing_cron</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_transient_doing_cron" id="_transient_doing_cron" value="1790757018.7784459590911865234375" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_feed_69c933d8a78805efd0abe985766ffb51">_transient_feed_69c933d8a78805efd0abe985766ffb51</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_transient_feed_69c933d8a78805efd0abe985766ffb51" id="_transient_feed_69c933d8a78805efd0abe985766ffb51" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_feed_d117b5738fbd35bd8c0391cda1f2b5d9">_transient_feed_d117b5738fbd35bd8c0391cda1f2b5d9</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_transient_feed_d117b5738fbd35bd8c0391cda1f2b5d9" id="_transient_feed_d117b5738fbd35bd8c0391cda1f2b5d9" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_feed_mod_69c933d8a78805efd0abe985766ffb51">_transient_feed_mod_69c933d8a78805efd0abe985766ffb51</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_transient_feed_mod_69c933d8a78805efd0abe985766ffb51" id="_transient_feed_mod_69c933d8a78805efd0abe985766ffb51" value="1724323756" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_feed_mod_d117b5738fbd35bd8c0391cda1f2b5d9">_transient_feed_mod_d117b5738fbd35bd8c0391cda1f2b5d9</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_transient_feed_mod_d117b5738fbd35bd8c0391cda1f2b5d9" id="_transient_feed_mod_d117b5738fbd35bd8c0391cda1f2b5d9" value="1724323757" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_timeout_dash_v2_c05853b002c443ec8e57ff884f56cdde">_transient_timeout_dash_v2_c05853b002c443ec8e57ff884f56cdde</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_transient_timeout_dash_v2_c05853b002c443ec8e57ff884f56cdde" id="_transient_timeout_dash_v2_c05853b002c443ec8e57ff884f56cdde" value="1724366957" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_timeout_feed_69c933d8a78805efd0abe985766ffb51">_transient_timeout_feed_69c933d8a78805efd0abe985766ffb51</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_transient_timeout_feed_69c933d8a78805efd0abe985766ffb51" id="_transient_timeout_feed_69c933d8a78805efd0abe985766ffb51" value="1724366956" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_timeout_feed_d117b5738fbd35bd8c0391cda1f2b5d9">_transient_timeout_feed_d117b5738fbd35bd8c0391cda1f2b5d9</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_transient_timeout_feed_d117b5738fbd35bd8c0391cda1f2b5d9" id="_transient_timeout_feed_d117b5738fbd35bd8c0391cda1f2b5d9" value="1724366957" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_timeout_feed_mod_69c933d8a78805efd0abe985766ffb51">_transient_timeout_feed_mod_69c933d8a78805efd0abe985766ffb51</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_transient_timeout_feed_mod_69c933d8a78805efd0abe985766ffb51" id="_transient_timeout_feed_mod_69c933d8a78805efd0abe985766ffb51" value="1724366956" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_timeout_feed_mod_d117b5738fbd35bd8c0391cda1f2b5d9">_transient_timeout_feed_mod_d117b5738fbd35bd8c0391cda1f2b5d9</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="_transient_timeout_feed_mod_d117b5738fbd35bd8c0391cda1f2b5d9" id="_transient_timeout_feed_mod_d117b5738fbd35bd8c0391cda1f2b5d9" value="1724366957" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="_transient_wp_core_block_css_files">_transient_wp_core_block_css_files</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="_transient_wp_core_block_css_files" id="_transient_wp_core_block_css_files" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="active_plugins">active_plugins</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="active_plugins" id="active_plugins" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="admin_email">admin_email</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="admin_email" id="admin_email" value="pressenter@gmail.com" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="admin_email_lifespan">admin_email_lifespan</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="admin_email_lifespan" id="admin_email_lifespan" value="1739875726" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="auth_key">auth_key</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="auth_key" id="auth_key" value="q5nFbcdR0_`D;lxe}&gt;[Oal%++~?h688^Cs,WYB&gt;J47U^]&lt;9,htC~|L1=%fIx7fZ," />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="auth_salt">auth_salt</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="auth_salt" id="auth_salt" value="vA#xf8T#;Qx`7Rhh6[2]4Rvz0I9!_av+r(:1@k{zpJg.~|OEiYM_:IOUyU4P$hz(" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="auto_plugin_theme_update_emails">auto_plugin_theme_update_emails</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="auto_plugin_theme_update_emails" id="auto_plugin_theme_update_emails" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="auto_update_core_dev">auto_update_core_dev</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="auto_update_core_dev" id="auto_update_core_dev" value="enabled" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="auto_update_core_major">auto_update_core_major</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="auto_update_core_major" id="auto_update_core_major" value="enabled" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="auto_update_core_minor">auto_update_core_minor</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="auto_update_core_minor" id="auto_update_core_minor" value="enabled" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="avatar_default">avatar_default</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="avatar_default" id="avatar_default" value="mystery" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="avatar_rating">avatar_rating</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="avatar_rating" id="avatar_rating" value="G" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="blog_charset">blog_charset</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="blog_charset" id="blog_charset" value="UTF-8" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="blog_public">blog_public</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="blog_public" id="blog_public" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="blogdescription">blogdescription</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="blogdescription" id="blogdescription" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="blogname">blogname</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="blogname" id="blogname" value="PressEnter" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="can_compress_scripts">can_compress_scripts</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="can_compress_scripts" id="can_compress_scripts" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="category_base">category_base</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="category_base" id="category_base" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="close_comments_days_old">close_comments_days_old</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="close_comments_days_old" id="close_comments_days_old" value="14" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="close_comments_for_old_posts">close_comments_for_old_posts</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="close_comments_for_old_posts" id="close_comments_for_old_posts" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="comment_max_links">comment_max_links</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="comment_max_links" id="comment_max_links" value="2" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="comment_moderation">comment_moderation</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="comment_moderation" id="comment_moderation" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="comment_order">comment_order</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="comment_order" id="comment_order" value="asc" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="comment_previously_approved">comment_previously_approved</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="comment_previously_approved" id="comment_previously_approved" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="comment_registration">comment_registration</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="comment_registration" id="comment_registration" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="comments_notify">comments_notify</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="comments_notify" id="comments_notify" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="comments_per_page">comments_per_page</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="comments_per_page" id="comments_per_page" value="50" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="cron">cron</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="cron" id="cron" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="date_format">date_format</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="date_format" id="date_format" value="j \d\e F \d\e Y" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="db_version">db_version</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="db_version" id="db_version" value="57155" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="default_category">default_category</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="default_category" id="default_category" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="default_comment_status">default_comment_status</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="default_comment_status" id="default_comment_status" value="open" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="default_comments_page">default_comments_page</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="default_comments_page" id="default_comments_page" value="newest" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="default_email_category">default_email_category</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="default_email_category" id="default_email_category" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="default_link_category">default_link_category</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="default_link_category" id="default_link_category" value="2" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="default_ping_status">default_ping_status</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="default_ping_status" id="default_ping_status" value="open" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="default_pingback_flag">default_pingback_flag</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="default_pingback_flag" id="default_pingback_flag" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="default_post_format">default_post_format</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="default_post_format" id="default_post_format" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="default_role">default_role</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="default_role" id="default_role" value="subscriber" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="disallowed_keys">disallowed_keys</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="disallowed_keys" id="disallowed_keys" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="finished_splitting_shared_terms">finished_splitting_shared_terms</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="finished_splitting_shared_terms" id="finished_splitting_shared_terms" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="fresh_site">fresh_site</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="fresh_site" id="fresh_site" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="gmt_offset">gmt_offset</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="gmt_offset" id="gmt_offset" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="hack_file">hack_file</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="hack_file" id="hack_file" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="home">home</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="home" id="home" value="http://pressenter.hl" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="html_type">html_type</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="html_type" id="html_type" value="text/html" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="image_default_align">image_default_align</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="image_default_align" id="image_default_align" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="image_default_link_type">image_default_link_type</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="image_default_link_type" id="image_default_link_type" value="none" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="image_default_size">image_default_size</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="image_default_size" id="image_default_size" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="initial_db_version">initial_db_version</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="initial_db_version" id="initial_db_version" value="57155" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="large_size_h">large_size_h</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="large_size_h" id="large_size_h" value="1024" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="large_size_w">large_size_w</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="large_size_w" id="large_size_w" value="1024" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="link_manager_enabled">link_manager_enabled</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="link_manager_enabled" id="link_manager_enabled" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="links_updated_date_format">links_updated_date_format</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="links_updated_date_format" id="links_updated_date_format" value="j \d\e F \d\e Y H:i" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="logged_in_key">logged_in_key</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="logged_in_key" id="logged_in_key" value="3DrE^Z3mz~MleR(^YukpBVipLC4:|4zxJszi&gt;U(W&gt;7%~?gSAnRTH3R.AvrWHCp/4" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="logged_in_salt">logged_in_salt</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="logged_in_salt" id="logged_in_salt" value="uwFg.cAT^,y{5W&amp;U0UfcF{9^DIW.3&amp;e20?I(:E=~.ya*Uow,]Zy}BXJ{[2`S/{5%" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="mailserver_login">mailserver_login</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="mailserver_login" id="mailserver_login" value="login@example.com" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="mailserver_pass">mailserver_pass</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="mailserver_pass" id="mailserver_pass" value="password" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="mailserver_port">mailserver_port</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="mailserver_port" id="mailserver_port" value="110" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="mailserver_url">mailserver_url</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="mailserver_url" id="mailserver_url" value="mail.example.com" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="medium_large_size_h">medium_large_size_h</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="medium_large_size_h" id="medium_large_size_h" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="medium_large_size_w">medium_large_size_w</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="medium_large_size_w" id="medium_large_size_w" value="768" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="medium_size_h">medium_size_h</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="medium_size_h" id="medium_size_h" value="300" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="medium_size_w">medium_size_w</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="medium_size_w" id="medium_size_w" value="300" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="moderation_keys">moderation_keys</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="moderation_keys" id="moderation_keys" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="moderation_notify">moderation_notify</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="moderation_notify" id="moderation_notify" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="nonce_key">nonce_key</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="nonce_key" id="nonce_key" value="7P(Aq[og.@c}!By^9a3bJPYDH5zZ|KL@An&gt;VY*nE-)l_b^G-xbVZfp@h^+Z1&gt;E%4" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="nonce_salt">nonce_salt</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="nonce_salt" id="nonce_salt" value="Cqs(MGe-jzB!E$nuI7VQ_zuSJ)T*R3c!L]}0a[j^VlXo&lt;KjH)g3cv.2 Z6q BsH[" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="page_comments">page_comments</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="page_comments" id="page_comments" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="page_for_posts">page_for_posts</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="page_for_posts" id="page_for_posts" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="page_on_front">page_on_front</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="page_on_front" id="page_on_front" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="permalink_structure">permalink_structure</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="permalink_structure" id="permalink_structure" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="ping_sites">ping_sites</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="ping_sites" id="ping_sites" value="http://rpc.pingomatic.com/" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="posts_per_page">posts_per_page</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="posts_per_page" id="posts_per_page" value="10" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="posts_per_rss">posts_per_rss</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="posts_per_rss" id="posts_per_rss" value="10" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="recently_activated">recently_activated</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="recently_activated" id="recently_activated" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="recently_edited">recently_edited</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="recently_edited" id="recently_edited" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="recovery_keys">recovery_keys</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="recovery_keys" id="recovery_keys" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="recovery_mode_email_last_sent">recovery_mode_email_last_sent</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="recovery_mode_email_last_sent" id="recovery_mode_email_last_sent" value="1724324577" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="require_name_email">require_name_email</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="require_name_email" id="require_name_email" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="rewrite_rules">rewrite_rules</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="rewrite_rules" id="rewrite_rules" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="rss_use_excerpt">rss_use_excerpt</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="rss_use_excerpt" id="rss_use_excerpt" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="show_avatars">show_avatars</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="show_avatars" id="show_avatars" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="show_comments_cookies_opt_in">show_comments_cookies_opt_in</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="show_comments_cookies_opt_in" id="show_comments_cookies_opt_in" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="show_on_front">show_on_front</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="show_on_front" id="show_on_front" value="posts" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="sidebars_widgets">sidebars_widgets</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="sidebars_widgets" id="sidebars_widgets" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="site_icon">site_icon</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="site_icon" id="site_icon" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="siteurl">siteurl</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="siteurl" id="siteurl" value="http://pressenter.hl" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="start_of_week">start_of_week</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="start_of_week" id="start_of_week" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="sticky_posts">sticky_posts</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="sticky_posts" id="sticky_posts" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="stylesheet">stylesheet</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="stylesheet" id="stylesheet" value="twentytwentyfour" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="tag_base">tag_base</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="tag_base" id="tag_base" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="template">template</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="template" id="template" value="twentytwentyfour" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="theme_mods_twentytwentyfour">theme_mods_twentytwentyfour</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="theme_mods_twentytwentyfour" id="theme_mods_twentytwentyfour" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="thread_comments">thread_comments</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="thread_comments" id="thread_comments" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="thread_comments_depth">thread_comments_depth</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="thread_comments_depth" id="thread_comments_depth" value="5" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="thumbnail_crop">thumbnail_crop</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="thumbnail_crop" id="thumbnail_crop" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="thumbnail_size_h">thumbnail_size_h</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="thumbnail_size_h" id="thumbnail_size_h" value="150" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="thumbnail_size_w">thumbnail_size_w</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="thumbnail_size_w" id="thumbnail_size_w" value="150" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="time_format">time_format</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="time_format" id="time_format" value="H:i" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="timezone_string">timezone_string</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="timezone_string" id="timezone_string" value="Europe/Madrid" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="uninstall_plugins">uninstall_plugins</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="uninstall_plugins" id="uninstall_plugins" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="upload_path">upload_path</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="upload_path" id="upload_path" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="upload_url_path">upload_url_path</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="upload_url_path" id="upload_url_path" value="" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="uploads_use_yearmonth_folders">uploads_use_yearmonth_folders</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="uploads_use_yearmonth_folders" id="uploads_use_yearmonth_folders" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="use_balanceTags">use_balanceTags</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="use_balanceTags" id="use_balanceTags" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="use_smilies">use_smilies</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="use_smilies" id="use_smilies" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="use_trackback">use_trackback</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="use_trackback" id="use_trackback" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="user_count">user_count</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="user_count" id="user_count" value="2" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="users_can_register">users_can_register</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="users_can_register" id="users_can_register" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_archives">widget_archives</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_archives" id="widget_archives" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_block">widget_block</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_block" id="widget_block" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_calendar">widget_calendar</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_calendar" id="widget_calendar" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_categories">widget_categories</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_categories" id="widget_categories" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_custom_html">widget_custom_html</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_custom_html" id="widget_custom_html" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_media_audio">widget_media_audio</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_media_audio" id="widget_media_audio" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_media_gallery">widget_media_gallery</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_media_gallery" id="widget_media_gallery" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_media_image">widget_media_image</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_media_image" id="widget_media_image" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_media_video">widget_media_video</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_media_video" id="widget_media_video" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_meta">widget_meta</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_meta" id="widget_meta" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_nav_menu">widget_nav_menu</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_nav_menu" id="widget_nav_menu" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_pages">widget_pages</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_pages" id="widget_pages" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_recent-comments">widget_recent-comments</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_recent-comments" id="widget_recent-comments" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_recent-posts">widget_recent-posts</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_recent-posts" id="widget_recent-posts" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_rss">widget_rss</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_rss" id="widget_rss" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_search">widget_search</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_search" id="widget_search" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_tag_cloud">widget_tag_cloud</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_tag_cloud" id="widget_tag_cloud" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="widget_text">widget_text</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="widget_text" id="widget_text" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="wp_attachment_pages_enabled">wp_attachment_pages_enabled</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="wp_attachment_pages_enabled" id="wp_attachment_pages_enabled" value="0" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="wp_force_deactivated_plugins">wp_force_deactivated_plugins</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="wp_force_deactivated_plugins" id="wp_force_deactivated_plugins" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="wp_page_for_privacy_policy">wp_page_for_privacy_policy</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="wp_page_for_privacy_policy" id="wp_page_for_privacy_policy" value="3" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="wp_user_roles">wp_user_roles</label></th>
+<td>
+			<input class="regular-text all-options disabled" type="text" name="wp_user_roles" id="wp_user_roles" value="SERIALIZED DATA" disabled='disabled' />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="wpephpcompat_is_wptide">wpephpcompat_is_wptide</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="wpephpcompat_is_wptide" id="wpephpcompat_is_wptide" value="1" />
+	</td>
+</tr>
+<tr>
+	<th scope="row"><label for="WPLANG">WPLANG</label></th>
+<td>
+			<input class="regular-text all-options" type="text" name="WPLANG" id="WPLANG" value="es_ES" />
+	</td>
+</tr>
+</table>
+
+<input type="hidden" name="page_options" value="_site_transient_timeout_available_translations,_site_transient_timeout_browser_8b22db8230f1be67c8822620b4285bb1,_site_transient_timeout_community-events-e2f2ed925cc0dc7eddd67ec58c0404fa,_site_transient_timeout_php_check_76d2cd2a5eb29facccd351abf19ed9c8,_site_transient_timeout_poptags_40cd750bba9870f18aada2478b24840a,_site_transient_timeout_popular_importers_f78aa61a2738054f10b656e09c2252fc,_site_transient_timeout_theme_roots,_site_transient_timeout_wp_remote_block_patterns_3f8b3f9a35eb8fb81db723213e806281,_site_transient_timeout_wp_remote_block_patterns_a6734e73ac9c8149bc98caa37b2b1c12,_site_transient_timeout_wp_remote_block_patterns_c2c9b95b9f1767f72aa6931055c04493,_site_transient_timeout_wp_theme_files_patterns-3e761354c9808da1d36aa19150057b7f,_transient_dash_v2_c05853b002c443ec8e57ff884f56cdde,_transient_doing_cron,_transient_feed_mod_69c933d8a78805efd0abe985766ffb51,_transient_feed_mod_d117b5738fbd35bd8c0391cda1f2b5d9,_transient_timeout_dash_v2_c05853b002c443ec8e57ff884f56cdde,_transient_timeout_feed_69c933d8a78805efd0abe985766ffb51,_transient_timeout_feed_d117b5738fbd35bd8c0391cda1f2b5d9,_transient_timeout_feed_mod_69c933d8a78805efd0abe985766ffb51,_transient_timeout_feed_mod_d117b5738fbd35bd8c0391cda1f2b5d9,admin_email,admin_email_lifespan,auth_key,auth_salt,auto_update_core_dev,auto_update_core_major,auto_update_core_minor,avatar_default,avatar_rating,blog_charset,blog_public,blogdescription,blogname,can_compress_scripts,category_base,close_comments_days_old,close_comments_for_old_posts,comment_max_links,comment_moderation,comment_order,comment_previously_approved,comment_registration,comments_notify,comments_per_page,date_format,db_version,default_category,default_comment_status,default_comments_page,default_email_category,default_link_category,default_ping_status,default_pingback_flag,default_post_format,default_role,disallowed_keys,finished_splitting_shared_terms,fresh_site,gmt_offset,hack_file,home,html_type,image_default_align,image_default_link_type,image_default_size,initial_db_version,large_size_h,large_size_w,link_manager_enabled,links_updated_date_format,logged_in_key,logged_in_salt,mailserver_login,mailserver_pass,mailserver_port,mailserver_url,medium_large_size_h,medium_large_size_w,medium_size_h,medium_size_w,moderation_keys,moderation_notify,nonce_key,nonce_salt,page_comments,page_for_posts,page_on_front,permalink_structure,ping_sites,posts_per_page,posts_per_rss,recovery_mode_email_last_sent,require_name_email,rewrite_rules,rss_use_excerpt,show_avatars,show_comments_cookies_opt_in,show_on_front,site_icon,siteurl,start_of_week,stylesheet,tag_base,template,thread_comments,thread_comments_depth,thumbnail_crop,thumbnail_size_h,thumbnail_size_w,time_format,timezone_string,upload_path,upload_url_path,uploads_use_yearmonth_folders,use_balanceTags,use_smilies,use_trackback,user_count,users_can_register,wp_attachment_pages_enabled,wp_page_for_privacy_policy,wpephpcompat_is_wptide,WPLANG" />
+
+<p class="submit"><input type="submit" name="Update" id="Update" class="button button-primary" value="Guardar cambios"  /></p>
+</form>
+</div>
+
+
+<div class="clear"></div></div><!-- wpbody-content -->
+<div class="clear"></div></div><!-- wpbody -->
+<div class="clear"></div></div><!-- wpcontent -->
+
+<div id="wpfooter" role="contentinfo">
+		<p id="footer-left" class="alignleft">
+		<span id="footer-thankyou">Gracias por crear con <a href="https://es.wordpress.org/">WordPress</a>.</span>	</p>
+	<p id="footer-upgrade" class="alignright">
+		<strong><a href="http://pressenter.hl/wp-admin/update-core.php">Obtener la versión 7.1.2</a></strong>	</p>
+	<div class="clear"></div>
+</div>
+	<div id="wp-auth-check-wrap" class="hidden">
+	<div id="wp-auth-check-bg"></div>
+	<div id="wp-auth-check">
+	<button type="button" class="wp-auth-check-close button-link"><span class="screen-reader-text">
+		Cerrar el diálogo	</span></button>
+			<div id="wp-auth-check-form" class="loading" data-src="http://pressenter.hl/wp-login.php?interim-login=1&#038;wp_lang=es_ES"></div>
+			<div class="wp-auth-fallback">
+		<p><b class="wp-auth-fallback-expired" tabindex="0">Sesión caducada</b></p>
+		<p><a href="http://pressenter.hl/wp-login.php" target="_blank">Por favor, accede de nuevo.</a>
+		La página de acceso se abrirá en una pestaña nueva. Después de acceder puedes cerrarla y volver a esta página.</p>
+	</div>
+	</div>
+	</div>
+	<script src='http://pressenter.hl/wp-admin/load-scripts.php?c=0&amp;load%5Bchunk_0%5D=hoverIntent,wp-hooks&amp;ver=6.6.1'></script>
+<script src="http://pressenter.hl/wp-includes/js/dist/i18n.min.js?ver=5e580eb46a90c2b997e6" id="wp-i18n-js"></script>
+<script id="wp-i18n-js-after">
+wp.i18n.setLocaleData( { 'text direction\u0004ltr': [ 'ltr' ] } );
+</script>
+<script id="common-js-translations">
+( function( domain, translations ) {
+	var localeData = translations.locale_data[ domain ] || translations.locale_data.messages;
+	localeData[""].domain = domain;
+	wp.i18n.setLocaleData( localeData, domain );
+} )( "default", {"translation-revision-date":"2024-08-14 09:08:21+0000","generator":"GlotPress\/4.0.1","domain":"messages","locale_data":{"messages":{"":{"domain":"messages","plural-forms":"nplurals=2; plural=n != 1;","lang":"es"},"%1$s is deprecated since version %2$s with no alternative available.":["%1$s est\u00e1 obsoleta desde la versi\u00f3n %2$s sin una alternativa disponible."],"%1$s is deprecated since version %2$s! Use %3$s instead.":["\u00a1%1$s est\u00e1 obsoleta desde la versi\u00f3n %2$s! Usa %3$s en su lugar."],"Expand Main menu":["Desplegar el men\u00fa principal"],"Dismiss this notice.":["Descartar este aviso."],"You are about to permanently delete these items from your site.\nThis action cannot be undone.\n'Cancel' to stop, 'OK' to delete.":["Est\u00e1s a punto de borrar permanentemente estos elementos de tu sitio.\nEsta acci\u00f3n no se puede deshacer.\n\u00abCancelar\u00bb para parar, \u00abAceptar\u00bb para borrar."],"Collapse Main menu":["Contraer el men\u00fa principal"]}},"comment":{"reference":"wp-admin\/js\/common.js"}} );
+</script>
+<script src="http://pressenter.hl/wp-admin/js/common.min.js?ver=6.6.1" id="common-js"></script>
+<script src="http://pressenter.hl/wp-includes/js/hoverintent-js.min.js?ver=2.2.1" id="hoverintent-js-js"></script>
+<script src="http://pressenter.hl/wp-includes/js/admin-bar.min.js?ver=6.6.1" id="admin-bar-js"></script>
+<script src="http://pressenter.hl/wp-admin/js/svg-painter.js?ver=6.6.1" id="svg-painter-js"></script>
+<script id="heartbeat-js-extra">
+var heartbeatSettings = {"nonce":"1389ea256d"};
+</script>
+<script src="http://pressenter.hl/wp-includes/js/heartbeat.min.js?ver=6.6.1" id="heartbeat-js"></script>
+<script id="wp-auth-check-js-translations">
+( function( domain, translations ) {
+	var localeData = translations.locale_data[ domain ] || translations.locale_data.messages;
+	localeData[""].domain = domain;
+	wp.i18n.setLocaleData( localeData, domain );
+} )( "default", {"translation-revision-date":"2024-08-05 19:42:40+0000","generator":"GlotPress\/4.0.1","domain":"messages","locale_data":{"messages":{"":{"domain":"messages","plural-forms":"nplurals=2; plural=n != 1;","lang":"es"},"Your session has expired. You can log in again from this page or go to the login page.":["Tu sesi\u00f3n ha caducado. Puedes acceder de nuevo desde esta p\u00e1gina o ir a la p\u00e1gina de acceso."]}},"comment":{"reference":"wp-includes\/js\/wp-auth-check.js"}} );
+</script>
+<script src="http://pressenter.hl/wp-includes/js/wp-auth-check.min.js?ver=6.6.1" id="wp-auth-check-js"></script>
+
+<div class="clear"></div></div><!-- wpwrap -->
+<script type="text/javascript">if(typeof wpOnload==='function')wpOnload();</script>
+</body>
+</html>

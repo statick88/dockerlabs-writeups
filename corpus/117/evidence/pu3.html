@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html class="wp-toolbar"
+	lang="en-US">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+	<title>Add Plugins &lsaquo; PressEnter &#8212; WordPress</title>
+<script type="text/javascript">
+addLoadEvent = function(func){if(typeof jQuery!=='undefined')jQuery(function(){func();});else if(typeof wpOnload!=='function'){wpOnload=func;}else{var oldonload=wpOnload;wpOnload=function(){oldonload();func();}}};
+var ajaxurl = '/wp-admin/admin-ajax.php',
+	pagenow = 'plugin-install',
+	typenow = '',
+	adminpage = 'plugin-install-php',
+	thousandsSeparator = ',',
+	decimalPoint = '.',
+	isRtl = 0;
+</script>
+<link rel='stylesheet' href='http://127.0.0.1/wp-admin/load-styles.php?c=0&amp;dir=ltr&amp;load%5Bchunk_0%5D=dashicons,admin-bar,common,forms,admin-menu,dashboard,list-tables,edit,revisions,media,themes,about,nav-menus,wp-pointer,widgets&amp;load%5Bchunk_1%5D=,site-icon,l10n,buttons,wp-auth-check&amp;ver=6.6.1' media='all' />
+<style>
+@media print { #wpadminbar { display:none; } }
+</style>
+<link rel='stylesheet' id='thickbox-css' href='http://127.0.0.1/wp-includes/js/thickbox/thickbox.css?ver=6.6.1' media='all' />
+<style id='wp-emoji-styles-inline-css'>
+
+	img.wp-smiley, img.emoji {
+		display: inline !important;
+		border: none !important;
+		box-shadow: none !important;
+		height: 1em !important;
+		width: 1em !important;
+		margin: 0 0.07em !important;
+		vertical-align: -0.1em !important;
+		background: none !important;
+		padding: 0 !important;
+	}
+</style>
+<style id='wp-fonts-local'>
+@font-face{font-family:Inter;font-style:normal;font-weight:300 900;font-display:fallback;src:url('http://127.0.0.1/wp-content/themes/twentytwentyfour/assets/fonts/inter/Inter-VariableFont_slnt,wght.woff2') format('woff2');font-stretch:normal;}
+@font-face{font-family:Cardo;font-style:normal;font-weight:400;font-display:fallback;src:url('http://127.0.0.1/wp-content/themes/twentytwentyfour/assets/fonts/cardo/cardo_normal_400.woff2') format('woff2');}
+@font-face{font-family:Cardo;font-style:italic;font-weight:400;font-display:fallback;src:url('http://127.0.0.1/wp-content/themes/twentytwentyfour/assets/fonts/cardo/cardo_italic_400.woff2') format('woff2');}
+@font-face{font-family:Cardo;font-style:normal;font-weight:700;font-display:fallback;src:url('http://127.0.0.1/wp-content/themes/twentytwentyfour/assets/fonts/cardo/cardo_normal_700.woff2') format('woff2');}
+</style>
+<script>
+window._wpemojiSettings = {"baseUrl":"https:\/\/s.w.org\/images\/core\/emoji\/15.0.3\/72x72\/","ext":".png","svgUrl":"https:\/\/s.w.org\/images\/core\/emoji\/15.0.3\/svg\/","svgExt":".svg","source":{"concatemoji":"http:\/\/127.0.0.1\/wp-includes\/js\/wp-emoji-release.min.js?ver=6.6.1"}};
+/*! This file is auto-generated */
+!function(i,n){var o,s,e;function c(e){try{var t={supportTests:e,timestamp:(new Date).valueOf()};sessionStorage.setItem(o,JSON.stringify(t))}catch(e){}}function p(e,t,n){e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(t,0,0);var t=new Uint32Array(e.getImageData(0,0,e.canvas.width,e.canvas.height).data),r=(e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(n,0,0),new Uint32Array(e.getImageData(0,0,e.canvas.width,e.canvas.height).data));return t.every(function(e,t){return e===r[t]})}function u(e,t,n){switch(t){case"flag":return n(e,"\ud83c\udff3\ufe0f\u200d\u26a7\ufe0f","\ud83c\udff3\ufe0f\u200b\u26a7\ufe0f")?!1:!n(e,"\ud83c\uddfa\ud83c\uddf3","\ud83c\uddfa\u200b\ud83c\uddf3")&&!n(e,"\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f","\ud83c\udff4\u200b\udb40\udc67\u200b\udb40\udc62\u200b\udb40\udc65\u200b\udb40\udc6e\u200b\udb40\udc67\u200b\udb40\udc7f");case"emoji":return!n(e,"\ud83d\udc26\u200d\u2b1b","\ud83d\udc26\u200b\u2b1b")}return!1}function f(e,t,n){var r="undefined"!=typeof WorkerGlobalScope&&self instanceof WorkerGlobalScope?new OffscreenCanvas(300,150):i.createElement("canvas"),a=r.getContext("2d",{willReadFrequently:!0}),o=(a.textBaseline="top",a.font="600 32px Arial",{});return e.forEach(function(e){o[e]=t(a,e,n)}),o}function t(e){var t=i.createElement("script");t.src=e,t.defer=!0,i.head.appendChild(t)}"undefined"!=typeof Promise&&(o="wpEmojiSettingsSupports",s=["flag","emoji"],n.supports={everything:!0,everythingExceptFlag:!0},e=new Promise(function(e){i.addEventListener("DOMContentLoaded",e,{once:!0})}),new Promise(function(t){var n=function(){try{var e=JSON.parse(sessionStorage.getItem(o));if("object"==typeof e&&"number"==typeof e.timestamp&&(new Date).valueOf()<e.timestamp+604800&&"object"==typeof e.supportTests)return e.supportTests}catch(e){}return null}();if(!n){if("undefined"!=typeof Worker&&"undefined"!=typeof OffscreenCanvas&&"undefined"!=typeof URL&&URL.createObjectURL&&"undefined"!=typeof Blob)try{var e="postMessage("+f.toString()+"("+[JSON.stringify(s),u.toString(),p.toString()].join(",")+"));",r=new Blob([e],{type:"text/javascript"}),a=new Worker(URL.createObjectURL(r),{name:"wpTestEmojiSupports"});return void(a.onmessage=function(e){c(n=e.data),a.terminate(),t(n)})}catch(e){}c(n=f(s,u,p))}t(n)}).then(function(e){for(var t in e)n.supports[t]=e[t],n.supports.everything=n.supports.everything&&n.supports[t],"flag"!==t&&(n.supports.everythingExceptFlag=n.supports.everythingExceptFlag&&n.supports[t]);n.supports.everythingExceptFlag=n.supports.everythingExceptFlag&&!n.supports.flag,n.DOMReady=!1,n.readyCallback=function(){n.DOMReady=!0}}).then(function(){return e}).then(function(){var e;n.supports.everything||(n.readyCallback(),(e=n.source||{}).concatemoji?t(e.concatemoji):e.wpemoji&&e.twemoji&&(t(e.twemoji),t(e.wpemoji)))}))}((window,document),window._wpemojiSettings);
+</script>
+
+<script>
+/* <![CDATA[ */
+var userSettings = {"url":"\/","uid":"1","time":"1790757138","secure":""};/* ]]> */
+</script>
+<script src='http://127.0.0.1/wp-admin/load-scripts.php?c=0&amp;load%5Bchunk_0%5D=jquery-core,jquery-migrate,utils&amp;ver=6.6.1'></script>
+<script type="text/javascript">var _wpColorScheme = {"icons":{"base":"#a7aaad","focus":"#72aee6","current":"#fff"}};</script>
+	<link id="wp-admin-canonical" rel="canonical" href="http://pressenter.hl/wp-admin/plugin-install.php" />
+	<script>
+		if ( window.history.replaceState ) {
+			window.history.replaceState( null, null, document.getElementById( 'wp-admin-canonical' ).href + window.location.hash );
+		}
+	</script>
+	<meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body class="wp-admin wp-core-ui no-js plugin-install-php auto-fold admin-bar branch-6-6 version-6-6-1 admin-color-fresh locale-en-us no-customize-support no-svg">
+<script type="text/javascript">
+	document.body.className = document.body.className.replace('no-js','js');
+</script>
+
+<script>
+		(function() {
+			var request, b = document.body, c = 'className', cs = 'customize-support', rcs = new RegExp('(^|\\s+)(no-)?'+cs+'(\\s+|$)');
+
+				request = true;
+	
+			b[c] = b[c].replace( rcs, ' ' );
+			// The customizer requires postMessage and CORS (if the site is cross domain).
+			b[c] += ( window.postMessage && request ? ' ' : ' no-' ) + cs;
+		}());
+	
+</script>
+
+<div id="wpwrap">
+
+<div id="adminmenumain" role="navigation" aria-label="Main menu">
+<a href="#wpbody-content" class="screen-reader-shortcut">Skip to main content</a>
+<a href="#wp-toolbar" class="screen-reader-shortcut">Skip to toolbar</a>
+<div id="adminmenuback"></div>
+<div id="adminmenuwrap">
+<ul id="adminmenu">
+
+
+	<li class="wp-first-item wp-has-submenu wp-not-current-submenu menu-top menu-top-first menu-icon-dashboard menu-top-last" id="menu-dashboard">
+	<a href='index.php' class="wp-first-item wp-has-submenu wp-not-current-submenu menu-top menu-top-first menu-icon-dashboard menu-top-last" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-dashboard' aria-hidden='true'><br /></div><div class='wp-menu-name'>Dashboard</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Dashboard</li><li class="wp-first-item"><a href='index.php' class="wp-first-item">Home</a></li><li><a href='update-core.php'>Updates <span class="update-plugins count-5"><span class="update-count">5</span></span></a></li></ul></li>
+	<li class="wp-not-current-submenu wp-menu-separator" aria-hidden="true"><div class="separator"></div></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-post open-if-no-js menu-top-first" id="menu-posts">
+	<a href='edit.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-post open-if-no-js menu-top-first" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-post' aria-hidden='true'><br /></div><div class='wp-menu-name'>Posts</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Posts</li><li class="wp-first-item"><a href='edit.php' class="wp-first-item">All Posts</a></li><li><a href='post-new.php'>Add New Post</a></li><li><a href='edit-tags.php?taxonomy=category'>Categories</a></li><li><a href='edit-tags.php?taxonomy=post_tag'>Tags</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-media" id="menu-media">
+	<a href='upload.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-media" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-media' aria-hidden='true'><br /></div><div class='wp-menu-name'>Media</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Media</li><li class="wp-first-item"><a href='upload.php' class="wp-first-item">Library</a></li><li><a href='media-new.php'>Add New Media File</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-page" id="menu-pages">
+	<a href='edit.php?post_type=page' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-page" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-page' aria-hidden='true'><br /></div><div class='wp-menu-name'>Pages</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Pages</li><li class="wp-first-item"><a href='edit.php?post_type=page' class="wp-first-item">All Pages</a></li><li><a href='post-new.php?post_type=page'>Add New Page</a></li></ul></li>
+	<li class="wp-not-current-submenu menu-top menu-icon-comments menu-top-last" id="menu-comments">
+	<a href='edit-comments.php' class="wp-not-current-submenu menu-top menu-icon-comments menu-top-last" ><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-comments' aria-hidden='true'><br /></div><div class='wp-menu-name'>Comments <span class="awaiting-mod count-0"><span class="pending-count" aria-hidden="true">0</span><span class="comments-in-moderation-text screen-reader-text">0 Comments in moderation</span></span></div></a></li>
+	<li class="wp-not-current-submenu wp-menu-separator" aria-hidden="true"><div class="separator"></div></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-appearance menu-top-first" id="menu-appearance">
+	<a href='themes.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-appearance menu-top-first" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-appearance' aria-hidden='true'><br /></div><div class='wp-menu-name'>Appearance</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Appearance</li><li class="wp-first-item"><a href='themes.php' class="wp-first-item">Themes <span class="update-plugins count-3"><span class="theme-count">3</span></span></a></li><li><a href='site-editor.php'>Editor</a></li></ul></li>
+	<li class="wp-has-submenu wp-has-current-submenu wp-menu-open menu-top menu-icon-plugins" id="menu-plugins">
+	<a href='plugins.php' class="wp-has-submenu wp-has-current-submenu wp-menu-open menu-top menu-icon-plugins" ><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-plugins' aria-hidden='true'><br /></div><div class='wp-menu-name'>Plugins <span class="update-plugins count-0"><span class="plugin-count">0</span></span></div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Plugins <span class="update-plugins count-0"><span class="plugin-count">0</span></span></li><li class="wp-first-item"><a href='plugins.php' class="wp-first-item">Installed Plugins</a></li><li class="current"><a href='plugin-install.php' class="current" aria-current="page">Add New Plugin</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-users" id="menu-users">
+	<a href='users.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-users" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-users' aria-hidden='true'><br /></div><div class='wp-menu-name'>Users</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Users</li><li class="wp-first-item"><a href='users.php' class="wp-first-item">All Users</a></li><li><a href='user-new.php'>Add New User</a></li><li><a href='profile.php'>Profile</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-tools" id="menu-tools">
+	<a href='tools.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-tools" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-tools' aria-hidden='true'><br /></div><div class='wp-menu-name'>Tools</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Tools</li><li class="wp-first-item"><a href='tools.php' class="wp-first-item">Available Tools</a></li><li><a href='import.php'>Import</a></li><li><a href='export.php'>Export</a></li><li><a href='site-health.php'>Site Health <span class="menu-counter site-health-counter count-0"><span class="count">0</span></span></a></li><li><a href='export-personal-data.php'>Export Personal Data</a></li><li><a href='erase-personal-data.php'>Erase Personal Data</a></li><li><a href='tools.php?page=wpe-php-compat'>PHP Compatibility</a></li><li><a href='theme-editor.php'>Theme File Editor</a></li><li><a href='plugin-editor.php'>Plugin File Editor</a></li></ul></li>
+	<li class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-settings menu-top-last" id="menu-settings">
+	<a href='options-general.php' class="wp-has-submenu wp-not-current-submenu menu-top menu-icon-settings menu-top-last" data-ariahaspopup><div class="wp-menu-arrow"><div></div></div><div class='wp-menu-image dashicons-before dashicons-admin-settings' aria-hidden='true'><br /></div><div class='wp-menu-name'>Settings</div></a>
+	<ul class='wp-submenu wp-submenu-wrap'><li class='wp-submenu-head' aria-hidden='true'>Settings</li><li class="wp-first-item"><a href='options-general.php' class="wp-first-item">General</a></li><li><a href='options-writing.php'>Writing</a></li><li><a href='options-reading.php'>Reading</a></li><li><a href='options-discussion.php'>Discussion</a></li><li><a href='options-media.php'>Media</a></li><li><a href='options-permalink.php'>Permalinks</a></li><li><a href='options-privacy.php'>Privacy</a></li></ul></li><li id="collapse-menu" class="hide-if-no-js"><button type="button" id="collapse-button" aria-label="Collapse Main menu" aria-expanded="true"><span class="collapse-button-icon" aria-hidden="true"></span><span class="collapse-button-label">Collapse menu</span></button></li></ul>
+</div>
+</div>
+<div id="wpcontent">
+
+		<div id="wpadminbar" class="nojq nojs">
+						<div class="quicklinks" id="wp-toolbar" role="navigation" aria-label="Toolbar">
+				<ul role='menu' id='wp-admin-bar-root-default' class="ab-top-menu"><li role='group' id='wp-admin-bar-menu-toggle'><a class='ab-item' role="menuitem" href='#'><span class="ab-icon" aria-hidden="true"></span><span class="screen-reader-text">Menu</span></a></li><li role='group' id='wp-admin-bar-wp-logo' class="menupop"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://127.0.0.1/wp-admin/about.php'><span class="ab-icon" aria-hidden="true"></span><span class="screen-reader-text">About WordPress</span></a><div class="ab-sub-wrapper"><ul role='menu' aria-label='About WordPress' id='wp-admin-bar-wp-logo-default' class="ab-submenu"><li role='group' id='wp-admin-bar-about'><a class='ab-item' role="menuitem" href='http://127.0.0.1/wp-admin/about.php'>About WordPress</a></li><li role='group' id='wp-admin-bar-contribute'><a class='ab-item' role="menuitem" href='http://127.0.0.1/wp-admin/contribute.php'>Get Involved</a></li></ul><ul role='menu' aria-label='About WordPress' id='wp-admin-bar-wp-logo-external' class="ab-sub-secondary ab-submenu"><li role='group' id='wp-admin-bar-wporg'><a class='ab-item' role="menuitem" href='https://wordpress.org/'>WordPress.org</a></li><li role='group' id='wp-admin-bar-documentation'><a class='ab-item' role="menuitem" href='https://wordpress.org/documentation/'>Documentation</a></li><li role='group' id='wp-admin-bar-learn'><a class='ab-item' role="menuitem" href='https://learn.wordpress.org/'>Learn WordPress</a></li><li role='group' id='wp-admin-bar-support-forums'><a class='ab-item' role="menuitem" href='https://wordpress.org/support/forums/'>Support</a></li><li role='group' id='wp-admin-bar-feedback'><a class='ab-item' role="menuitem" href='https://wordpress.org/support/forum/requests-and-feedback'>Feedback</a></li></ul></div></li><li role='group' id='wp-admin-bar-site-name' class="menupop"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://127.0.0.1/'>PressEnter</a><div class="ab-sub-wrapper"><ul role='menu' aria-label='PressEnter' id='wp-admin-bar-site-name-default' class="ab-submenu"><li role='group' id='wp-admin-bar-view-site'><a class='ab-item' role="menuitem" href='http://127.0.0.1/'>Visit Site</a></li></ul></div></li><li role='group' id='wp-admin-bar-updates'><a class='ab-item' role="menuitem" href='http://127.0.0.1/wp-admin/update-core.php'><span class="ab-icon" aria-hidden="true"></span><span class="ab-label" aria-hidden="true">5</span><span class="screen-reader-text updates-available-text">5 updates available</span></a></li><li role='group' id='wp-admin-bar-comments'><a class='ab-item' role="menuitem" href='http://127.0.0.1/wp-admin/edit-comments.php'><span class="ab-icon" aria-hidden="true"></span><span class="ab-label awaiting-mod pending-count count-0" aria-hidden="true">0</span><span class="screen-reader-text comments-in-moderation-text">0 Comments in moderation</span></a></li><li role='group' id='wp-admin-bar-new-content' class="menupop"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://127.0.0.1/wp-admin/post-new.php'><span class="ab-icon" aria-hidden="true"></span><span class="ab-label">New</span></a><div class="ab-sub-wrapper"><ul role='menu' aria-label='New' id='wp-admin-bar-new-content-default' class="ab-submenu"><li role='group' id='wp-admin-bar-new-post'><a class='ab-item' role="menuitem" href='http://127.0.0.1/wp-admin/post-new.php'>Post</a></li><li role='group' id='wp-admin-bar-new-media'><a class='ab-item' role="menuitem" href='http://127.0.0.1/wp-admin/media-new.php'>Media</a></li><li role='group' id='wp-admin-bar-new-page'><a class='ab-item' role="menuitem" href='http://127.0.0.1/wp-admin/post-new.php?post_type=page'>Page</a></li><li role='group' id='wp-admin-bar-new-user'><a class='ab-item' role="menuitem" href='http://127.0.0.1/wp-admin/user-new.php'>User</a></li></ul></div></li></ul><ul role='menu' id='wp-admin-bar-top-secondary' class="ab-top-secondary ab-top-menu"><li role='group' id='wp-admin-bar-my-account' class="menupop with-avatar"><a class='ab-item' role="menuitem" aria-expanded="false" href='http://127.0.0.1/wp-admin/profile.php'>Howdy, <span class="display-name">pressi</span><img alt='' src='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=26&#038;d=mm&#038;r=g' srcset='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=52&#038;d=mm&#038;r=g 2x' class='avatar avatar-26 photo' height='26' width='26' loading='lazy' decoding='async'/></a><div class="ab-sub-wrapper"><ul role='menu' aria-label='Howdy, pressi' id='wp-admin-bar-user-actions' class="ab-submenu"><li role='group' id='wp-admin-bar-user-info'><a class='ab-item' role="menuitem" href='http://127.0.0.1/wp-admin/profile.php'><img alt='' src='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=64&#038;d=mm&#038;r=g' srcset='http://1.gravatar.com/avatar/d1a0e18cb7c3159ea16c6fc4df6b471a?s=128&#038;d=mm&#038;r=g 2x' class='avatar avatar-64 photo' height='64' width='64' loading='lazy' decoding='async'/><span class='display-name'>pressi</span><span class='display-name edit-profile'>Edit Profile</span></a></li><li role='group' id='wp-admin-bar-logout'><a class='ab-item' role="menuitem" href='http://127.0.0.1/wp-login.php?action=logout&#038;_wpnonce=81916cf242'>Log Out</a></li></ul></div></li></ul>			</div>
+		</div>
+
+		
+<div id="wpbody" role="main">
+
+<div id="wpbody-content">
+		<div id="screen-meta" class="metabox-prefs">
+
+			<div id="contextual-help-wrap" class="hidden" tabindex="-1" aria-label="Contextual Help Tab">
+				<div id="contextual-help-back"></div>
+				<div id="contextual-help-columns">
+					<div class="contextual-help-tabs">
+						<ul>
+						
+							<li id="tab-link-overview" class="active">
+								<a href="#tab-panel-overview" aria-controls="tab-panel-overview">
+									Overview								</a>
+							</li>
+							
+							<li id="tab-link-adding-plugins">
+								<a href="#tab-panel-adding-plugins" aria-controls="tab-panel-adding-plugins">
+									Adding Plugins								</a>
+							</li>
+													</ul>
+					</div>
+
+										<div class="contextual-help-sidebar">
+						<p><strong>For more information:</strong></p><p><a href="https://wordpress.org/documentation/article/plugins-add-new-screen/">Documentation on Installing Plugins</a></p><p><a href="https://wordpress.org/support/forums/">Support forums</a></p>					</div>
+					
+					<div class="contextual-help-tabs-wrap">
+						
+							<div id="tab-panel-overview" class="help-tab-content active">
+								<p>Plugins hook into WordPress to extend its functionality with custom features. Plugins are developed independently from the core WordPress application by thousands of developers all over the world. All plugins in the official <a href="https://wordpress.org/plugins/">WordPress Plugin Directory</a> are compatible with the license WordPress uses.</p><p>You can find new plugins to install by searching or browsing the directory right here in your own Plugins section. <span id="live-search-desc" class="hide-if-no-js">The search results will be updated as you type.</span></p>							</div>
+							
+							<div id="tab-panel-adding-plugins" class="help-tab-content">
+								<p>If you know what you are looking for, Search is your best bet. The Search screen has options to search the WordPress Plugin Directory for a particular Term, Author, or Tag. You can also search the directory by selecting popular tags. Tags in larger type mean more plugins have been labeled with that tag.</p><p>If you just want to get an idea of what&#8217;s available, you can browse Featured and Popular plugins by using the links above the plugins list. These sections rotate regularly.</p><p>You can also browse a user&#8217;s favorite plugins, by using the Favorites link above the plugins list and entering their WordPress.org username.</p><p>If you want to install a plugin that you&#8217;ve downloaded elsewhere, click the Upload Plugin button above the plugins list. You will be prompted to upload the .zip package, and once uploaded, you can activate the new plugin.</p>							</div>
+												</div>
+				</div>
+			</div>
+				</div>
+				<div id="screen-meta-links">
+					<div id="contextual-help-link-wrap" class="hide-if-no-js screen-meta-toggle">
+			<button type="button" id="contextual-help-link" class="button show-settings" aria-controls="contextual-help-wrap" aria-expanded="false">Help</button>
+			</div>
+				</div>
+		<div class="notice notice-warning update-nag inline"><a href="https://wordpress.org/documentation/wordpress-version/version-7-1-2/">WordPress 7.1.2</a> is available! <a href="http://127.0.0.1/wp-admin/update-core.php" aria-label="Please update WordPress now">Please update now</a>.</div><div class="wrap plugin-install-tab-featured">
+<h1 class="wp-heading-inline">
+Add Plugins</h1>
+
+ <a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=upload" class="upload-view-toggle page-title-action"><span class="upload">Upload Plugin</span><span class="browse">Browse Plugins</span></a>
+<hr class="wp-header-end">
+
+	<div class="upload-plugin-wrap">
+		<div class="upload-plugin">
+	<p class="install-help">If you have a plugin in a .zip format, you may install or update it by uploading it here.</p>
+	<form method="post" enctype="multipart/form-data" class="wp-upload-form" action="http://127.0.0.1/wp-admin/update.php?action=upload-plugin">
+		<input type="hidden" id="_wpnonce" name="_wpnonce" value="b54f6a3fbe" /><input type="hidden" name="_wp_http_referer" value="/wp-admin/plugin-install.php" />		<label class="screen-reader-text" for="pluginzip">
+			Plugin zip file		</label>
+		<input type="file" id="pluginzip" name="pluginzip" accept=".zip" />
+		<input type="submit" name="install-plugin-submit" id="install-plugin-submit" class="button" value="Install Now"  />	</form>
+</div>
+		</div>
+	<h2 class='screen-reader-text'>Filter plugins list</h2><div class="wp-filter">
+	<ul class="filter-links">
+			<li class='plugin-install-featured'><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=featured" class="current" aria-current="page">Featured</a> </li>
+	<li class='plugin-install-popular'><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=popular">Popular</a> </li>
+	<li class='plugin-install-recommended'><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=recommended">Recommended</a> </li>
+	<li class='plugin-install-favorites'><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=favorites">Favorites</a></li>
+	</ul>
+
+			<form class="search-form search-plugins" method="get">
+		<input type="hidden" name="tab" value="search" />
+		<label for="search-plugins">Search Plugins</label>
+		<input type="search" name="s" id="search-plugins" value="" class="wp-filter-search" />
+		<label class="screen-reader-text" for="typeselector">
+			Search plugins by:		</label>
+		<select name="type" id="typeselector">
+			<option value="term" selected='selected'>Keyword</option>
+			<option value="author">Author</option>
+			<option value="tag">Tag</option>
+		</select>
+		<input type="submit" id="search-submit" class="button hide-if-js" value="Search Plugins"  />	</form>
+	</div>
+		<p>Plugins extend and expand the functionality of WordPress. You may install plugins in the <a href="https://wordpress.org/plugins/">WordPress Plugin Directory</a> right from here, or upload a plugin in .zip format by clicking the button at the top of this page.</p>	<form id="plugin-filter" method="post">
+		<div class="wp-list-table widefat plugin-install">
+		<h2 class='screen-reader-text'>Plugins list</h2>	<div id="the-list">
+				<div class="plugin-card plugin-card-portalpilot">
+			<div class="notice notice-error notice-alt inline"><p>This plugin does not work with your version of WordPress. <a href="http://127.0.0.1/wp-admin/update-core.php">Please update WordPress</a>.</p></div>			<div class="plugin-card-top">
+				<div class="name column-name">
+					<h3>
+						<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=portalpilot&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal">
+						PortalPilot &#8211; Client Portal, File Sharing and Client Management						<img src="https://ps.w.org/portalpilot/assets/icon-256x256.png?rev=3678522" class="plugin-icon" alt="" />
+						</a>
+					</h3>
+				</div>
+				<div class="action-links">
+					<ul class="plugin-action-buttons"><li><button type="button" class="install-now button button-disabled" disabled="disabled">Install Now</button></li><li><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=portalpilot&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal" aria-label="More information about PortalPilot &#8211; Client Portal, File Sharing and Client Management 1.0.4" data-title="PortalPilot &#8211; Client Portal, File Sharing and Client Management 1.0.4">More Details</a></li></ul>				</div>
+				<div class="desc column-description">
+					<p>A client portal for WordPress: share files, exchange notes, manage client profiles and control what each client can do.</p>
+					<p class="authors"> <cite>By <a href="https://profiles.wordpress.org/cartpauj/">cartpauj</a></cite></p>
+				</div>
+			</div>
+						<div class="plugin-card-bottom">
+				<div class="vers column-rating">
+					<div class="star-rating"><span class="screen-reader-text">0.0 rating</span><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div></div>					<span class="num-ratings" aria-hidden="true">(0)</span>
+				</div>
+				<div class="column-updated">
+					<strong>Last Updated:</strong>
+					4 weeks ago				</div>
+				<div class="column-downloaded">
+					90+ Active Installations				</div>
+				<div class="column-compatibility">
+					<span class="compatibility-incompatible"><strong>Incompatible</strong> with your version of WordPress</span>				</div>
+			</div>
+		</div>
+					<div class="plugin-card plugin-card-plexblocks-business-hours-for-block-editor">
+						<div class="plugin-card-top">
+				<div class="name column-name">
+					<h3>
+						<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=plexblocks-business-hours-for-block-editor&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal">
+						PlexBlocks &#8211; Business Hours for Block Editor						<img src="https://ps.w.org/plexblocks-business-hours-for-block-editor/assets/icon-256x256.png?rev=3685003" class="plugin-icon" alt="" />
+						</a>
+					</h3>
+				</div>
+				<div class="action-links">
+					<ul class="plugin-action-buttons"><li><a class="install-now button" data-slug="plexblocks-business-hours-for-block-editor" href="http://127.0.0.1/wp-admin/update.php?action=install-plugin&#038;plugin=plexblocks-business-hours-for-block-editor&#038;_wpnonce=354ed5b4da" aria-label="Install PlexBlocks &#8211; Business Hours for Block Editor 1.0.0 now" data-name="PlexBlocks &#8211; Business Hours for Block Editor 1.0.0" role="button">Install Now</a></li><li><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=plexblocks-business-hours-for-block-editor&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal" aria-label="More information about PlexBlocks &#8211; Business Hours for Block Editor 1.0.0" data-title="PlexBlocks &#8211; Business Hours for Block Editor 1.0.0">More Details</a></li></ul>				</div>
+				<div class="desc column-description">
+					<p>Display customizable weekly business hours, live open/closed status badges, and holiday schedules in the WordPress block editor.</p>
+					<p class="authors"> <cite>By <a href="https://profiles.wordpress.org/conicplex/">ConicPlex</a></cite></p>
+				</div>
+			</div>
+						<div class="plugin-card-bottom">
+				<div class="vers column-rating">
+					<div class="star-rating"><span class="screen-reader-text">0.0 rating</span><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div></div>					<span class="num-ratings" aria-hidden="true">(0)</span>
+				</div>
+				<div class="column-updated">
+					<strong>Last Updated:</strong>
+					3 weeks ago				</div>
+				<div class="column-downloaded">
+					50+ Active Installations				</div>
+				<div class="column-compatibility">
+					<span class="compatibility-compatible"><strong>Compatible</strong> with your version of WordPress</span>				</div>
+			</div>
+		</div>
+					<div class="plugin-card plugin-card-allterrain-forms">
+			<div class="notice notice-error notice-alt inline"><p>This plugin does not work with your version of WordPress. <a href="http://127.0.0.1/wp-admin/update-core.php">Please update WordPress</a>.</p></div>			<div class="plugin-card-top">
+				<div class="name column-name">
+					<h3>
+						<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=allterrain-forms&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal">
+						AllTerrain Forms						<img src="https://ps.w.org/allterrain-forms/assets/icon-256x256.png?rev=3692200" class="plugin-icon" alt="" />
+						</a>
+					</h3>
+				</div>
+				<div class="action-links">
+					<ul class="plugin-action-buttons"><li><button type="button" class="install-now button button-disabled" disabled="disabled">Install Now</button></li><li><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=allterrain-forms&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal" aria-label="More information about AllTerrain Forms 1.2.2" data-title="AllTerrain Forms 1.2.2">More Details</a></li></ul>				</div>
+				<div class="desc column-description">
+					<p>Drag &amp; drop contact form builder with conditional logic, multi-step forms, file uploads, surveys, quizzes, entries and 10 themes. All free.</p>
+					<p class="authors"> <cite>By <a href="https://profiles.wordpress.org/allterraindeveloper/">Daniel López Sánchez</a></cite></p>
+				</div>
+			</div>
+			<div class="plugin-dependencies notice notice-alt notice-info inline"><p class="plugin-dependencies-explainer-text"><strong>Additional plugins are required</strong></p> <div class="plugin-dependency"><span class="plugin-dependency-name">OpenStation: Desktop Windows, Dock &amp; Virtual Desktops for WP Admin</span> <a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=desktop-mode&#038;TB_iframe=true&#038;width=600&#038;height=550" class="more-details-link thickbox open-plugin-details-modal" aria-label="More information about OpenStation: Desktop Windows, Dock &amp; Virtual Desktops for WP Admin" data-title="OpenStation: Desktop Windows, Dock &amp; Virtual Desktops for WP Admin">More Details</a></div></div>			<div class="plugin-card-bottom">
+				<div class="vers column-rating">
+					<div class="star-rating"><span class="screen-reader-text">4.0 rating based on 2 ratings</span><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div></div>					<span class="num-ratings" aria-hidden="true">(2)</span>
+				</div>
+				<div class="column-updated">
+					<strong>Last Updated:</strong>
+					4 days ago				</div>
+				<div class="column-downloaded">
+					10+ Active Installations				</div>
+				<div class="column-compatibility">
+					<span class="compatibility-incompatible"><strong>Incompatible</strong> with your version of WordPress</span>				</div>
+			</div>
+		</div>
+					<div class="plugin-card plugin-card-popuproulette">
+						<div class="plugin-card-top">
+				<div class="name column-name">
+					<h3>
+						<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=popuproulette&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal">
+						PopupRoulette						<img src="https://ps.w.org/popuproulette/assets/icon.svg?rev=3683676" class="plugin-icon" alt="" />
+						</a>
+					</h3>
+				</div>
+				<div class="action-links">
+					<ul class="plugin-action-buttons"><li><a class="install-now button" data-slug="popuproulette" href="http://127.0.0.1/wp-admin/update.php?action=install-plugin&#038;plugin=popuproulette&#038;_wpnonce=037327d827" aria-label="Install PopupRoulette 1.3.1 now" data-name="PopupRoulette 1.3.1" role="button">Install Now</a></li><li><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=popuproulette&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal" aria-label="More information about PopupRoulette 1.3.1" data-title="PopupRoulette 1.3.1">More Details</a></li></ul>				</div>
+				<div class="desc column-description">
+					<p>Promo popups that rotate: every page load shows one of your live popups at random. Image or designed template, auto-close, scheduling, RTL.</p>
+					<p class="authors"> <cite>By <a href="https://profiles.wordpress.org/itay1313/">itay haephrati</a></cite></p>
+				</div>
+			</div>
+						<div class="plugin-card-bottom">
+				<div class="vers column-rating">
+					<div class="star-rating"><span class="screen-reader-text">5.0 rating based on 3 ratings</span><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div></div>					<span class="num-ratings" aria-hidden="true">(3)</span>
+				</div>
+				<div class="column-updated">
+					<strong>Last Updated:</strong>
+					3 weeks ago				</div>
+				<div class="column-downloaded">
+					100+ Active Installations				</div>
+				<div class="column-compatibility">
+					<span class="compatibility-compatible"><strong>Compatible</strong> with your version of WordPress</span>				</div>
+			</div>
+		</div>
+					<div class="plugin-card plugin-card-ruhler-community-resource-directory">
+			<div class="notice notice-error notice-alt inline"><p>This plugin does not work with your version of WordPress. <a href="http://127.0.0.1/wp-admin/update-core.php">Please update WordPress</a>.</p></div>			<div class="plugin-card-top">
+				<div class="name column-name">
+					<h3>
+						<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=ruhler-community-resource-directory&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal">
+						Ruhler Community Resource Directory						<img src="https://ps.w.org/ruhler-community-resource-directory/assets/icon.svg?rev=3700721" class="plugin-icon" alt="" />
+						</a>
+					</h3>
+				</div>
+				<div class="action-links">
+					<ul class="plugin-action-buttons"><li><button type="button" class="install-now button button-disabled" disabled="disabled">Install Now</button></li><li><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=ruhler-community-resource-directory&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal" aria-label="More information about Ruhler Community Resource Directory 0.3.0" data-title="Ruhler Community Resource Directory 0.3.0">More Details</a></li></ul>				</div>
+				<div class="desc column-description">
+					<p>Manage locations, hours, and services from wp-admin, and publish an accessible directory with search, an optional map, and Near Me. No API key.</p>
+					<p class="authors"> <cite>By <a href="https://profiles.wordpress.org/ruhler/">ruhler</a></cite></p>
+				</div>
+			</div>
+						<div class="plugin-card-bottom">
+				<div class="vers column-rating">
+					<div class="star-rating"><span class="screen-reader-text">0.0 rating</span><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div></div>					<span class="num-ratings" aria-hidden="true">(0)</span>
+				</div>
+				<div class="column-updated">
+					<strong>Last Updated:</strong>
+					2 weeks ago				</div>
+				<div class="column-downloaded">
+					60+ Active Installations				</div>
+				<div class="column-compatibility">
+					<span class="compatibility-incompatible"><strong>Incompatible</strong> with your version of WordPress</span>				</div>
+			</div>
+		</div>
+					<div class="plugin-card plugin-card-ordessa">
+						<div class="plugin-card-top">
+				<div class="name column-name">
+					<h3>
+						<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=ordessa&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal">
+						Ordessa – FAQ &amp; Accordion Block with Bulk Add						<img src="https://ps.w.org/ordessa/assets/icon.svg?rev=3700860" class="plugin-icon" alt="" />
+						</a>
+					</h3>
+				</div>
+				<div class="action-links">
+					<ul class="plugin-action-buttons"><li><a class="install-now button" data-slug="ordessa" href="http://127.0.0.1/wp-admin/update.php?action=install-plugin&#038;plugin=ordessa&#038;_wpnonce=59633b5ac9" aria-label="Install Ordessa – FAQ &amp; Accordion Block with Bulk Add 0.1.7 now" data-name="Ordessa – FAQ &amp; Accordion Block with Bulk Add 0.1.7" role="button">Install Now</a></li><li><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=ordessa&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal" aria-label="More information about Ordessa – FAQ &amp; Accordion Block with Bulk Add 0.1.7" data-title="Ordessa – FAQ &amp; Accordion Block with Bulk Add 0.1.7">More Details</a></li></ul>				</div>
+				<div class="desc column-description">
+					<p>FAQ and accordion block for Gutenberg. Bulk paste a whole FAQ at once — add, reorder and edit every question inside one block.</p>
+					<p class="authors"> <cite>By <a href="https://profiles.wordpress.org/saumya010/">saumya010</a></cite></p>
+				</div>
+			</div>
+						<div class="plugin-card-bottom">
+				<div class="vers column-rating">
+					<div class="star-rating"><span class="screen-reader-text">5.0 rating based on 2 ratings</span><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div></div>					<span class="num-ratings" aria-hidden="true">(2)</span>
+				</div>
+				<div class="column-updated">
+					<strong>Last Updated:</strong>
+					3 days ago				</div>
+				<div class="column-downloaded">
+					90+ Active Installations				</div>
+				<div class="column-compatibility">
+					<span class="compatibility-compatible"><strong>Compatible</strong> with your version of WordPress</span>				</div>
+			</div>
+		</div>
+					<div class="plugin-card plugin-card-workmore-media-folders">
+						<div class="plugin-card-top">
+				<div class="name column-name">
+					<h3>
+						<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=workmore-media-folders&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal">
+						WorkMore Media Folders						<img src="https://ps.w.org/workmore-media-folders/assets/icon.svg?rev=3701302" class="plugin-icon" alt="" />
+						</a>
+					</h3>
+				</div>
+				<div class="action-links">
+					<ul class="plugin-action-buttons"><li><a class="install-now button" data-slug="workmore-media-folders" href="http://127.0.0.1/wp-admin/update.php?action=install-plugin&#038;plugin=workmore-media-folders&#038;_wpnonce=b13d4ccc40" aria-label="Install WorkMore Media Folders 2.2.1 now" data-name="WorkMore Media Folders 2.2.1" role="button">Install Now</a></li><li><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=workmore-media-folders&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal" aria-label="More information about WorkMore Media Folders 2.2.1" data-title="WorkMore Media Folders 2.2.1">More Details</a></li></ul>				</div>
+				<div class="desc column-description">
+					<p>Drag-and-drop virtual folders for the Media Library. Fast and reversible: your files never move on disk and nothing can break.</p>
+					<p class="authors"> <cite>By <a href="https://profiles.wordpress.org/connextsystem/">Work More</a></cite></p>
+				</div>
+			</div>
+						<div class="plugin-card-bottom">
+				<div class="vers column-rating">
+					<div class="star-rating"><span class="screen-reader-text">0.0 rating</span><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div><div class="star star-empty" aria-hidden="true"></div></div>					<span class="num-ratings" aria-hidden="true">(0)</span>
+				</div>
+				<div class="column-updated">
+					<strong>Last Updated:</strong>
+					17 hours ago				</div>
+				<div class="column-downloaded">
+					100+ Active Installations				</div>
+				<div class="column-compatibility">
+					<span class="compatibility-compatible"><strong>Compatible</strong> with your version of WordPress</span>				</div>
+			</div>
+		</div>
+					<div class="plugin-card plugin-card-eventnetic">
+						<div class="plugin-card-top">
+				<div class="name column-name">
+					<h3>
+						<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=eventnetic&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal">
+						Eventnetic &#8211; Event Tickets, Booking and Calendar						<img src="https://ps.w.org/eventnetic/assets/icon-256x256.png?rev=3698972" class="plugin-icon" alt="" />
+						</a>
+					</h3>
+				</div>
+				<div class="action-links">
+					<ul class="plugin-action-buttons"><li><a class="install-now button" data-slug="eventnetic" href="http://127.0.0.1/wp-admin/update.php?action=install-plugin&#038;plugin=eventnetic&#038;_wpnonce=ca78ce643c" aria-label="Install Eventnetic &#8211; Event Tickets, Booking and Calendar 1.3.1 now" data-name="Eventnetic &#8211; Event Tickets, Booking and Calendar 1.3.1" role="button">Install Now</a></li><li><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=plugin-information&#038;plugin=eventnetic&#038;TB_iframe=true&#038;width=600&#038;height=550" class="thickbox open-plugin-details-modal" aria-label="More information about Eventnetic &#8211; Event Tickets, Booking and Calendar 1.3.1" data-title="Eventnetic &#8211; Event Tickets, Booking and Calendar 1.3.1">More Details</a></li></ul>				</div>
+				<div class="desc column-description">
+					<p>Sell event tickets on WordPress: dates, capacity, ticket types, a booking form, a calendar, and payment at the door. No per-ticket fees.</p>
+					<p class="authors"> <cite>By <a href="https://profiles.wordpress.org/eventnetic/">eventnetic</a></cite></p>
+				</div>
+			</div>
+						<div class="plugin-card-bottom">
+				<div class="vers column-rating">
+					<div class="star-rating"><span class="screen-reader-text">5.0 rating based on 2 ratings</span><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div><div class="star star-full" aria-hidden="true"></div></div>					<span class="num-ratings" aria-hidden="true">(2)</span>
+				</div>
+				<div class="column-updated">
+					<strong>Last Updated:</strong>
+					1 day ago				</div>
+				<div class="column-downloaded">
+					30+ Active Installations				</div>
+				<div class="column-compatibility">
+					<span class="compatibility-compatible"><strong>Compatible</strong> with your version of WordPress</span>				</div>
+			</div>
+		</div>
+				</div>
+</div>
+			</form>
+	
+	<div class="plugins-popular-tags-wrapper">
+	<h2>Popular tags</h2>
+	<p>You may also browse based on the most popular tags in the Plugin Directory:</p>
+	<p class="popular-tags"><a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=accessibility" class="tag-cloud-link tag-link-accessibility tag-link-position-1" style="font-size: 9.037037037037pt;" aria-label="accessibility (677 plugins)">accessibility</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=admin" class="tag-cloud-link tag-link-admin tag-link-position-2" style="font-size: 15.777777777778pt;" aria-label="admin (3,009 plugins)">admin</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=ads" class="tag-cloud-link tag-link-ads tag-link-position-3" style="font-size: 8.7259259259259pt;" aria-label="ads (633 plugins)">ads</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=affiliate" class="tag-cloud-link tag-link-affiliate tag-link-position-4" style="font-size: 9.4518518518519pt;" aria-label="affiliate (741 plugins)">affiliate</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=AI" class="tag-cloud-link tag-link-ai tag-link-position-5" style="font-size: 14.637037037037pt;" aria-label="AI (2,335 plugins)">AI</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=ajax" class="tag-cloud-link tag-link-ajax tag-link-position-6" style="font-size: 9.4518518518519pt;" aria-label="ajax (742 plugins)">ajax</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=analytics" class="tag-cloud-link tag-link-analytics tag-link-position-7" style="font-size: 12.77037037037pt;" aria-label="analytics (1,557 plugins)">analytics</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=api" class="tag-cloud-link tag-link-api tag-link-position-8" style="font-size: 9.762962962963pt;" aria-label="api (799 plugins)">api</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=automation" class="tag-cloud-link tag-link-automation tag-link-position-9" style="font-size: 9.6592592592593pt;" aria-label="automation (769 plugins)">automation</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=block" class="tag-cloud-link tag-link-block tag-link-position-10" style="font-size: 11.733333333333pt;" aria-label="block (1,234 plugins)">block</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=blocks" class="tag-cloud-link tag-link-blocks tag-link-position-11" style="font-size: 9.5555555555556pt;" aria-label="blocks (753 plugins)">blocks</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=booking" class="tag-cloud-link tag-link-booking tag-link-position-12" style="font-size: 9.3481481481481pt;" aria-label="booking (725 plugins)">booking</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=buddypress" class="tag-cloud-link tag-link-buddypress tag-link-position-13" style="font-size: 9.762962962963pt;" aria-label="buddypress (791 plugins)">buddypress</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=button" class="tag-cloud-link tag-link-button tag-link-position-14" style="font-size: 8.4148148148148pt;" aria-label="button (583 plugins)">button</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=cache" class="tag-cloud-link tag-link-cache tag-link-position-15" style="font-size: 8.4148148148148pt;" aria-label="cache (594 plugins)">cache</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=calendar" class="tag-cloud-link tag-link-calendar tag-link-position-16" style="font-size: 9.762962962963pt;" aria-label="calendar (787 plugins)">calendar</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=categories" class="tag-cloud-link tag-link-categories tag-link-position-17" style="font-size: 8.5185185185185pt;" aria-label="categories (600 plugins)">categories</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=category" class="tag-cloud-link tag-link-category tag-link-position-18" style="font-size: 9.3481481481481pt;" aria-label="category (717 plugins)">category</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=chat" class="tag-cloud-link tag-link-chat tag-link-position-19" style="font-size: 10.592592592593pt;" aria-label="chat (947 plugins)">chat</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=chatbot" class="tag-cloud-link tag-link-chatbot tag-link-position-20" style="font-size: 10.8pt;" aria-label="chatbot (1,010 plugins)">chatbot</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=checkout" class="tag-cloud-link tag-link-checkout tag-link-position-21" style="font-size: 10.385185185185pt;" aria-label="checkout (914 plugins)">checkout</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=comment" class="tag-cloud-link tag-link-comment tag-link-position-22" style="font-size: 8.3111111111111pt;" aria-label="comment (570 plugins)">comment</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=comments" class="tag-cloud-link tag-link-comments tag-link-position-23" style="font-size: 14.118518518519pt;" aria-label="comments (2,065 plugins)">comments</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=contact" class="tag-cloud-link tag-link-contact tag-link-position-24" style="font-size: 8.9333333333333pt;" aria-label="contact (664 plugins)">contact</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=contact+form" class="tag-cloud-link tag-link-contact-form tag-link-position-25" style="font-size: 11.007407407407pt;" aria-label="contact form (1,056 plugins)">contact form</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=contact+form+7" class="tag-cloud-link tag-link-contact-form-7 tag-link-position-26" style="font-size: 10.281481481481pt;" aria-label="contact form 7 (894 plugins)">contact form 7</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=content" class="tag-cloud-link tag-link-content tag-link-position-27" style="font-size: 11.940740740741pt;" aria-label="content (1,275 plugins)">content</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=css" class="tag-cloud-link tag-link-css tag-link-position-28" style="font-size: 8.9333333333333pt;" aria-label="css (661 plugins)">css</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=custom" class="tag-cloud-link tag-link-custom tag-link-position-29" style="font-size: 8.3111111111111pt;" aria-label="custom (576 plugins)">custom</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=customer+support" class="tag-cloud-link tag-link-customer-support tag-link-position-30" style="font-size: 8.4148148148148pt;" aria-label="customer support (583 plugins)">customer support</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=dashboard" class="tag-cloud-link tag-link-dashboard tag-link-position-31" style="font-size: 9.8666666666667pt;" aria-label="dashboard (810 plugins)">dashboard</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=e-commerce" class="tag-cloud-link tag-link-e-commerce tag-link-position-32" style="font-size: 11.007407407407pt;" aria-label="e-commerce (1,050 plugins)">e-commerce</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=ecommerce" class="tag-cloud-link tag-link-ecommerce tag-link-position-33" style="font-size: 13.911111111111pt;" aria-label="ecommerce (1,995 plugins)">ecommerce</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=editor" class="tag-cloud-link tag-link-editor tag-link-position-34" style="font-size: 10.385185185185pt;" aria-label="editor (907 plugins)">editor</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=elementor" class="tag-cloud-link tag-link-elementor tag-link-position-35" style="font-size: 12.77037037037pt;" aria-label="elementor (1,531 plugins)">elementor</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=email" class="tag-cloud-link tag-link-email tag-link-position-36" style="font-size: 13.392592592593pt;" aria-label="email (1,774 plugins)">email</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=embed" class="tag-cloud-link tag-link-embed tag-link-position-37" style="font-size: 10.281481481481pt;" aria-label="embed (881 plugins)">embed</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=events" class="tag-cloud-link tag-link-events tag-link-position-38" style="font-size: 9.5555555555556pt;" aria-label="events (755 plugins)">events</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=facebook" class="tag-cloud-link tag-link-facebook tag-link-position-39" style="font-size: 12.77037037037pt;" aria-label="facebook (1,531 plugins)">facebook</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=feed" class="tag-cloud-link tag-link-feed tag-link-position-40" style="font-size: 9.5555555555556pt;" aria-label="feed (761 plugins)">feed</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=form" class="tag-cloud-link tag-link-form tag-link-position-41" style="font-size: 10.592592592593pt;" aria-label="form (950 plugins)">form</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=forms" class="tag-cloud-link tag-link-forms tag-link-position-42" style="font-size: 10.177777777778pt;" aria-label="forms (869 plugins)">forms</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=gallery" class="tag-cloud-link tag-link-gallery tag-link-position-43" style="font-size: 12.666666666667pt;" aria-label="gallery (1,501 plugins)">gallery</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=gateway" class="tag-cloud-link tag-link-gateway tag-link-position-44" style="font-size: 8pt;" aria-label="gateway (536 plugins)">gateway</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=GDPR" class="tag-cloud-link tag-link-gdpr tag-link-position-45" style="font-size: 8.9333333333333pt;" aria-label="GDPR (666 plugins)">GDPR</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=google" class="tag-cloud-link tag-link-google tag-link-position-46" style="font-size: 12.874074074074pt;" aria-label="google (1,573 plugins)">google</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=gutenberg" class="tag-cloud-link tag-link-gutenberg tag-link-position-47" style="font-size: 12.77037037037pt;" aria-label="gutenberg (1,541 plugins)">gutenberg</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=image" class="tag-cloud-link tag-link-image tag-link-position-48" style="font-size: 13.081481481481pt;" aria-label="image (1,657 plugins)">image</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=images" class="tag-cloud-link tag-link-images tag-link-position-49" style="font-size: 13.496296296296pt;" aria-label="images (1,824 plugins)">images</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=import" class="tag-cloud-link tag-link-import tag-link-position-50" style="font-size: 8.5185185185185pt;" aria-label="import (601 plugins)">import</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=javascript" class="tag-cloud-link tag-link-javascript tag-link-position-51" style="font-size: 8.6222222222222pt;" aria-label="javascript (619 plugins)">javascript</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=jquery" class="tag-cloud-link tag-link-jquery tag-link-position-52" style="font-size: 8.9333333333333pt;" aria-label="jquery (664 plugins)">jquery</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=link" class="tag-cloud-link tag-link-link tag-link-position-53" style="font-size: 8.6222222222222pt;" aria-label="link (622 plugins)">link</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=links" class="tag-cloud-link tag-link-links tag-link-position-54" style="font-size: 10.696296296296pt;" aria-label="links (979 plugins)">links</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=live+chat" class="tag-cloud-link tag-link-live-chat tag-link-position-55" style="font-size: 9.5555555555556pt;" aria-label="live chat (761 plugins)">live chat</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=login" class="tag-cloud-link tag-link-login tag-link-position-56" style="font-size: 12.562962962963pt;" aria-label="login (1,468 plugins)">login</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=marketing" class="tag-cloud-link tag-link-marketing tag-link-position-57" style="font-size: 9.6592592592593pt;" aria-label="marketing (780 plugins)">marketing</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=media" class="tag-cloud-link tag-link-media tag-link-position-58" style="font-size: 11.318518518519pt;" aria-label="media (1,131 plugins)">media</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=menu" class="tag-cloud-link tag-link-menu tag-link-position-59" style="font-size: 10.074074074074pt;" aria-label="menu (841 plugins)">menu</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=mobile" class="tag-cloud-link tag-link-mobile tag-link-position-60" style="font-size: 8.1037037037037pt;" aria-label="mobile (545 plugins)">mobile</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=navigation" class="tag-cloud-link tag-link-navigation tag-link-position-61" style="font-size: 8.5185185185185pt;" aria-label="navigation (595 plugins)">navigation</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=newsletter" class="tag-cloud-link tag-link-newsletter tag-link-position-62" style="font-size: 8.8296296296296pt;" aria-label="newsletter (638 plugins)">newsletter</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=page" class="tag-cloud-link tag-link-page tag-link-position-63" style="font-size: 11.422222222222pt;" aria-label="page (1,153 plugins)">page</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=pages" class="tag-cloud-link tag-link-pages tag-link-position-64" style="font-size: 9.6592592592593pt;" aria-label="pages (770 plugins)">pages</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=payment" class="tag-cloud-link tag-link-payment tag-link-position-65" style="font-size: 11.525925925926pt;" aria-label="payment (1,181 plugins)">payment</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=payment+gateway" class="tag-cloud-link tag-link-payment-gateway tag-link-position-66" style="font-size: 11.837037037037pt;" aria-label="payment gateway (1,262 plugins)">payment gateway</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=payments" class="tag-cloud-link tag-link-payments tag-link-position-67" style="font-size: 9.6592592592593pt;" aria-label="payments (782 plugins)">payments</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=performance" class="tag-cloud-link tag-link-performance tag-link-position-68" style="font-size: 11.733333333333pt;" aria-label="performance (1,217 plugins)">performance</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=popup" class="tag-cloud-link tag-link-popup tag-link-position-69" style="font-size: 9.3481481481481pt;" aria-label="popup (730 plugins)">popup</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=post" class="tag-cloud-link tag-link-post tag-link-position-70" style="font-size: 15.466666666667pt;" aria-label="post (2,793 plugins)">post</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=posts" class="tag-cloud-link tag-link-posts tag-link-position-71" style="font-size: 14.42962962963pt;" aria-label="posts (2,234 plugins)">posts</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=privacy" class="tag-cloud-link tag-link-privacy tag-link-position-72" style="font-size: 8.5185185185185pt;" aria-label="privacy (596 plugins)">privacy</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=redirect" class="tag-cloud-link tag-link-redirect tag-link-position-73" style="font-size: 8.4148148148148pt;" aria-label="redirect (585 plugins)">redirect</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=responsive" class="tag-cloud-link tag-link-responsive tag-link-position-74" style="font-size: 9.2444444444444pt;" aria-label="responsive (711 plugins)">responsive</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=reviews" class="tag-cloud-link tag-link-reviews tag-link-position-75" style="font-size: 8pt;" aria-label="reviews (537 plugins)">reviews</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=rss" class="tag-cloud-link tag-link-rss tag-link-position-76" style="font-size: 9.8666666666667pt;" aria-label="rss (817 plugins)">rss</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=search" class="tag-cloud-link tag-link-search tag-link-position-77" style="font-size: 10.8pt;" aria-label="search (995 plugins)">search</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=security" class="tag-cloud-link tag-link-security tag-link-position-78" style="font-size: 14.118518518519pt;" aria-label="security (2,110 plugins)">security</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=seo" class="tag-cloud-link tag-link-seo tag-link-position-79" style="font-size: 16.4pt;" aria-label="seo (3,489 plugins)">seo</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=share" class="tag-cloud-link tag-link-share tag-link-position-80" style="font-size: 8.7259259259259pt;" aria-label="share (630 plugins)">share</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=shipping" class="tag-cloud-link tag-link-shipping tag-link-position-81" style="font-size: 10.385185185185pt;" aria-label="shipping (907 plugins)">shipping</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=shortcode" class="tag-cloud-link tag-link-shortcode tag-link-position-82" style="font-size: 14.844444444444pt;" aria-label="shortcode (2,456 plugins)">shortcode</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=sidebar" class="tag-cloud-link tag-link-sidebar tag-link-position-83" style="font-size: 12.148148148148pt;" aria-label="sidebar (1,340 plugins)">sidebar</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=slider" class="tag-cloud-link tag-link-slider tag-link-position-84" style="font-size: 11.007407407407pt;" aria-label="slider (1,054 plugins)">slider</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=social" class="tag-cloud-link tag-link-social tag-link-position-85" style="font-size: 11.733333333333pt;" aria-label="social (1,218 plugins)">social</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=social+media" class="tag-cloud-link tag-link-social-media tag-link-position-86" style="font-size: 8.5185185185185pt;" aria-label="social media (606 plugins)">social media</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=spam" class="tag-cloud-link tag-link-spam tag-link-position-87" style="font-size: 11.007407407407pt;" aria-label="spam (1,045 plugins)">spam</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=statistics" class="tag-cloud-link tag-link-statistics tag-link-position-88" style="font-size: 8.2074074074074pt;" aria-label="statistics (561 plugins)">statistics</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=tags" class="tag-cloud-link tag-link-tags tag-link-position-89" style="font-size: 8.2074074074074pt;" aria-label="tags (557 plugins)">tags</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=theme" class="tag-cloud-link tag-link-theme tag-link-position-90" style="font-size: 8.4148148148148pt;" aria-label="theme (587 plugins)">theme</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=tracking" class="tag-cloud-link tag-link-tracking tag-link-position-91" style="font-size: 9.037037037037pt;" aria-label="tracking (674 plugins)">tracking</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=twitter" class="tag-cloud-link tag-link-twitter tag-link-position-92" style="font-size: 12.666666666667pt;" aria-label="twitter (1,515 plugins)">twitter</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=user" class="tag-cloud-link tag-link-user tag-link-position-93" style="font-size: 8pt;" aria-label="user (541 plugins)">user</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=users" class="tag-cloud-link tag-link-users tag-link-position-94" style="font-size: 8.2074074074074pt;" aria-label="users (567 plugins)">users</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=video" class="tag-cloud-link tag-link-video tag-link-position-95" style="font-size: 11.525925925926pt;" aria-label="video (1,179 plugins)">video</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=whatsapp" class="tag-cloud-link tag-link-whatsapp tag-link-position-96" style="font-size: 8.1037037037037pt;" aria-label="whatsapp (546 plugins)">whatsapp</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=widget" class="tag-cloud-link tag-link-widget tag-link-position-97" style="font-size: 18.162962962963pt;" aria-label="widget (5,137 plugins)">widget</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=widgets" class="tag-cloud-link tag-link-widgets tag-link-position-98" style="font-size: 11.111111111111pt;" aria-label="widgets (1,074 plugins)">widgets</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=woocommerce" class="tag-cloud-link tag-link-woocommerce tag-link-position-99" style="font-size: 22pt;" aria-label="woocommerce (11,965 plugins)">woocommerce</a>
+<a href="http://127.0.0.1/wp-admin/plugin-install.php?tab=search&#038;type=tag&#038;s=youtube" class="tag-cloud-link tag-link-youtube tag-link-position-100" style="font-size: 9.4518518518519pt;" aria-label="youtube (740 plugins)">youtube</a></p><br class="clear" /></div>
+	<span class="spinner"></span>
+</div>
+
+	<script id="tmpl-wp-updates-admin-notice" type="text/html">
+		<div <# if ( data.id ) { #>id="{{ data.id }}"<# } #> class="notice {{ data.className }}"><p>{{{ data.message }}}</p></div>
+	</script>
+	<script id="tmpl-wp-bulk-updates-admin-notice" type="text/html">
+		<div id="{{ data.id }}" class="{{ data.className }} notice <# if ( data.errorMessage ) { #>notice-error<# } else { #>notice-success<# } #>">
+			<p>
+				<# if ( data.successMessage ) { #>
+					{{{ data.successMessage }}}
+				<# } #>
+				<# if ( data.errorMessage ) { #>
+					<button class="button-link bulk-action-errors-collapsed" aria-expanded="false">
+						{{{ data.errorMessage }}}
+						<span class="screen-reader-text">
+							Show more details						</span>
+						<span class="toggle-indicator" aria-hidden="true"></span>
+					</button>
+				<# } #>
+			</p>
+			<# if ( data.errorMessages ) { #>
+				<ul class="bulk-action-errors hidden">
+					<# _.each( data.errorMessages, function( errorMessage ) { #>
+						<li>{{ errorMessage }}</li>
+					<# } ); #>
+				</ul>
+			<# } #>
+		</div>
+	</script>
+	
+<div class="clear"></div></div><!-- wpbody-content -->
+<div class="clear"></div></div><!-- wpbody -->
+<div class="clear"></div></div><!-- wpcontent -->
+
+<div id="wpfooter" role="contentinfo">
+		<p id="footer-left" class="alignleft">
+		<span id="footer-thankyou">Thank you for creating with <a href="https://wordpress.org/">WordPress</a>.</span>	</p>
+	<p id="footer-upgrade" class="alignright">
+		<strong><a href="http://127.0.0.1/wp-admin/update-core.php">Get Version 7.1.2</a></strong>	</p>
+	<div class="clear"></div>
+</div>
+	<div id="wp-auth-check-wrap" class="hidden fallback">
+	<div id="wp-auth-check-bg"></div>
+	<div id="wp-auth-check">
+	<button type="button" class="wp-auth-check-close button-link"><span class="screen-reader-text">
+		Close dialog	</span></button>
+		<div class="wp-auth-fallback">
+		<p><b class="wp-auth-fallback-expired" tabindex="0">Session expired</b></p>
+		<p><a href="http://127.0.0.1/wp-login.php" target="_blank">Please log in again.</a>
+		The login page will open in a new tab. After logging in you can close it and return to this page.</p>
+	</div>
+	</div>
+	</div>
+	<script src='http://127.0.0.1/wp-admin/load-scripts.php?c=0&amp;load%5Bchunk_0%5D=hoverIntent,wp-hooks&amp;ver=6.6.1'></script>
+<script src="http://127.0.0.1/wp-includes/js/dist/i18n.min.js?ver=5e580eb46a90c2b997e6" id="wp-i18n-js"></script>
+<script id="wp-i18n-js-after">
+wp.i18n.setLocaleData( { 'text direction\u0004ltr': [ 'ltr' ] } );
+</script>
+<script src="http://127.0.0.1/wp-admin/js/common.min.js?ver=6.6.1" id="common-js"></script>
+<script src="http://127.0.0.1/wp-includes/js/hoverintent-js.min.js?ver=2.2.1" id="hoverintent-js-js"></script>
+<script src="http://127.0.0.1/wp-includes/js/admin-bar.min.js?ver=6.6.1" id="admin-bar-js"></script>
+<script src="http://127.0.0.1/wp-includes/js/jquery/ui/core.min.js?ver=1.13.3" id="jquery-ui-core-js"></script>
+<script id="thickbox-js-extra">
+var thickboxL10n = {"next":"Next >","prev":"< Prev","image":"Image","of":"of","close":"Close","noiframes":"This feature requires inline frames. You have iframes disabled or your browser does not support them.","loadingAnimation":"http:\/\/127.0.0.1\/wp-includes\/js\/thickbox\/loadingAnimation.gif"};
+</script>
+<script src="http://127.0.0.1/wp-includes/js/thickbox/thickbox.js?ver=3.1-20121105" id="thickbox-js"></script>
+<script src="http://127.0.0.1/wp-admin/js/plugin-install.min.js?ver=6.6.1" id="plugin-install-js"></script>
+<script src="http://127.0.0.1/wp-includes/js/underscore.min.js?ver=1.13.4" id="underscore-js"></script>
+<script id="wp-util-js-extra">
+var _wpUtilSettings = {"ajax":{"url":"\/wp-admin\/admin-ajax.php"}};
+</script>
+<script src="http://127.0.0.1/wp-includes/js/wp-util.min.js?ver=6.6.1" id="wp-util-js"></script>
+<script src="http://127.0.0.1/wp-includes/js/dist/dom-ready.min.js?ver=f77871ff7694fffea381" id="wp-dom-ready-js"></script>
+<script src="http://127.0.0.1/wp-includes/js/dist/a11y.min.js?ver=d90eebea464f6c09bfd5" id="wp-a11y-js"></script>
+<script src="http://127.0.0.1/wp-includes/js/wp-sanitize.min.js?ver=6.6.1" id="wp-sanitize-js"></script>
+<script id="updates-js-extra">
+var _wpUpdatesSettings = {"ajax_nonce":"db3003feba"};
+var _wpUpdatesItemCounts = {"plugins":{"all":["hello.php","php-compatibility-checker\/wpengine-phpcompat.php"],"search":[],"active":[],"inactive":[],"recently_activated":[],"mustuse":[],"dropins":[]},"totals":{"counts":{"plugins":0,"themes":3,"wordpress":1,"translations":1,"total":5},"title":"1 WordPress Update, 3 Theme Updates, Translation Updates"}};
+</script>
+<script src="http://127.0.0.1/wp-admin/js/updates.min.js?ver=6.6.1" id="updates-js"></script>
+<script src="http://127.0.0.1/wp-admin/js/svg-painter.js?ver=6.6.1" id="svg-painter-js"></script>
+<script id="heartbeat-js-extra">
+var heartbeatSettings = {"nonce":"ab201e374d"};
+</script>
+<script src="http://127.0.0.1/wp-includes/js/heartbeat.min.js?ver=6.6.1" id="heartbeat-js"></script>
+<script src="http://127.0.0.1/wp-includes/js/wp-auth-check.min.js?ver=6.6.1" id="wp-auth-check-js"></script>
+
+<div class="clear"></div></div><!-- wpwrap -->
+<script type="text/javascript">if(typeof wpOnload==='function')wpOnload();</script>
+</body>
+</html>
