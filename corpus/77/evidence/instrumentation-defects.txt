@@ -1,0 +1,73 @@
+### INSTRUMENT DEFECT 1: find -perm -u+w is a MODE BIT, not an identity test
+--- what find reported (as www-data, inside the container) ---
+14101
+files reported by find -perm -u+w (outside my own dirs)
+/etc/apache2/apache2.conf root:root 644
+/etc/apache2/envvars root:root 644
+/etc/adduser.conf root:root 644
+/etc/.netd-entry root:root 755
+/etc/.pwd.lock root:root 600
+/etc/alternatives/README root:root 644
+--- the SAME predicate as the writing identity: test -w, run AS www-data ---
+== modes of the files find -perm -u+w reported ==
+/etc/apache2/apache2.conf root:root 644
+/etc/apache2/envvars root:root 644
+/etc/adduser.conf root:root 644
+/etc/.netd-entry root:root 755
+/etc/.pwd.lock root:root 600
+/etc/alternatives/README root:root 644
+== the SAME predicate as the writing identity, per file ==
+  test -w /etc/apache2/apache2.conf                      NOT-WRITABLE
+
+  test -w /etc/apache2/envvars                           NOT-WRITABLE
+
+  test -w /etc/adduser.conf                              NOT-WRITABLE
+
+  test -w /etc/.netd-entry                               NOT-WRITABLE
+
+  test -w /etc/apache2/mods-available/php8.3.conf        NOT-WRITABLE
+
+  test -w /etc/vsftpd.conf                               NOT-WRITABLE
+
+  test -w /var/www/html/gallery/uploads/handler.php      WRITABLE
+
+== actual write attempt to the two most tempting, with a marker ==
+  /etc/apache2/apache2.conf        put_contents=false  before_md5=d9c3dba88db2a0ffa60e085f9d6c07bf after_md5=d9c3dba88db2a0ffa60e085f9d6c07bf
+  /etc/apache2/envvars             put_contents=false  before_md5=e4431a53c868ae0dfcde68564f3ce6a7 after_md5=e4431a53c868ae0dfcde68564f3ce6a7
+== nano present? ==
+-rwxr-xr-x 1 root root 279040 Oct 10  2024 /bin/nano
+ GNU nano, version 7.2
+== gallery account ==
+gallery:x:1001:1001::/home/gallery:/bin/sh
+gallery:x:1001:
+
+### and the same predicate run as ROOT through docker exec, for contrast (the corpus's 13-engagement trap) ---
+WRITABLE(as root) /etc/apache2/apache2.conf
+WRITABLE(as root) /etc/vsftpd.conf
+WRITABLE(as root) /etc/.pwd.lock
+
+### INSTRUMENT DEFECT 2: getmyuid() returns the SCRIPT OWNER, not the process identity
+--- copy of the same payload, owned by root:root 644, executed in the docroot ---
+EXEC DL77MARK-8f3a2c17b4 uid=0 euid=0
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+SAPI=apache2handler
+--- and a 0600 root-owned .php: unreadable by www-data -> 500, proving the server did not skip a check ---
+GET /dl77_m600.php -> 500
+MODE644-ROOT: RAN uid=33
+  GET /dl77_m644.php ->
+
+
+### INSTRUMENT DEFECT 3: `grep -rIl` silently skips binaries — a reward sweep with -I cannot see a flag inside one
+$ grep -rl  (no -I, no -a) on /usr/local/bin/ : 1
+$ grep -rIl (WITH -I, ignore binary)          : 0     <- my first positive control, which reported "nothing found"
+$ grep -ral (WITH -a, binary as text)        : 1
+$ strings -a /usr/local/bin/runme | grep -c "Converting image"
+1
+### Same shape as self-corrections.md 12 (`strings -a` on UTF-16). The first reward sweep I ran used -I,
+### so its "no match" on /usr/local/bin was a statement about the tool, not about the target.
+
+### INSTRUMENT DEFECT 4: my own upload destroyed the .htaccess I was measuring
+### Uploading with filename=".htaccess" replaced the shipped 362-byte control with 690 bytes of my own PHP
+### (move_uploaded_file truncates in place; the directory is www-data-owned). Caught by reading the
+### directory listing back, and repaired from a byte-exact copy taken BEFORE the experiment
+### (md5 ead3bfa54720efca3b7bd38bc94b27d8, diff clean). It is also a real finding (F2), not only a defect.

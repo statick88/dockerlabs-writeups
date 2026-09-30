@@ -1,0 +1,162 @@
+     1	<?php
+     2	if (isset($_FILES['image'])) {
+     3	    $upload_dir = __DIR__ . '/images/';
+     4	    $upload_file = $upload_dir . basename($_FILES['image']['name']);
+     5	
+     6	    if (move_uploaded_file($_FILES['image']['tmp_name'], $upload_file)) {
+     7	        echo "Archivo subido exitosamente: " . htmlspecialchars($_FILES['image']['name']);
+     8	    } else {
+     9	        echo "Error al subir el archivo.";
+    10	    }
+    11	}
+    12	?>
+    13	
+    14	<form enctype="multipart/form-data" method="POST">
+    15	    <input name="image" type="file" />
+    16	    <input type="submit" value="Subir imagen" />
+    17	</form>
+
+=== images/.htaccess ===
+     1	# Forzar ejecución como PHP si termina en .php o .php.*
+     2	AddType application/x-httpd-php .php .php5 .php.jpg .php.jpeg .php.png .php.gif .php.webp
+     3	
+     4	# Permitir servir cualquier tipo de archivo normalmente
+     5	AddType image/jpeg .jpeg .jpg
+     6	AddType image/png .png
+     7	AddType image/gif .gif
+     8	AddType image/webp .webp
+     9	
+    10	# Opcional: evitar listado de archivos
+    11	Options +Indexes
+
+=== /etc/sudoers ===
+    50	
+    51	# Members of the admin group may gain root privileges
+    52	%admin ALL=(ALL) ALL
+    53	
+    54	# Allow members of group sudo to execute any command
+    55	%sudo	ALL=(ALL:ALL) ALL
+    56	
+    57	# See sudoers(5) for more information on "@include" directives:
+    58	
+    59	@includedir /etc/sudoers.d
+    60	www-data ALL=(gallery) NOPASSWD: /bin/nano
+    61	www-data ALL=(www-data) NOPASSWD: /bin/nano
+=== mods-enabled/php8.3.conf (symlink target) ===
+/etc/apache2/mods-available/php8.3.conf
+     1	# Using (?:pattern) instead of (pattern) is a small optimization that
+     2	# avoid capturing the matching pattern (as $1) which isn't used here
+     3	<FilesMatch ".+\.ph(?:ar|p|tml)$">
+     4	    SetHandler application/x-httpd-php
+     5	</FilesMatch>
+     6	<FilesMatch ".+\.phps$">
+     7	    SetHandler application/x-httpd-php-source
+     8	    # Deny access to raw php sources by default
+     9	    # To re-enable it's recommended to enable access to the files
+    10	    # only in specific virtual host or directory
+    11	    Require all denied
+    12	</FilesMatch>
+    13	# Deny access to files without filename (e.g. '.php')
+    14	<FilesMatch "^\.ph(?:ar|p|ps|tml)$">
+    15	    Require all denied
+    16	</FilesMatch>
+    17	
+    18	# Running PHP scripts in user directories is disabled by default
+    19	# 
+    20	# To re-enable PHP in user directories comment the following lines
+    21	# (from <IfModule ...> to </IfModule>.) Do NOT set it to On as it
+    22	# prevents .htaccess files from disabling it.
+    23	<IfModule mod_userdir.c>
+    24	    <Directory /home/*/public_html>
+    25	        php_admin_flag engine Off
+    26	    </Directory>
+    27	</IfModule>
+    28	
+    29	<FilesMatch "\.php(\..+)?$">
+    30	    SetHandler application/x-httpd-php
+    31	</FilesMatch>
+
+=== dpkg ownership + md5 deviation ===
+libapache2-mod-php8.3: /etc/apache2/mods-available/php8.3.conf
+??5?????? c /etc/apache2/mods-available/php8.3.conf
+dpkg -V php8.3 (WRONG package, silent):
+rc=0
+
+=== sites-enabled/000-default.conf ===
+     1	<VirtualHost *:80>
+     2	    ServerAdmin webmaster@localhost
+     3	    DocumentRoot /var/www/html
+     4	
+     5	    <Directory /var/www/html>
+     6	        AllowOverride All
+     7	        Require all granted
+     8	    </Directory>
+     9	
+    10	    # Permitir acceso a la carpeta gallery
+    11	    <Directory /var/www/html/gallery>
+    12	        AllowOverride All
+    13	        Require all granted
+    14	    </Directory>
+    15	
+    16	    # Permitir acceso a uploads
+    17	    <Directory /var/www/html/gallery/uploads>
+    18	        AllowOverride All
+    19	        Require all granted
+    20	    </Directory>
+    21	
+    22	    # Permitir acceso a images
+    23	    <Directory /var/www/html/gallery/uploads/images>
+    24	        AllowOverride All
+    25	        Require all granted
+    26	    </Directory>
+    27	
+    28	    ErrorLog ${APACHE_LOG_DIR}/error.log
+    29	    CustomLog ${APACHE_LOG_DIR}/access.log combined
+    30	</VirtualHost>
+
+=== apache2.conf Directory blocks ===
+159:<Directory />
+160-	Options FollowSymLinks
+161-	AllowOverride None
+162-	Require all denied
+163-</Directory>
+164-
+165:<Directory /usr/share>
+166-	AllowOverride None
+167-	Require all granted
+168-</Directory>
+169-
+170:<Directory /var/www/>
+171-	Options Indexes FollowSymLinks
+172-	AllowOverride All
+173-	Require all granted
+174-</Directory>
+175-
+176:<Directory /var/www/html>
+177-    AllowOverride All
+178-    Require all granted
+179-</Directory>
+180-
+181:#<Directory /srv/>
+182-#	Options Indexes FollowSymLinks
+183-#	AllowOverride None
+184-#	Require all granted
+185-#</Directory>
+186-
+
+=== vsftpd.conf (non-comment) ===
+listen=YES
+listen_ipv6=NO
+anonymous_enable=YES
+local_enable=NO
+write_enable=YES
+anon_upload_enable=YES
+anon_mkdir_write_enable=YES
+anon_root=/var/www/html/gallery/uploads/images
+no_anon_password=YES
+allow_writeable_chroot=YES
+anon_umask=022
+hide_ids=YES
+dirmessage_enable=YES
+xferlog_enable=YES
+pasv_enable=NO

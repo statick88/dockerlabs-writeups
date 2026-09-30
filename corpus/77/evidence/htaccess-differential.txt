@@ -1,0 +1,50 @@
+### FOUR-STATE .htaccess DIFFERENTIAL (lab 146's method, applied here)
+### the same five files, changing ONLY the state of images/.htaccess
+### shipped md5 = ead3bfa54720efca3b7bd38bc94b27d8 (362 B, www-data:www-data 644)
+
+--- STATE A: shipped .htaccess ---
+  poc.php        200  ct=text/html;                   charset=UTF-8 114B  EXECUTED
+  poc.php.jpg    200  ct=text/html;                   charset=UTF-8 114B  EXECUTED
+  poc.php5       200  ct=text/html;                   charset=UTF-8 114B  EXECUTED
+  poc.jpg        200  ct=image/jpeg                     281B  SERVED-VERBATIM
+  poc.txt        200  ct=text/plain                     281B  SERVED-VERBATIM
+
+--- STATE B: .htaccess stripped to only 'Options +Indexes' (md5 bb3c65a1b67735efa59046d82c05b44a) ---
+  poc.php        200  ct=text/html;                   charset=UTF-8 114B  EXECUTED
+  poc.php.jpg    200  ct=text/html;                   charset=UTF-8 114B  EXECUTED
+  poc.php5       200  ct=281                               B  SERVED-VERBATIM
+  poc.jpg        200  ct=image/jpeg                     281B  SERVED-VERBATIM
+  poc.txt        200  ct=text/plain                     281B  SERVED-VERBATIM
+
+--- STATE C: .htaccess deleted ---
+  poc.php        200  ct=text/html;                   charset=UTF-8 114B  EXECUTED
+  poc.php.jpg    200  ct=text/html;                   charset=UTF-8 114B  EXECUTED
+  poc.php5       200  ct=281                               B  SERVED-VERBATIM
+  poc.jpg        200  ct=image/jpeg                     281B  SERVED-VERBATIM
+  poc.txt        200  ct=text/plain                     281B  SERVED-VERBATIM
+
+--- STATE D: restored byte-exact (diff clean) ---
+ead3bfa54720efca3b7bd38bc94b27d8  /var/www/html/gallery/uploads/images/.htaccess
+  poc.php        200  ct=text/html;                   charset=UTF-8 114B  EXECUTED
+  poc.php.jpg    200  ct=text/html;                   charset=UTF-8 114B  EXECUTED
+  poc.php5       200  ct=text/html;                   charset=UTF-8 114B  EXECUTED
+  poc.jpg        200  ct=image/jpeg                     281B  SERVED-VERBATIM
+  poc.txt        200  ct=text/plain                     281B  SERVED-VERBATIM
+
+### READING: .php and .php.jpg execute in ALL FOUR states -> driven by /etc/apache2/mods-available/php8.3.conf
+### .php5 executes ONLY with the shipped .htaccess -> the .htaccess IS live and IS load-bearing for .php5
+### .jpg never executes -> the AddType image/jpeg line and the filename map agree here
+
+### is the .htaccess mapping global? copy the same payload OUTSIDE images/ (no .htaccess ancestor)
+/dl77_docroot.php.jpg  200 text/html; charset=UTF-8 112B
+/dl77_docroot.php5     200  281B  <- .php5 OUTSIDE the dir: NOT executed
+/gallery/uploads/dl77_up.php.jpg  200 text/html; charset=UTF-8 112B
+
+### Options +Indexes: load-bearing or not?
+state A (shipped .htaccess):
+GET /gallery/uploads/images/ -> 200 12657B
+.htaccess absent:
+GET /gallery/uploads/images/ -> 200 12651B
+RESTORED_CLEAN
+restored:
+GET /gallery/uploads/images/ -> 200 12657B

