@@ -327,3 +327,34 @@ time we saw X" and "the Nth lab to do Y".
 This is the same defect class as §14 and §19 one level up. A tool that returned a
 confident answer it did not earn is the recurring failure; a document asserting a
 position it cannot compute is the same mistake written down.
+
+## 21. `defined( 'X' )` is not "the framework uses X"
+
+Lab 117 filed a security finding that WordPress' auth cookie key "derives from a
+public constant" because `wp-config.php` ships all eight keys as the install
+placeholder. It quoted three runtime lines as proof — including
+`wp_salt('auth') strlen=128`. **A 33-character placeholder cannot produce a
+128-character salt, so the quoted output was already refuting the sentence next to
+it.** The two real errors:
+
+- `defined( 'AUTH_KEY' )` is trivially true of any constant. It says nothing about
+  which value the framework *consumes*.
+- Two values printed next to each other — the constant, then the `wp_options`
+  value — were read as a **precedence** relationship. Adjacency is not precedence.
+
+`wp_salt()` (`pluggable.php:2424` in that lab's 6.6.1) pre-seeds a duplicate list
+with the literal installer string and **skips** any constant whose value is in it,
+so the config value is *ignored*, not overriding. Asking the framework returns the
+generated value; asking PHP whether a constant exists returns `true` regardless.
+
+**Rule.** A framework that validates, defaults, or overrides configuration will
+routinely ignore a value that is present and well-formed. **Measure the value the
+framework consumes, not the value the file contains** — call `wp_salt()`, call
+`app.config()`, read the parsed tree. And when a measurement contradicts the
+sentence it is placed under, resolve the contradiction in favour of the
+measurement before writing the sentence.
+
+Worth noting how it was caught: lab 108 had already tested the opposite and
+recorded that its forgery was **rejected**. The contradiction was visible across
+two writeups and nobody cross-read them. A rule that survives one lab and is
+reversed by another has not been tested — it has been sampled once.
