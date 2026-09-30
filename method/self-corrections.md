@@ -208,3 +208,38 @@ identical output.** The difference is only knowable from outside the tool.
 rows returned, files matched. A negative with no count is not evidence, it is
 the absence of evidence wearing evidence's clothes. If the count is zero, the
 answer is **untested**, and it belongs in the NOT-tested list with the reason.
+## 15. A sanitiser that rewrites the language it never validated
+
+`htmlspecialchars` escapes `&` into `&amp;`. `&` is the shell background
+operator. The payload therefore returned a **full 200 page, appended zero
+bytes, and still cost the full request time** — because PHP's `system()` blocks
+on the pipe the backgrounded child holds. It reads exactly like a filter
+blocking the input, and the control and the negative differed by **one
+character**.
+
+**Rule.** A sanitiser changes the parse of every language it did not validate.
+Before trusting an escape, name the second grammar that reads the same bytes. An
+output encoder defends an HTML context and is silent about a shell, a SQL, an
+LDAP filter and a path. Here the encoding was not a weakness in the app's
+*output* handling — it was a bypass of the *input* handling, and nothing in the
+response said so.
+
+## 16. `403` is not a verdict, and `test` has no oracle
+
+Two more instruments that answer with silence:
+
+- **Two layers of one WAF returned two different 403 bodies** (hashes
+  `a93f0c50cc63` and `c2eb23c5660c`). A status code cannot attribute a block to
+  a rule. **The discriminator is the body**, and the positive control — three of
+  three blocked operators — has to run *before* any belief about a bypass.
+- **`[ -r path ]` is silent in both branches.** False, silent; true, silent
+  through `printf`. Both collapse to an empty substitution, so the outer `ls`
+  listed **its own cwd** and the result looked like a successful listing of the
+  directory that was actually being denied. The same shape as `fail2ban-client`
+  reporting `Total failed: 0` beside sixteen real failures, and as `git`
+  refusing on `safe.directory` — empty stdout, **exit 0**, which a `| od -c`
+  pipeline hides completely.
+- **Common root.** These are all §11–§14 wearing different costumes. A tool that
+  reports nothing and a tool that has not looked are indistinguishable from the
+  output alone. The only reliable discriminator is external: a work count, or a
+  second tool that disagrees.
