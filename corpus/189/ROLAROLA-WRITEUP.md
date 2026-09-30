@@ -1,6 +1,6 @@
 # ROLAROLA — DockerLabs lab (id 189, "Medio")
 
-> Lab description from the catalogue (`/home/search14/dockerlabs/catalog.txt:27`):
+> Lab description from the catalogue (`~/dockerlabs/catalog.txt:27`):
 > *"En esta máquina se explota la vulnerabilidad command injection, lo cual permite
 > obtener una shell en el sistema como usuario no privilegiado. Posteriormente se
 > explota la vulnerabilidad pickle deserialization en python para escalar a root"*.

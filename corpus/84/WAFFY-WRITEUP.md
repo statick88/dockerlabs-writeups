@@ -671,7 +671,7 @@ wrote no files in the container.
 | Other principals untouched | No `docker system/image/volume prune` was run at any point. The seven `cybervault-*` containers and their volumes are untouched. |
 
 Local scratch is confined to `/tmp/opencode/dl84/` (probe harness, cookie jars, the SSH
-helper). The 1.8 GB extracted tar `/home/search14/dockerlabs/labs/84/waffy.tar` was removed
+helper). The 1.8 GB extracted tar `~/dockerlabs/labs/84/waffy.tar` was removed
 after the writeup landed (PIPELINE reclaim policy: "ours, safe — the same"), with
 `dist/waffy.zip` retained so a retry needs no re-download. The `waffy:latest` image and the
 running container were **kept**, since the documented positive restore check is

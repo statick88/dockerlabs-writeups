@@ -15,7 +15,7 @@ this engagement. Where a number is a count, it is a count I measured.
 
 ## 0. The manifest's platform label, checked against the artefact
 
-`tooling/labs.manifest:54` and the platform catalog (`/home/search14/dockerlabs/catalog.txt:123`,
+`tooling/labs.manifest:54` and the platform catalog (`~/dockerlabs/catalog.txt:123`,
 `117|Pressenter|facil|Laboratorio para practicar la enumeración y explotación de WordPress
 con wpscan, y escalada de privilegios en Linux.`) both label this **WordPress**.
 

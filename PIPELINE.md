@@ -149,18 +149,18 @@ means *the lab is back to shipped*, not *the container is deleted*.
 All state is on disk. Nothing lives in a session.
 
 ```bash
-cd /home/search14/dockerlabs-writeups
+cd ~/dockerlabs-writeups
 # 1. what is downloaded and verified
-ls /home/search14/dockerlabs/state/*.ok | wc -l
+ls ~/dockerlabs/state/*.ok | wc -l
 # 2. what is solved and written up
 ls corpus/ | grep -cE '^[0-9]+$'
 # 3. what the queue still wants
-env DL_ROOT=/home/search14/dockerlabs tooling/download-labs.sh status
+env DL_ROOT=~/dockerlabs tooling/download-labs.sh status
 # 4. restart the download lane over whatever is not yet .ok
-env DL_ROOT=/home/search14/dockerlabs DL_PARALLEL=3 \
+env DL_ROOT=~/dockerlabs DL_PARALLEL=3 \
   tooling/download-labs.sh fetch $(comm -23 \
     <(cut -d'|' -f1 tooling/labs.manifest | sort) \
-    <(ls /home/search14/dockerlabs/state/ | sed 's/\.ok$//' | sort) | tr '\n' ' ')
+    <(ls ~/dockerlabs/state/ | sed 's/\.ok$//' | sort) | tr '\n' ' ')
 ```
 
 Step 4 is the whole restart. A lab already verified is skipped by the fetcher, so

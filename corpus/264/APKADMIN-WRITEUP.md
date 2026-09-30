@@ -564,7 +564,7 @@ $ ls -A /home/pingu  -> .bash_logout .bashrc .profile (as shipped)
 I used non-interactive `paramiko.exec_command` throughout, which writes no
 `~/.bash_history`; the pre-restore listing was identical to the post-restore listing, so
 no in-container artefact needed removing. **Nothing was written under
-`/home/search14/dockerlabs/labs/`** — the APK, the jadx tree and the probe scripts live
+`~/dockerlabs/labs/`** — the APK, the jadx tree and the probe scripts live
 in `/tmp/opencode/264`. `git commit` and `git push` were **not** run; `git status` /
 `git diff` read-only.
 

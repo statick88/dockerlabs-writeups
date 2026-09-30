@@ -106,7 +106,7 @@ beliefs are *not applicable* (wrong platform), *holds-with-refinement* (plugin t
 by the dead-end finding), and *holds* (present vs active). **The correct outcome is the one
 PIPELINE §Convergence names: "a worker reports the class table already has the row."** And the
 most valuable thing this engagement produced is not a chain — it is that **the queue's class
-label is a filename, not a fingerprint.** `/home/search14/dockerlabs/labs/32/auto_deploy.sh`
+label is a filename, not a fingerprint.** `~/dockerlabs/labs/32/auto_deploy.sh`
 does not exist in the extracted lab; the *docroot* is called `wordpress` and the *lab* is called
 Vulnerame, and neither of those is the product. **Fingerprint from `Version.php` / a
 `generator` meta tag, never from a directory name.**
