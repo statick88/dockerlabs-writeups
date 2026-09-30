@@ -155,11 +155,18 @@ fetch_one() {
         log OK "id $id: $fname verified ($size bytes)"
         return 0
       fi
-      # curl exited 0 yet the archive is unusable: the server closed a long
-      # response near its end. Measured on id 268, four identical failures at
-      # 75-95% of 116,916,224 bytes. Retrying cannot fix a systematic cut, and
-      # with no Range support every retry discards ~100 MB of good transfer.
-      if (( expected > 0 && size * 100 >= expected * 80 )); then
+      # curl exited 0 yet the archive is unusable. Two different faults live here
+      # and conflating them wastes a real lab. Measured on id 268, four identical
+      # failures at 75-95% of 116,916,224 bytes: the server closed a long
+      # response near its end. With no Range support every retry discards ~100 MB
+      # of good transfer, so a systematic cut is abandoned early.
+      #
+      # But id 254 arrived at 107,479,040 of 107,479,040 — *complete* — and an
+      # earlier version of this test read `>= 80%` and declared it truncated. A
+      # full-length archive that fails verification is corrupt, not cut, and the
+      # two need opposite responses: a cut is hopeless, corruption may be worth
+      # one more fetch in case the bytes were mangled in transit.
+      if (( expected > 0 && size < expected && size * 100 >= expected * 80 )); then
         trunc_streak=$(( trunc_streak + 1 ))
         log WARN "id $id: $fname truncated by server — got $size of $expected bytes (${trunc_streak}x)"
         rm -f "$dest"
@@ -169,6 +176,11 @@ fetch_one() {
         fi
         sleep 5
         continue
+      fi
+      if (( expected > 0 && size >= expected )); then
+        log ERR "id $id: $fname is COMPLETE at $size/$expected bytes but fails verification — this is corruption, not truncation. Refusing to retry; a cut and a corrupt archive are different faults and a retry that cannot resume fixes neither"
+        rm -f "$dest"
+        return 4
       fi
       log WARN "id $id: $fname downloaded but failed verification — retrying from scratch"
       rm -f "$dest"
