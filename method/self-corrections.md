@@ -460,3 +460,56 @@ Related, and the same instinct: a **verifier's absence is not the property's
 absence**. `dpkg -V` reported lab 82's tree pristine while `find` was mode 4755,
 because `dpkg -V` checks `md5sums` and not modes. The tool answered the question it
 was asked, not the question that mattered.
+
+## 27. A destructive oracle eats its own control space
+
+Lab 242's sweep submitted 26,000 candidate identifiers against an endpoint that
+**inserts on hit**. Run 1's manual probe created a record; run 2's negative control —
+`99999999X`, chosen because it could not exist — answered **PRESENT**, because run 1
+had made it exist. The harness refused to sweep once it noticed, which is the only
+reason this is a defect and not a finding.
+
+**Rule.** An oracle that mutates the namespace is not idempotent, so a control drawn
+from that namespace is consumed by the first use. Either draw the control from
+outside the namespace you are enumerating, or **snapshot and restore between
+repetitions** — and treat a control that changes answer between runs as evidence
+that your earlier runs changed the world, not that the control was wrong.
+
+The same shape appears with no mutation at all: lab 242's image ships
+`dnis_encontrados.txt` with 10 names of which **4 are real**, a phantom sweep
+preloaded into the artefact before a single request. **Lab 87's phantom paths and
+lab 188's phantom `.htaccess` files are the target's fault; this one is the
+platform's.** Check what the image already tells you before believing what you
+found.
+
+## 28. An acronym in a queue entry is a claim nobody verified
+
+Lab 242's catalogue entry says *"enumerar los **DNIs**"* — Spanish national identity
+numbers. The queue's own gap column re-expanded the acronym to *"enumerating platform
+**DNS** records"*. **DNI is not DNS**, and the engagement is a structured-identifier
+existence oracle with zero DNS anywhere in it: `grep -rIo -i "dns"` over the
+application tree returns **0**.
+
+This is a different failure from the one the corpus already knew. Labs 32, 220 and
+82 were a **filename** mistaken for a fingerprint, and a version check catches every
+one of them. Here the identifiers are plainly visible at `main.py:32-35`, so no
+filename or version check sees it, and the two fields look consistent.
+
+**Rule.** When a queue entry abbreviates something, **grep the artefact for the
+expansion, not for the acronym.** The writer of the queue entry is not the writer of
+the source and may have expanded an abbreviation from memory. A protocol name in a
+description is an assertion about a *component*, and a component is either present
+and countable or it is not.
+
+## 29. The same is true of a format constraint
+
+The DNI carries a public check character, so a sweep can be cut from 26,000
+candidates to 1,000. Measured both ways: **0 of the 4 real accounts satisfy it**, and
+the sweep itself created 25 of the 26 letters during testing. A check-character
+filter therefore reports **0 of 4** and concludes the namespace is empty.
+
+**Rule.** *A format constraint you did not measure is not a filter you may apply.* This
+is the `ANY`-versus-`TXT` rule with the polarity flipped: a refusal tells you about
+the component that refused, and an unverified assumption about the data tells you
+nothing about either. The cheap check is to run the constraint against the records
+you already hold — four rows, and it excludes all four.
