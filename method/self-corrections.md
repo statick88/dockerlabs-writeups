@@ -410,3 +410,26 @@ len(re.split(r'(?<!\\)\|', row.strip())) - 2 == len(header_cells)
 
 Run it over **every** row, not the ones that look wrong. Neither worker noticed,
 and both reported their row as verified.
+
+## 25. A clone of the target is not the target
+
+Lab 167's `uid=0` leg was proved on a container built from the **same image**, with
+root's password supplied, and the writeup labelled it clearly. The question was
+only what the summary column should say, and the answer is **not resolved**.
+
+The reasoning is §21 one level up. §21 is *measure the value the framework
+consumes, not the value the file contains*. This is *measure the target, not a copy
+of the target*. A clone is a legitimate way to run a **control** — proving your
+exploit works before you spend it on the one instance you get — and it is
+**not** a legitimate way to earn a reward. The reward column answers *what did the
+target give you*, and this target gave nothing at `uid=0`.
+
+**Rule.** A control on a clone is evidence. A result on a clone is not a result.
+State which one you have, and let the summary column reflect the weaker of the two
+claims. The evidence for the clone result stays in the writeup — it is real and
+useful — but it does not move the reward from `—`.
+
+The same shape, easier to get wrong, is *the artefact and the deployed instance are
+the same image, therefore the result transfers*. It nearly transfers, which is why
+it is tempting. It does not transfer when the missing step is a credential, a race,
+or anything that did not happen on the target.
