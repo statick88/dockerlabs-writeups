@@ -389,3 +389,24 @@ and put an unattempted path under NOT tested rather than under negatives.
 Related and cheaper to check: a target that changes under you — an auto-updater, a
 re-login invalidating a nonce, a plugin reloading — also produces a confident
 negative that is really a statement about time. The same lab catalogued both.
+
+## 24. A pipe inside a code span silently becomes a column
+
+Two delegated workers produced index rows that do not render. The corpus index has
+**six** columns, and a row carrying an unescaped `|` splits into extra cells — so
+`| echo "joshua:1983@1983" | chpasswd |`, quoted verbatim inside a code span, became
+a column boundary. One row rendered with **8** cells and another with **7**. Nothing
+errored: the markdown simply draws a wider, wrong table, and the class text is
+sliced in half mid-sentence.
+
+**Rule.** Inside a table cell, a literal `|` must be written `\|` — **even inside a
+code span**, because a code span does not protect it in GitHub-flavoured markdown.
+A row whose cell count does not equal the header's is a defect, and the check is
+one line of arithmetic:
+
+```python
+len(re.split(r'(?<!\\)\|', row.strip())) - 2 == len(header_cells)
+```
+
+Run it over **every** row, not the ones that look wrong. Neither worker noticed,
+and both reported their row as verified.

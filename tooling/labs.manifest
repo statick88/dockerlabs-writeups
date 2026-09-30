@@ -68,3 +68,8 @@
 73|ChocoPing|medio|WAF bypass class
 189|Rolarola|medio|command injection; deserialisation coverage is pickle-only so far
 219|Talent|medio|WordPress platform plus Linux privesc
+282|hannah_coffee|facil|web app on Linux; queue picked by difficulty since the class-gap scan is exhausted
+243|Duque|facil|two web vulnerabilities; tests whether a second finding gets filed separately
+188|Wargames|facil|recon and service analysis; enumeration with control pairs, the class the corpus is thinnest on
+168|PingCTF|facil|command execution; a covered class, kept as a generalisation test
+167|WinFake|facil|source-code inspection as the entry point; the only lab where reading the code IS the first step
