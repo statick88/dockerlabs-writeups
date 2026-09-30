@@ -1,6 +1,6 @@
 # RUNBOOK — from cloning a lab to a rule in the methodology
 
-One repeatable procedure, built from 27 engagements. The per-lab detail lives in
+One repeatable procedure, built from 52 engagements. The per-lab detail lives in
 [`corpus/`](corpus/INDEX.md); this file is the path between them.
 
 **Who this is for.** Someone starting an engagement — DockerLabs, a client, a CTF

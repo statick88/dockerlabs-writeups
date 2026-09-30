@@ -3,7 +3,7 @@
 The evidence corpus behind the decision layer in
 [`PenTestMethodology`](https://github.com/statick88/PenTestMethodology).
 
-Twenty-seven lab engagements, resolved and audited. This repo holds **what
+52 lab engagements, resolved and audited. This repo holds **what
 happened**. The methodology repo holds **what to conclude next time**. They are
 separate on purpose: the methodology has to stay portable and citable, and the
 evidence has to stay specific and unedited by summary.
@@ -20,7 +20,7 @@ edited into agreement with a rule that later changed.
 citation now lands on a writeup you can open, and the writeups quote the
 decisive artefact lines verbatim. That is a real gain over a private corpus. It
 is **not** artefact-level re-verification: this repo holds **no** lab artefacts,
-so of the ~945 `file:line` citations across the corpus, **zero** can be resolved
+so of the 1354 `file:line` citations across the corpus, **zero** can be resolved
 by a reader without the archive. Three of the four auditors in the first
 adversarial pass reported this independently, and it is the reason the historical
 CRITICAL class — a citation that does not say what it is cited for — is

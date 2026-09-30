@@ -1,6 +1,6 @@
 # Self-corrections — the failures that recur
 
-Twenty-seven engagements produced one dominant failure shape, and it is not a
+52 engagements produced one dominant failure shape, and it is not a
 missing technique. It is this:
 
 > **A measurement that is wrong looks exactly like a result.**
@@ -26,9 +26,14 @@ positive through it before believing any negative it produces.
 
 ## 2. Privileged tooling contaminating the measurement
 
-Lab 141 and lab 129, independently. `test -w` reported **WRITABLE** because the
-command ran through `docker exec`, which is root. The predicate was correct; the
-identity was wrong.
+Recorded in **thirteen** engagements, established by labs **129** and **249**
+independently. `test -w` reported **WRITABLE** because the command ran through
+`docker exec`, which is root. The predicate was correct; the identity was wrong.
+
+> **Corrected.** This entry previously credited labs *141 and 129*. Lab 141 contains
+> no `test -w` at all — an adversarial cross-read counted zero occurrences, and the
+> two matches are the word "writable" in prose. The misattribution sat in the file
+> whose purpose is to stop exactly this. See the note at the end of this catalogue.
 
 Lab 129's companion: a `chmod` in a permissions table that ran **on the operator
 host**, where the container's path does not exist. Five rows reported `LOGIN OK`
@@ -99,7 +104,7 @@ raw output before you reason about it.
 
 ## 8. Control flow, and what actually executes
 
-Lab 23, Spain. A self-test asserted the payload was free of `0x00` bytes. **It
+Lab 148, Spain. A self-test asserted the payload was free of `0x00` bytes. **It
 passed**, and the payload still mis-executed — `0x40` is `inc eax` in 32-bit mode,
 not `inc ecx`, so the shellcode called `getppid` where a `dup2` belonged.
 
@@ -146,6 +151,8 @@ The unifying discipline is already written into
 these are the instances that made it concrete. The corpus is the receipt for that
 rule; this file is why the rule exists.
 ## 11. A tool that does nothing, and exits 0
+
+Measured in lab **249**.
 
 `find -writable` does not exist in busybox. It printed its usage text, returned
 nothing, and **exited 0** — so a "no writable critical files" negative looked
@@ -287,7 +294,7 @@ output cannot distinguish *found nothing* from *looked nowhere*.
 
 ## Reading this catalogue
 
-Sections 11 through 19 are not nineteen separate warnings. They are one failure
+Sections 11 through 26 are not that many separate warnings. They are one failure
 with nineteen faces, and the corpus keeps producing new ones:
 
 | # | Instrument | What it reported |
@@ -446,7 +453,8 @@ whose corpus includes your own tooling will find your own tooling, and the
 probability rises with how distinctive the pattern is — `FLAG{` is not a string
 anyone writes by accident. Two of this corpus's workers made the same shape of
 error in the same engagement: lab 82 read a `.ui-icon-flag{` CSS rule as a reward
-hit and lab 83 found a LaTeX template.
+hit and lab **168** found a LaTeX formatter template — the index recorded it under 83,
+so the index and this entry contradicted each other.
 
 Related, and the same instinct: a **verifier's absence is not the property's
 absence**. `dpkg -V` reported lab 82's tree pristine while `find` was mode 4755,

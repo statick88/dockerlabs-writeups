@@ -75,3 +75,11 @@
 167|WinFake|facil|source-code inspection as the entry point; the only lab where reading the code IS the first step
 82|E jotapete|facil|Drupal 8.5.0: the unit of trust is the compiled service container, not a list; third platform in the corpus
 83|Grooti|facil|enumeration as the deliverable; the decisive finding is on no service, and the advertised database leg cannot be entered
+254|Gotham|facil|JWT session cookie plus command injection plus password reuse plus a misconfigured binary
+166|InfluencerHate|facil|brute force on a web form, then a second escalation route
+162|PkgPoison|facil|simple intrusion then privesc by a distinct route
+78|Bypassme|facil|information disclosure, web fuzzing, credential leakage
+77|galeria|facil|simple web fuzzing and a file upload vulnerability
+245|TrailPack|medio|several web vulnerabilities in one lab
+242|WorkConnect|medio|enumerating platform DNS records
+234|SECorNOTsec|medio|exploiting a command injection

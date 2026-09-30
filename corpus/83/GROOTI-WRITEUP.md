@@ -668,8 +668,8 @@ live, `cron` is running (`/usr/sbin/cron -P`, pid 52), and the reason is the mod
 §23: an absent effect and an inert mechanism are different findings, and only the second is a
 property of the target.
 
-The trap this sets is sharp, and it is the same trap that produced a false privesc in lab 87
-§5.1 and lab 33: **testing `bash /opt/cleanup.sh` by hand succeeds as `grooti` and proves
+The trap this sets is sharp, and it is the same trap that produced a false privesc in lab 118
+(§3, mode 4750 read as sufficient when the escalation needs traverse): **testing `bash /opt/cleanup.sh` by hand succeeds as `grooti` and proves
 nothing about privilege**, because `bash` needs only *read*. The escalation needs cron, cron
 needs *execute*, and execute is exactly what `grooti` lacks.
 

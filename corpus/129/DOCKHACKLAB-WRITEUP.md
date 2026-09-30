@@ -407,7 +407,10 @@ My first conclusion was "the knock opens no port, so port knocking is decorative
 > finding. Lab 118 contains **no** upload handler, no MIME map, no `AddType`, no
 > `test -w` and no `0644`: it discusses mode `4750` being too *restrictive*, which is
 > the opposite of the folklore it was credited with. The MIME map is lab 146's
-> (F1); the `test -w`-through-`docker exec` trap is `self-corrections.md` §11, sourced
-> from labs 141 and 129. Nothing in the finding set changes, but the reasoning that
+> (F1); the `test -w`-through-`docker exec` trap is `self-corrections.md` §2, recorded in
+> thirteen engagements. (This note originally said §11, sourced from "labs 141 and
+> 129" — §11 is the busybox `find -writable` entry, which is lab 249's, and lab 141
+> contains no `test -w` at all. An adversarial cross-read caught it, in the very
+> correction written to fix a misattribution.) Nothing in the finding set changes, but the reasoning that
 > suppressed a candidate was unverified, which is how a real finding disappears
 > without anyone noticing.
