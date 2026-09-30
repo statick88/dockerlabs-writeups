@@ -66,7 +66,7 @@ if($imageFileType != "php" && $imageFileType != "png" && $imageFileType != "jpeg
 
 Two findings from source alone:
 
-1. **The upload allowlist explicitly permits `php`.** The `getimagesize()` content check is commented out. This is not a MIME-map bypass (lab 118's mechanism) — it is an allowlist that names the dangerous extension. The transfer from lab 118 holds: *the extension that executes is decided by configuration, and here the configuration says yes out loud.*
+1. **The upload allowlist explicitly permits `php`.** The `getimagesize()` content check is commented out. This is not a MIME-map bypass — that mechanism is lab 146's, not lab 118's (see the correction below) — it is an allowlist that names the dangerous extension. The general rule holds: *the extension that executes is decided by configuration, and here the configuration says yes out loud.* It is a platform rule, not a finding unique to lab 118.*
 2. **The `sudo` grant names a program, not a shell.** `www-data` may run `/usr/bin/nano` **as `firsthacking`**. Per the existing sudo-rule oracle, that is a capability grant: *what does this program do as that user?* GNU nano 7.2 has `^T Execute`, which runs a command as the nano process user.
 
 ### 1.4 LFI: searched for and confirmed absent
@@ -167,7 +167,7 @@ drwxr-x--- 1 firsthacking firsthacking 4096 Jul 13  2024 /home/firsthacking
 drwxr-x--- 2 ubuntu       ubuntu       4096 May 30  2024 /home/ubuntu
 ```
 
-**This is the finding the methodology was missing, stated as a measurement: the reading identity cannot write, and that is not a failed attack — it is the distance that constitutes the vulnerability.** `test -w` was run *as `www-data`*, and it said NO. Run as root the same predicate says YES, which is the lab-118 `test -w` trap in its exact form.
+**This is the finding the methodology was missing, stated as a measurement: the reading identity cannot write, and that is not a failed attack — it is the distance that constitutes the vulnerability.** `test -w` was run *as `www-data`*, and it said NO. Run as root the same predicate says YES, which is the `test -w`-through-`docker exec` trap catalogued in `self-corrections.md` §11 from labs 141 and 129 in its exact form.
 
 **Impact:** unauthenticated remote code execution as `www-data`. **Root cause:** an extension allowlist that lists `php` as permitted, with the content check commented out. **Remediation:** never key an upload filter on the client-supplied extension; store outside the document root or under a non-executing handler; re-enable a content check; set a restrictive umask so uploads are not `0777`.
 
@@ -249,7 +249,7 @@ Every row is a real `ssh` attempt after a `chmod` **performed as `firsthacking` 
 
 The mechanism is OpenSSH's `StrictModes`: what matters is that the file is **not writable by group or other**, and is owned by the user or root. `0664` passes because the group is the user's own primary group, not a privilege boundary. So:
 
-- **`0644` does *not* fail on this target** — the lab-118 anecdote ("`0644` breaks with a silent error") is a property of that configuration, not a universal law. Reporting the folklore as a finding here would have been wrong.
+- **`0644` does *not* fail on this target** — the "`0644` breaks with a silent error" anecdote belongs to the container-owns-its-own-files configuration, not to lab 118 and not to a universal law. Reporting the folklore as a finding here would have been wrong.
 - **`0666` fails, and the error says nothing about permissions:** `Permission denied (publickey,password)`. It reads exactly like a wrong key. A tester who trusts the folklore checks the key; the actual cause is one `chmod` away and invisible in the message.
 - **The operational consequence is the same either way:** always write `0600`/`0700`. The measurement is for the *report* (don't state a false universal), not for the *exploit* (always be strict).
 
@@ -387,7 +387,7 @@ My first conclusion was "the knock opens no port, so port knocking is decorative
 
 **Discarded with reason**
 - **LFI / log poisoning** — no `include`, no `require`, no `auto_prepend_file`, no writable-log include. Confirmed absent by search, not assumed from the description.
-- **MIME-map case-sensitivity trick** (lab 118) — unnecessary here: the allowlist permits `php` outright, so there is no case trick to find. Would have been noise.
+- **MIME-map case-sensitivity trick** (lab 146, F1) — unnecessary here: the allowlist permits `php` outright, so there is no case trick to find. Would have been noise.
 - **`ubuntu` as an escalation target** — unreachable from both identities (home `0750`, no sudo rule, no `.ssh`).
 - **Other sudoables** — enumerated and denied (§3.5).
 
@@ -400,3 +400,14 @@ My first conclusion was "the knock opens no port, so port knocking is decorative
 **The description's third element ("inyección de claves SSH para escalar privilegios") is the interesting one, because the escalation it advertises is the part that does not work.** The injection succeeds cleanly; the escalation it promises dies on a missing `NET_ADMIN`, and the `docker` grant that would have been root is unreachable because its own daemon cannot start. The lab thus teaches something the description gets backwards: **writing another account's `authorized_keys` changes your identity — it does not, by itself, cross a privilege boundary.** The escalation is a separate, independently-configured sudo rule. Conflating the two is exactly the mistake the report must avoid.
 
 **And the most transferable artifact is a control that fired silently.** OpenSSH refused a world-writable `authorized_keys` with `Permission denied (publickey,password)` — an error that mentions neither permissions nor the file. Anyone debugging that will check their key. That is the strongest possible argument for the boring practice of writing `0600`, and it is a better lesson than the folklore that `0644` fails, which this target disproved.
+
+> **Correction — misattribution to lab 118, found in an adversarial audit.** An earlier
+> draft of this writeup credited lab 118 with a MIME-map bypass mechanism, a `test -w`
+> trap, and a `0644` anecdote, and used the first of those to **dismiss** a candidate
+> finding. Lab 118 contains **no** upload handler, no MIME map, no `AddType`, no
+> `test -w` and no `0644`: it discusses mode `4750` being too *restrictive*, which is
+> the opposite of the folklore it was credited with. The MIME map is lab 146's
+> (F1); the `test -w`-through-`docker exec` trap is `self-corrections.md` §11, sourced
+> from labs 141 and 129. Nothing in the finding set changes, but the reasoning that
+> suppressed a candidate was unverified, which is how a real finding disappears
+> without anyone noticing.

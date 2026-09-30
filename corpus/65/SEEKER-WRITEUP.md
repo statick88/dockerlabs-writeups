@@ -298,7 +298,7 @@ shell.phps     -> Archivo subido con éxito: shell.phps
 
 **`.php` is the only extension the filter rejects.** The negative control is the point: the filter *can* fire, so its silence on `.phtml` is a decision and not an absence of a check.
 
-**And accepted is not executed.** Six of the eight execute, because the Apache MIME map — not the upload handler — decides, exactly as this repository's *"la extensión ejecutable la decide el MIME map"* oracle requires:
+**And accepted is not executed.** Exactly **two of the seven** execute (`.phtml`, `.phar`), because the Apache MIME map — not the upload handler — decides, exactly as this repository's *"la extensión ejecutable la decide el MIME map"* oracle requires:
 
 ```
 GET /shell.phtml -> RCE-OK:uid=33(www-data) gid=33(www-data) groups=33(www-data)
