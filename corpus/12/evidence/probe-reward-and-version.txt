@@ -1,0 +1,25 @@
+wp_version_runtime=6.5.3
+wp_db_version=6.5.3
+AUTOMATIC_UPDATER_DISABLED=false
+wp_salt('auth') strlen=128
+AUTH_KEY defined=true strlen=64
+users=1
+  user #1 chocolate <chocolate@chocolate.es>
+roles=administrator,editor,author,contributor,subscriber
+active_plugins=site-editor/site-editor.php
+posts=10
+  post #1 [post/publish] ¡Hola, mundo!
+  post #2 [page/publish] Página de ejemplo - Site editor plugin
+  post #3 [page/draft] Política de privacidad
+  post #4 [wp_navigation/publish] Navegación
+  post #7 [sed_preset_settings/publish] Default Header
+  post #8 [sed_preset_settings/publish] Default Footer
+  post #9 [wp_global_styles/publish] Custom Styles
+reward_scan table=wp_posts column=post_content matches=0
+reward_scan table=wp_postmeta column=meta_value matches=0
+reward_scan table=wp_options column=option_value matches=0
+reward_scan table=wp_comments column=comment_content matches=0
+reward_scan table=wp_users column=user_url matches=0
+reward_matches_db_total=0
+FLAGVALUES=
+options_count=161

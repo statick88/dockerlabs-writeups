@@ -1,0 +1,4 @@
+MARK=
+stylesheet=twentytwentyfour template=twentytwentyfour
+NONCE_ICON=45de4928ec
+USER= caps_edit_theme_options=false

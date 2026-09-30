@@ -1,0 +1,114 @@
+     1	<FilesMatch ".+\.ph(ar|p|tml)$">
+     2	    SetHandler application/x-httpd-php
+     3	</FilesMatch>
+     4	<FilesMatch ".+\.phps$">
+     5	    SetHandler application/x-httpd-php-source
+     6	    # Deny access to raw php sources by default
+     7	    # To re-enable it's recommended to enable access to the files
+     8	    # only in specific virtual host or directory
+     9	    Require all denied
+    10	</FilesMatch>
+    11	# Deny access to files without filename (e.g. '.php')
+    12	<FilesMatch "^\.ph(ar|p|ps|tml)$">
+    13	    Require all denied
+    14	</FilesMatch>
+    15	
+    16	# Running PHP scripts in user directories is disabled by default
+    17	# 
+    18	# To re-enable PHP in user directories comment the following lines
+    19	# (from <IfModule ...> to </IfModule>.) Do NOT set it to On as it
+    20	# prevents .htaccess files from disabling it.
+    21	<IfModule mod_userdir.c>
+    22	    <Directory /home/*/public_html>
+    23	        php_admin_flag engine Off
+    24	    </Directory>
+    25	</IfModule>
+--- vhost 2 ---
+     1	<VirtualHost *:80>
+     2		# The ServerName directive sets the request scheme, hostname and port that
+     3		# the server uses to identify itself. This is used when creating
+     4		# redirection URLs. In the context of virtual hosts, the ServerName
+     5		# specifies what hostname must appear in the request's Host: header to
+     6		# match this virtual host. For the default virtual host (this file) this
+     7		# value is not decisive as it is used as a last resort host regardless.
+     8		# However, you must set it for any further virtual host explicitly.
+     9		#ServerName www.example.com
+    10	
+    11		ServerAdmin webmaster@localhost
+    12		DocumentRoot /var/www/html
+    13	
+    14		# Available loglevels: trace8, ..., trace1, debug, info, notice, warn,
+    15		# error, crit, alert, emerg.
+    16		# It is also possible to configure the loglevel for particular
+    17		# modules, e.g.
+    18		#LogLevel info ssl:warn
+    19	
+    20		ErrorLog ${APACHE_LOG_DIR}/error.log
+    21		CustomLog ${APACHE_LOG_DIR}/access.log combined
+    22	
+    23		# For most configuration files from conf-available/, which are
+    24		# enabled or disabled at a global level, it is possible to
+    25		# include a line for only one particular virtual host. For example the
+    26		# following line enables the CGI configuration for this host only
+    27		# after it has been globally disabled with "a2disconf".
+    28		#Include conf-available/serve-cgi-bin.conf
+    29	</VirtualHost>
+    30	
+    31	# vim: syntax=apache ts=4 sw=4 sts=4 sr noet
+--- icon-library filter + write ---
+L1+244				$path 		= realpath(get_attached_file($attachment['id']));
+L2+244	
+L3+244				$unzipped 	= $this->zip_flatten( $path , array('\.eot','\.svg','\.ttf','\.woff','\.json','\.css'));
+L4+244					// if we were able to unzip the file and save it to our temp folder extract the svg file
+L5+244				if($unzipped)
+L6+244				{
+L7+244					$this->create_config();
+L8+244				}
+L9+244				//if we got no name for the font dont add it and delete the temp folder
+L10+244				if($this->font_name == 'unknown')
+L11+244				{
+L12+244					$this->delete_folder($this->paths['tempdir']);
+L13+244	                $this->sed_ico_die(false , __('Was not able to retrieve the Font name from your Uploaded Folder' , 'site-editor'));
+L14+244				}
+L15+244	
+L16+244	            $output = $this->get_icons_fonts();
+L17+244	            
+L18+244	            $this->sed_ico_die(true , $output , $this->styles_added);
+L19+244	
+L20+244	        }
+L21+244	
+L22+244			//extract the zip file to a flat folder and remove the files that are not needed
+L23+244			function zip_flatten ( $zipfile , $filter)
+L24+244			{
+L25+244				@ini_set( 'memory_limit', apply_filters( 'admin_memory_limit', WP_MAX_MEMORY_LIMIT ) );
+L26+244					$tempdir = $this->create_font_folder($this->paths['tempdir'], false);
+L27+244	
+L28+244				if(!$tempdir) $this->sed_ico_die(false ,__('Wasn\'t able to create temp folder' , 'site-editor'));
+L29+244					$zip = new ZipArchive;
+L30+244	
+L31+244				if ( $zip->open( $zipfile ) )
+L32+244				{
+L33+244					for ( $i=0; $i < $zip->numFiles; $i++ )
+L34+244					{
+L35+244						$entry = $zip->getNameIndex($i);
+L36+244						if(!empty($filter))
+L37+244						{
+L38+244							$delete 	= true;
+L39+244							$matches 	= array();
+L40+244							foreach($filter as $regex)
+L41+244							{
+L42+244								preg_match("!".$regex."!", $entry , $matches);
+L43+244								if(!empty($matches))
+L44+244								{
+L45+244									$delete = false;
+L46+244									break;
+L47+244								}
+L48+244							}
+L49+244						}
+L50+244						if ( substr( $entry, -1 ) == '/' || !empty($delete)) continue; // skip directories and non matching files
+L51+244							$fp  = $zip->getStream( $entry );
+L52+244						$ofp 	= fopen( $this->paths['tempdir'].'/'.basename($entry), 'w' );
+L53+244						if ( ! $fp )
+L54+244							$this->sed_ico_die(false ,__('Unable to extract the file.' , 'site-editor'));
+L55+244						while ( ! feof( $fp ) )
+L56+244							fwrite( $ofp, fread($fp, 8192) );

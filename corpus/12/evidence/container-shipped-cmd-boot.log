@@ -1,0 +1,13 @@
+
+WARNING: MongoDB 5.0+ requires a CPU with AVX support, and your current system does not appear to have that!
+  see https://jira.mongodb.org/browse/SERVER-54407
+  see also https://www.mongodb.com/community/forums/t/mongodb-5-0-cpu-intel-g4650-compatibility/116610/2
+  see also https://github.com/docker-library/mongo/issues/485#issuecomment-891991814
+
+ * Starting OpenBSD Secure Shell server sshd
+   ...done.
+ * Starting MariaDB database server mariadbd
+   ...done.
+ * Starting Apache httpd web server apache2
+AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.13. Set the 'ServerName' directive globally to suppress this message
+ * 
