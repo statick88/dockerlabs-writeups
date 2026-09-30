@@ -1,0 +1,171 @@
+================================================================================
+112 Asucar — identity evidence
+Every predicate below is evaluated AS the identity it is about, via
+`setpriv --reuid=<user> --regid=<user> --init-groups`.
+Never through `docker exec` (which is root and would observe itself, not the
+boundary). Never with a root-run `test -w`.
+================================================================================
+
+--- the container's starting identity -----------------------------------------
+$ docker exec asucar_container id
+uid=0(root) gid=0(root) groups=0(root)
+
+$ docker exec asucar_container sh -c 'cat /etc/os-release | head -1'
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+
+--- image entrypoint (what runs, and as whom) --------------------------------
+$ docker image inspect asucar:latest --format '{{json .Config}}' | head -40
+    "Cmd": [
+        "/bin/sh",
+        "-c",
+        "service apache2 start && service ssh start && service mariadb start && tail -f /dev/null"
+    ]
+
+$ ps aux | head -6
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root           1  0.0  0.0   2584  1680 ?        Ss   08:53   0:00 /bin/sh -c service apache2 start && service ssh start && service mariadb start && tail -f /dev/null
+root          25  0.0  0.0 221716 29992 ?        Ss   08:53   0:00 /usr/sbin/apache2 -k start
+www-data      30  0.0  0.0 222124 13944 ?        Ss   08:53   0:00 /usr/sbin/apache2 -k start
+root          47  0.0  0.0  15420  3556 ?        Ss   08:53   0:00 sshd: /usr/sbin/sshd [listener] 0 of 10-100 startups
+mysql        202  0.2  0.3 1349488 107960 ?       Sl   08:53   0:00 /usr/sbin/mariadbd --basedir=/usr --datadir=/var/lib/mysql ...
+
+--- HOP 1 identity: www-data (the web execution identity) ---------------------
+$ setpriv --reuid=www-data --regid=www-data --init-groups /bin/bash -c 'id; grep -E "^(Uid|Gid|Groups)" /proc/self/status'
+uid=33(www-data) gid=33(www-data) groups=33(www-data),1000(curiosito)
+Uid:	33	33	33	33
+Gid:	33	33	33	33
+Groups:	33 1000
+
+$ id -nG
+www-data curiosito
+
+--- HOP 2 identity: curiosito (holds the sudo grant) --------------------------
+$ setpriv --reuid=curiosito --regid=curiosito --init-groups /bin/bash -c 'id; grep -E "^(Uid|Gid|Groups|CapEff|CapPrm)" /proc/self/status'
+uid=1000(curiosito) gid=1000(curiosito) groups=1000(curiosito)
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	1000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+
+`CapEff`/`CapPrm` are zero: no ambient capability is doing the work at this hop.
+The escalation comes entirely from the sudoers grant.
+
+--- HOP 3 identity: root (after the puttygen grant is used) -------------------
+Measured inside an SSH session on the escalated host, not inferred:
+
+    $ ssh -i l112_oracle root@172.17.0.12 'id; grep -E "^(Uid|Gid|Groups)" /proc/self/status; whoami'
+    uid=0(root) gid=0(root) groups=0(root)
+    Uid:	0	0	0	0
+    Gid:	0	0	0	0
+    Groups:	0
+    root
+    marker visible: 1
+    hostname: fdf286c06d04
+
+================================================================================
+PERMISSION MATRIX — evaluated as www-data
+================================================================================
+
+--- can www-data reach curiosito's key material? YES ---
+/home/curiosito                          READABLE      NOT-writable
+/home/curiosito/.ssh                     READABLE      NOT-writable
+/home/curiosito/.ssh/id_rsa              READABLE      NOT-writable
+/home/curiosito/.ssh/authorized_keys     READABLE      NOT-writable
+
+first bytes of the private key, read as www-data:
+-----BEGIN OPENSSH PRIVATE KEY-----
+
+--- can www-data reach /root material? NO (control that held) ---
+/root                            NOT-readable
+/root/.ssh                       NOT-readable
+/root/.ssh/authorized_keys       NOT-readable
+/root/.mysql_history             NOT-readable
+read attempt output:
+head: cannot open '/root/.mysql_history' for reading: Permission denied
+head: cannot open '/root/.ssh/authorized_keys' for reading: Permission denied
+
+Positive control in the SAME shell: the same www-data identity read
+/var/www/html/wp-config.php and /home/curiosito/.ssh/id_rsa above. So the
+NOT-readable answers are a boundary, not a broken predicate.
+
+--- what www-data does own ---
+/var/www/html/wp-config.php                READABLE  WRITABLE
+/var/www/html/wp-content                   READABLE  WRITABLE
+/var/www/html/wp-content/uploads           READABLE  WRITABLE
+
+================================================================================
+THE FACTS BEHIND THOSE ANSWERS, from the artefact
+================================================================================
+
+$ getent group curiosito
+curiosito:x:1000:www-data
+
+$ stat -c "%a %U:%G %n" /home/curiosito/.ssh/id_rsa /home/curiosito/.ssh/authorized_keys /home/curiosito
+250 curiosito:curiosito /home/curiosito/.ssh/id_rsa
+654 curiosito:www-data /home/curiosito/.ssh/authorized_keys
+755 curiosito:curiosito /home/curiosito
+
+`654` decodes as owner rw-, group r-x, other r--. The group bits are 5, not 6:
+www-data can READ authorized_keys and cannot WRITE it. Reading `654` as
+"group www-data can write" would have been a wrong mechanism.
+
+$ stat -c "%a %U:%G %n" /home/curiosito/.ssh
+250 curiosito:curiosito /home/curiosito/.ssh
+   (d-wxr-x--- : owner w, group r-x, other ---)
+Group curiosito = r-x, so www-data can traverse and list, and that is exactly
+why it can reach id_rsa.
+
+$ cat /home/curiosito/.bash_history
+cd
+ssh-keygen -t rsa -b 4096
+ls
+cd /.ssh
+ls
+ls -la
+cd.ssh
+cd .ssh
+ls
+cat id_rsa.pub >> ~/.ssh/authorized_keys
+ls
+rm id_rsa.pub
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/authorized_keys
+chmod 644 ~/.ssh/authorized_keys
+chmod 700 ~/.ssh
+sudo usermod -a -G curiosito www-data
+pwd
+sudo chown curiosito:www-data /home/curiosito/.ssh/authorized_keys
+sudo su
+passwd root
+exit
+
+The two `sudo` lines are the setup for the group membership above.
+
+$ cat /etc/sudoers | tail -4
+# User privilege specification
+root	ALL=(ALL:ALL) ALL
+
+# Allow members of group sudo to execute any command
+%sudo	ALL=(ALL:ALL) ALL
+
+@includedir /etc/sudoers.d
+curiosito ALL=(root) NOPASSWD: /usr/bin/puttygen
+
+Note: NO wildcard. The `sudo --help` argument-splitting bypass (uid=-1) does
+NOT apply to this line.
+
+--- /root/.mysql_history, and why the credential in it is still protected ---
+$ ls -la /root/.mysql_history
+-rw-r--r-- 1 root root 885 May 12  2024 /root/.mysql_history
+$ ls -ld /root
+drwx------ 1 root root 4096 Sep 30 08:53 /root
+
+$ grep -n "curiosito" /root/.mysql_history
+CREATE USER 'curiosito'@'%' IDENTIFIED BY 'password++321dcbsodivbfva';
+GRANT ALL PRIVILEGES ON wordpress.* TO 'curiosito'@'%';
+
+The file is mode 644 and contains a live database password, but /root is mode
+700, so www-data cannot traverse to it (measured: Permission denied, above).
+The mode of the history file is still a defect worth fixing; the boundary that
+actually protects it is /root's own mode.

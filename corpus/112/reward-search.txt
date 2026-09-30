@@ -1,0 +1,72 @@
+================================================================================
+112 Asucar — reward search
+There is no reward on this lab. Every non-zero match was READ, not dismissed by
+name, because a report that invents its own reward teaches the reader nothing
+about the finding it is attached to.
+================================================================================
+
+--- filesystem-wide, literal patterns, with counts ----------------------------
+
+$ grep -rlF "FLAG{" / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev --exclude-dir=run
+   -> 0 files
+
+$ grep -rlF "flag{" / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev --exclude-dir=run
+   /var/www/html/wp-content/plugins/site-editor/editor/assets/css/siteeditor.min.css
+   -> 1 file
+
+$ grep -rlF "FLAG =" / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev --exclude-dir=run
+   /usr/share/perl/5.36.0/File/Temp.pm
+   /usr/lib/x86_64-linux-gnu/perl-base/File/Temp.pm
+   /var/www/html/wp-includes/js/dist/vendor/lodash.js
+   -> 3 files
+
+--- the four non-zero matches, quoted so a reader can see what they are --------
+
+1) siteeditor.min.css  -- a CSS sprite rule. Not a reward.
+
+   $ grep -oE ".{0,40}flag\{.{0,60}" .../site-editor/editor/assets/css/siteeditor.min.css
+   e{background-position:0 -112px}.ui-icon-flag{background-position:-16px -112px}.ui-icon-calendar{backgroun
+
+2,3) File/Temp.pm (perl-base, two copies of the same module) -- a Perl variable.
+    Not a reward.
+
+   $ grep -oE ".{0,30}FLAG =.{0,40}" /usr/share/perl/5.36.0/File/Temp.pm
+   $LOCKFLAG = eval {
+
+4) lodash.js -- a JavaScript constant. Not a reward.
+
+   $ grep -oE ".{0,30}FLAG =.{0,40}" /var/www/html/wp-includes/js/dist/vendor/lodash.js
+   var CLONE_DEEP_FLAG = 1,
+
+--- docroot regex searches, with counts ---------------------------------------
+
+$ grep -roE "FLAG\{[^}]*\}" /var/www | sort -u
+   -> 0 matches
+
+$ grep -roE "(FLAG|flag)\{[^}]{0,64}\}" /var/www | wc -l
+   -> 1     (the CSS rule above)
+
+--- database, with row counts -------------------------------------------------
+
+   wp_posts      7 rows read   (2 posts, 3 pages, 1 wp_navigation, 2 sed_preset_settings, 1 auto-draft)
+   wp_options  172 rows read
+   wp_users      1 row  read   (wordpress)
+   wp_comments   1 row  read   ("Un comentarista de WordPress" / "Hola, esto es un comentario.")
+
+   Full post_content read for all 7 posts, including the two sed_preset_settings
+   blobs and the draft "Política de privacidad". 0 flag-shaped values.
+   181 rows read in total. 0 hits.
+
+--- local user material -------------------------------------------------------
+
+$ ls -A /home/curiosito                -> 5 entries
+$ cat /home/curiosito/.bash_history    -> 20 lines, quoted in identity.txt, 0 flags
+$ cat /root/.mysql_history             -> contains a MySQL password, 0 flags
+
+================================================================================
+CONCLUSION
+================================================================================
+
+No FLAG{}, and no equivalent, exists on this lab. The authoritative statement of
+this property is the FLAG{} column of ../INDEX.md. No claim is made about my
+position in any sequence.

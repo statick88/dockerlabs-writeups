@@ -1,0 +1,137 @@
+================================================================================
+112 Asucar — the salt measurement
+self-corrections.md section 21 applied, not asserted.
+================================================================================
+
+THE TRAP THIS AVOIDS. wp-config.php:51-58 ships all eight auth keys as the
+installer placeholder:
+
+  51: define( 'AUTH_KEY',         'put your unique phrase here' );
+  52: define( 'SECURE_AUTH_KEY',  'put your unique phrase here' );
+  53: define( 'LOGGED_IN_KEY',    'put your unique phrase here' );
+  54: define( 'NONCE_KEY',        'put your unique phrase here' );
+  55: define( 'AUTH_SALT',        'put your unique phrase here' );
+  56: define( 'SECURE_AUTH_SALT', 'put your unique phrase here' );
+  57: define( 'LOGGED_IN_SALT',   'put your unique phrase here' );
+  58: define( 'NONCE_SALT',       'put your unique phrase here' );
+
+A document that reads that and concludes "the auth cookie is forgeable because
+AUTH_KEY is a placeholder" is the corpus's own retracted finding. So the
+framework was asked, not the file.
+
+================================================================================
+MEASUREMENT 1 — what the file defines vs what the framework consumes
+================================================================================
+
+$ php /tmp/salt_probe.php     (loads /var/www/html/wp-load.php)
+
+defined('AUTH_KEY'): true
+AUTH_KEY as the file defines it : put your unique phrase here
+strlen(AUTH_KEY)                : 27
+
+wp_salt('auth')  = /K->ah=~U^c!$DY)A#7A640ke.]{d/!lqaCwU|B=i&n4j5N-cfL]pNz4=yPVbB>b_jda1;XpNk=YO!lj6,`4}i*{e .7b3/^5*nVSf 8C`$oBv(WbCTFk`<*7_;~Jgfh
+strlen(wp_salt('auth')) = 128
+
+wp_salt('secure_auth'), wp_salt('logged_in') and wp_salt('nonce') were also
+printed and are each 128 characters. They are not reproduced here: their exact
+values are the concatenations of the wp_options rows dumped in Measurement 2,
+which IS reproduced verbatim. No value is paraphrased or abridged anywhere in
+this file.
+
+wp_hash('probe', 'auth') = c06e7ec461d1c3d85c5a9a5582b3ac86
+wp_check_password('probe', get_userdata(1)->user_pass) = false
+
+A 27-character placeholder cannot produce a 128-character salt. The arithmetic
+refutes the claim on its own, which is how the retracted finding in this corpus
+was caught.
+
+================================================================================
+MEASUREMENT 2 — which source the framework actually consumes
+================================================================================
+
+$ php /tmp/salt_probe2.php
+
+wp_options rows carrying salt material: 8
+  auth_key           len=64
+  auth_salt          len=64
+  logged_in_key      len=64
+  logged_in_salt     len=64
+  nonce_key          len=64
+  nonce_salt         len=64
+  secure_auth_key    len=64
+  secure_auth_salt   len=64
+
+get_site_option('auth_key')  = '/K->ah=~U^c!$DY)A#7A640ke.]{d/!lqaCwU|B=i&n4j5N-cfL]pNz4=yPVbB>b'   (len 64)
+AUTH_KEY (config constant)  = 'put your unique phrase here'   (len 27)
+
+wp_salt('auth')             = '/K->ah=~U^c!$DY)A#7A640ke.]{d/!lqaCwU|B=i&n4j5N-cfL]pNz4=yPVbB>b_jda1;XpNk=YO!lj6,`4}i*{e .7b3/^5*nVSf 8C`$oBv(WbCTFk`<*7_;~Jgfh'  (len 128)
+
+wp_salt('auth') === get_site_option('auth_key')                            ? false
+wp_salt('auth') === AUTH_KEY (the config constant)                          ? false
+wp_salt('auth') === get_site_option('auth_key') . get_site_option('auth_salt') ? true
+option-pair length = 128, wp_salt length = 128
+
+CONCLUSION, FROM MEASUREMENT: the framework IGNORES the wp-config.php
+placeholder and consumes the 64+64 characters stored in wp_options.
+`defined('AUTH_KEY')` is trivially true of any constant and says nothing about
+which value is used.
+
+================================================================================
+THE MECHANISM, from this image's own pluggable.php
+================================================================================
+
+pluggable.php:2442 — the placeholder is pre-seeded into a skip-list:
+
+  static $duplicated_keys;
+  if ( null === $duplicated_keys ) {
+      $duplicated_keys = array(
+          'put your unique phrase here' => true,
+      );
+
+pluggable.php:2477 — the constant is only taken when the skip-list lacks it:
+
+  if ( defined( $const ) && constant( $const ) && empty( $duplicated_keys[ constant( $const ) ] ) ) {
+      $values[ $type ] = constant( $const );
+  } elseif ( ! $values[ $type ] ) {
+      $values[ $type ] = get_site_option( "{$scheme}_{$type}" );
+
+With the placeholder present, the first branch is false and it falls through to
+get_site_option().
+
+================================================================================
+MY OWN WRONG INTERMEDIATE CONCLUSION, AND THE COUNT THAT CORRECTED IT
+================================================================================
+
+On first reading Measurement 1 I assumed there were NO auth_key/auth_salt rows in
+wp_options — my earlier option dump had filtered out rows I did not recognise —
+and concluded "wp_salt() generates a random value per boot, so a database read is
+harmless".
+
+I then counted instead of assuming:
+
+  SELECT COUNT(*) FROM wp_options
+   WHERE option_name IN ('auth_key','auth_salt','secure_auth_key','secure_auth_salt',
+                         'logged_in_key','logged_in_salt','nonce_key','nonce_salt');
+  -> 8
+
+(SELECT COUNT(*) FROM wp_options -> 172 total rows.)
+
+The count was 8, not 0, and wp_salt('auth') is exactly the concatenation of two
+of them. My first conclusion was wrong in a way that would have produced a
+correct-sounding but wrong security note. The count changed the finding.
+
+================================================================================
+SCOPE
+================================================================================
+
+CLAIMED, from measurement: the WordPress cookie salts in this image are real
+random 64+64 character values stored in wp_options; the wp-config.php
+placeholder is skipped. A finding asserting that the placeholder makes the
+cookie forgeable is REFUTED for this image.
+
+NOT CLAIMED: that the salts are safe. They sit in wp_options in cleartext, so
+any SQL injection or database read discloses them.
+
+NOT TESTED: end-to-end auth-cookie forgery. It requires a live session token and
+no session could be established without the password (see credential-sweep.txt).
+0 attempts. This is UNTESTED, not "not possible".

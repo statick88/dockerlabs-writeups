@@ -1,0 +1,198 @@
+================================================================================
+112 Asucar — the shipped plugin is incomplete
+This is the headline. Two required PHP classes are absent from the archive, and
+the gap is remotely triggerable by anyone, unauthenticated.
+================================================================================
+
+--- the require statements, verbatim ----------------------------------------
+/var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/includes/site-editor-dependency-manager.class.php
+
+  line 42:  require_once dirname( __FILE__ ) . '/dependency/site-editor-options-dependency.class.php';
+  line 46:  require_once dirname( __FILE__ ) . '/dependency/site-editor-options-callback-dependency.class.php';
+
+--- what the shipped directory holds ----------------------------------------
+$ cd /var/www/html/wp-content/plugins/site-editor
+$ for f in editor/extensions/options-engine/includes/dependency/site-editor-options-dependency.class.php \
+           editor/extensions/options-engine/includes/dependency/site-editor-options-callback-dependency.class.php; do
+      if [ -f "$f" ]; then echo "PRESENT  $f"; else echo "MISSING  $f"; fi
+  done
+MISSING  editor/extensions/options-engine/includes/dependency/site-editor-options-dependency.class.php
+MISSING  editor/extensions/options-engine/includes/dependency/site-editor-options-callback-dependency.class.php
+
+$ ls -A editor/extensions/options-engine/includes/dependency/ | wc -l
+1
+$ ls -A editor/extensions/options-engine/includes/dependency/
+index.html.tmp
+
+One entry, and it is not a class file.
+
+--- the trigger --------------------------------------------------------------
+wp-content/plugins/site-editor/includes/functions.php:395-397
+
+  function sed_doing_ajax(){
+      return isset( $_POST['sed_page_customized'] ) || ( defined( 'DOING_AJAX' ) && DOING_AJAX && isset( $_POST['sed_page_ajax'] ) );
+  }
+
+Two properties make this remotely triggerable by anyone:
+  1. isset() — the parameter's VALUE is never read. An empty value fires it.
+  2. Returning true is enough to make site-editor.php:303-305 load the editor,
+     which loads the extension loop at site-editor-app.php:92, which includes
+     options-engine.php, whose constructor calls the missing file.
+
+--- CONTROL / TREATMENT, both sides executed ---------------------------------
+CONTROL (identical request, no plugin parameter):
+    POST /wp-login.php            -> 200,  7907 bytes
+    POST /                       -> 200, 96154 bytes
+    GET  /?sed_page_customized=1  -> 200, 96154 bytes   (byte-identical to a plain GET)
+
+TREATMENT (same request + sed_page_customized):
+    POST /wp-login.php  +sed_page_customized=1   -> 500, 2753 bytes
+    POST /wp-login.php  +sed_page_customized=    -> 500, 2753 bytes   (EMPTY VALUE ALSO FIRES)
+    POST /             +sed_page_customized=1   -> 500, 2628 bytes
+    POST /wp-admin/admin-ajax.php action=heartbeat +sed_page_customized=1 -> 500, 306 bytes
+
+7 treatment requests, 3 control requests. Every treatment returned 500; every
+control returned 200.
+
+--- the verbatim server-side fatal (/var/log/apache2/error.log) --------------
+[Wed Sep 30 09:05:29.321927 2026] [php:error] [pid 34] [client 172.17.0.1:34744] PHP Fatal error:  Uncaught Error: Failed opening required '/var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/includes/dependency/site-editor-options-dependency.class.php' (include_path='.:/usr/share/php') in /var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/includes/site-editor-dependency-manager.class.php:42
+Stack trace:
+#0 /var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/includes/site-editor-options-manager.class.php(108): SiteEditorOptionsDependencyManager->__construct()
+#1 /var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/options-engine.php(39): SiteEditorOptionsManager->__construct()
+#2 /var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/options-engine.php(96): SedOptionsEngineExtension->__construct()
+#3 /var/www/html/wp-content/plugins/site-editor/editor/site-editor-app.php(92): include_once('...')
+#4 /var/www/html/wp-content/plugins/site-editor/editor/site-editor-app.php(27): SiteEditorApp->includes()
+#5 /var/www/html/wp-content/plugins/site-editor/site-editor.php(329): SiteEditorApp->__construct()
+#6 /var/www/html/wp-content/plugins/site-editor/site-editor.php(304): SiteEditor->load_editor()
+#7 /var/www/html/wp-content/plugins/site-editor/site-editor.php(132): SiteEditor->includes()
+#8 /var/www/html/wp-content/plugins/site-editor/site-editor.php(93): SiteEditor->__construct()
+#9 /var/www/html/wp-content/plugins/site-editor/site-editor.php(416): SiteEditor::instance()
+#10 /var/www/html/wp-content/plugins/site-editor/site-editor.php(420): SED()
+#11 /var/www/html/wp-settings.php(517): include_once('...')
+#12 /var/www/html/wp-config.php(96): require_once('...')
+#13 /var/www/html/wp-load.php(50): require_once('...')
+#14 /var/www/html/wp-admin/admin-ajax.php(22): require_once('...')
+#15 {main}
+  thrown in /var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/includes/site-editor-dependency-manager.class.php on line 42
+
+================================================================================
+WHY THE INTENDED SINK CANNOT BE REACHED — the two possible request states
+================================================================================
+
+The icon-library write sink lives at
+wp-content/plugins/site-editor/editor/extensions/icon-library/icon-library.php
+
+  line 48:  add_action("wp_ajax_add_zipped_font", array($this,"add_zipped_font") );
+  line 50:  add_action('wp_ajax_remove_icons_font', array( $this, 'remove_icons_font'));
+  line 548:  fwrite( $handle, "<?php\r\necho '{$msg}';\r\n?>" );
+
+Extensions load in readdir() order from SED_EXT_PATH, which
+editor/includes/siteeditor.class.php:25 sets to .../editor/extensions, walked
+by the loop at site-editor-app.php:88-93:
+
+$ ls -f /var/www/html/wp-content/plugins/site-editor/editor/extensions/
+pagebuilder
+icon-library      <-- the sink's module loads here
+media
+preset
+layout
+customize-posts
+static-module
+options-engine    <-- dies here, per the fatal above
+design-editor
+
+So a request is in one of exactly two states:
+
+  NO plugin parameter  -> the editor never loads -> wp_ajax_add_zipped_font is
+                          never registered.
+  ANY plugin parameter -> the process fatals at options-engine before the
+                          request can do anything -> HTTP 500.
+
+There is no third state in which the sink is both registered and usable. Both
+states were executed.
+
+Two further reasons the sink is gated even before the packaging defect:
+  1. It is wp_ajax_, not wp_ajax_nopriv_ -> logged-in sessions only.
+  2. check_ajax_handler() additionally requires edit_theme_options AND a valid
+     nonce.
+
+--- the authorisation gate, verbatim -----------------------------------------
+wp-content/plugins/site-editor/editor/includes/site-editor-manager.class.php:1379-1396
+
+  function check_ajax_handler($ajax , $nonce , $capability = 'edit_theme_options'){
+
+          if ( is_admin() && ! sed_doing_ajax() )
+              auth_redirect();
+          elseif ( sed_doing_ajax() && ! is_user_logged_in() ){
+              $this->sed_die( 0 );
+          }
+
+          if ( ! current_user_can( $capability ) )
+              $this->sed_die( -1 );
+
+          if( !check_ajax_referer( $nonce . '_' . $this->get_stylesheet(), 'nonce' , false ) ){
+              $this->sed_die( -1 );
+          }
+          if( !isset($_POST['sed_page_ajax']) || $_POST['sed_page_ajax'] !=  $ajax){
+              $this->sed_die( -2 );
+          }
+  }
+
+--- every registered AJAX action: 16, none nopriv ---------------------------
+$ grep -rhon "wp_ajax_[a-zA-Z_0-9]*" wp-content/plugins/site-editor --include=*.php | sort -u
+wp_ajax_add_zipped_font
+wp_ajax_customize_save
+wp_ajax_load_medias
+wp_ajax_load_modules
+wp_ajax_load_skins
+wp_ajax_remove_icons_font
+wp_ajax_sed_app_refresh_nonces
+wp_ajax_sed_create_preset
+wp_ajax_sed_deactivate_feedback
+wp_ajax_sed_delete_preset
+wp_ajax_sed_get_preset
+wp_ajax_sed_load_options
+wp_ajax_sed_module_presets
+wp_ajax_sed_save_preset
+wp_ajax_sed_save_presets
+wp_ajax_sed_upload_attachment
+
+16 actions, 0 of them nopriv.
+
+================================================================================
+MY OWN INSTRUMENTS THAT LIED ABOUT THIS, AND WHAT CAUGHT THEM
+================================================================================
+
+A Perl path resolver I wrote to enumerate every dirname(__FILE__)-relative
+require/include printed, three consecutive times, with exit 0 and clean output:
+
+    call sites examined: 0
+    targets present:     0
+    targets MISSING:     0
+
+It had found nothing because it looked in the wrong place. Three wrong regexes,
+each plausible on a glance:
+
+  1. \b(?:require|require_once)\s*\( — assumed require is always followed by a
+     parenthesis. It is not: `require_once dirname( __FILE__ )` has no wrapping
+     parenthesis, so the pattern matched nothing at all.
+  2. \(([^;]*)\; — after fixing the above, required a closing ")" before ";",
+     which the parenthesis-less form does not have.
+  3. A shell sed extraction of the path literal that did not strip the leading
+     quote. It reported 57 targets missing when at most a handful were, and
+     named /var/www/html/wp-content/plugins/site-editor/includes/app_file.class.php
+     as absent — a file whose directory listing I had already read earlier in
+     the same session.
+
+WHAT CAUGHT IT: I did not accept the 57, because it contradicted a directory
+listing I already held. Cross-check the sweep against an artefact you already
+fetched.
+
+FIX: stop parsing PHP with regex. Rewritten with token_get_all(). That version
+then reported honestly (call sites: 54, resolved: 0, unparsed: 54) and revealed
+the real reason: dirname tokenises as T_STRING, not T_DIR. T_DIR is the __DIR__
+magic CONSTANT — a different thing with a confusingly similar name. A third
+wrong answer, structurally correct, and still wrong.
+
+RULE ADDED: a count of zero from an instrument you wrote today is a statement
+about the instrument until proven otherwise.

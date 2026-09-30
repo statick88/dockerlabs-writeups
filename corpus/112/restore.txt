@@ -1,0 +1,98 @@
+================================================================================
+112 Asucar — restore
+Recreated from the image, not by undoing edits.
+================================================================================
+
+    $ docker rm -f asucar_container
+    asucar_container
+    $ docker run -d --name asucar_container asucar:latest
+    $ docker ps --filter name=asucar --format '{{.Names}} {{.Status}}'
+    asucar_container Up 8 seconds
+
+Verified POSITIVELY. Every check asserts a value that had to be RIGHT, not the
+absence of an error.
+
+--- what was changed during the engagement, and where it went -----------------
+
+1. A WordPress user `poscontrol` (ID 9001) was inserted into wp_users and
+   wp_usermeta to prove the xmlrpc credential oracle could fire.
+   -> GONE. wp_users now has 1 row, the shipped `wordpress`.
+
+2. /root/.ssh/authorized_keys was written by the puttygen escalation, containing
+   the marker key.
+   -> GONE.
+
+3. /home/curiosito/lab112_key.pub was created as curiosito's escalation input.
+   -> GONE.
+
+4. Six probe scripts and the marker public key were copied into /tmp.
+   -> GONE.
+
+================================================================================
+POST-RESTORE VERIFICATION
+================================================================================
+
+$ grep -n "wp_version = " /var/www/html/wp-includes/version.php
+19:$wp_version = '6.5.3';                                  <- shipped version intact
+
+$ mysql ... -e "SELECT COUNT(*) FROM wp_users;"   -> 1
+$ mysql ... -e "SELECT user_login FROM wp_users;" -> wordpress
+                                                         poscontrol is gone
+
+$ echo "[ -f /root/.ssh/authorized_keys ] && echo YES || echo NO"
+NO
+$ ls -A /root/.ssh/ | wc -l
+0
+
+$ ls /tmp | wc -l
+0
+$ ls /tmp/l112_oracle.pub /tmp/putty_lab.sh /tmp/salt_probe2.php
+ls: cannot access '/tmp/l112_oracle.pub': No such file or directory
+ls: cannot access '/tmp/putty_lab.sh': No such file or directory
+ls: cannot access '/tmp/salt_probe2.php': No such file or directory
+
+$ ls -A /home/curiosito
+.bash_history
+.bashrc
+.bash_logout
+.profile
+.ssh
+                                                       lab112_key.pub is gone
+
+$ ls -A .../options-engine/includes/dependency/ | wc -l
+1                                                       <- the shipped defect is
+                                                          still there. It should
+                                                          be. The lab is back to
+                                                          shipped state, not to a
+                                                          state I improved.
+
+--- the service check that actually proves it -------------------------------
+
+$ curl -s -o r1.html -w 'GET /            : %{http_code} bytes=%{size_download}\n' 'http://172.17.0.12/'
+GET /            : 200 bytes=96154
+
+$ curl -s -o r2.html -w 'POST /wp-login.php: %{http_code} bytes=%{size_download}\n' -X POST -d 'log=wordpress&pwd=nope' 'http://172.17.0.12/wp-login.php'
+POST /wp-login.php: 200 bytes=7907
+
+$ curl -s -o r3.out -w 'POST /xmlrpc.php  : %{http_code} bytes=%{size_download}\n' -X POST -H 'Content-Type: text/xml' --data-binary @pc.xml 'http://172.17.0.12/xmlrpc.php'
+POST /xmlrpc.php  : 200 bytes=414
+<name>faultString</name><value><string>Nombre de usuario o contraseña incorrectos.
+
+THE USEFUL PART: 96154 and 7907 are BYTE-IDENTICAL to the pre-engagement control
+readings recorded in surface.md and plugin-defect.txt. The restore is verified by
+a value that had to match, not by the absence of an error. (The xmlrpc response
+is 414 bytes rather than the positive control's 733, because the poscontrol
+account no longer exists — that difference is itself the confirmation.)
+
+================================================================================
+DISK
+================================================================================
+
+No image, archive or scratch file was removed beyond my own. `asucar:latest` and
+`labs/112/` are left in place for the parent to reclaim by name, alongside
+dist/asucar.zip which is needed for any retry.
+
+NOT run, by policy: docker system prune, docker image prune -a, docker volume
+prune, auto_deploy.sh.
+
+No container other than asucar_container was started, stopped or removed.
