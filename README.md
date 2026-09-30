@@ -39,7 +39,8 @@ RUNBOOK.md                   the procedure, cloning to methodology  (start here)
 INDEX.md                     engagement → class → methodology rule
 PIPELINE.md                  the two-lane operating plan (start here to work the queue)
 corpus/<id>/                 one writeup per lab, plus raw evidence artefacts
-corpus/INDEX.md              the 27 labs, their class, and their reward
+corpus/HOW-IT-WAS-RESOLVED.md  every lab: class, discriminator, reward (start here)
+corpus/INDEX.md              the labs, their class, and their reward
 corpus/PILOT-SUMMARY.md      the first five, written as a set
 method/self-corrections.md   the failures that recur across all 27
 method/retrieval-hazards.md  how a scanner confidently reports nothing
