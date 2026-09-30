@@ -1,0 +1,210 @@
+# Self-corrections — the failures that recur
+
+Twenty-seven engagements produced one dominant failure shape, and it is not a
+missing technique. It is this:
+
+> **A measurement that is wrong looks exactly like a result.**
+
+Every case below produced well-formed output. None of them errored. Each would
+have shipped, and several of them would have been filed to a client as a finding
+or as a negative result. They are ordered by how much they cost.
+
+---
+
+## 1. The positive control that had never seen a success
+
+Lab 118, credential attack. The agent's own control script had port 22 hardcoded
+and was talking to **the host's sshd, not to its control container**. It was about
+to certify **17,000 negatives** from an instrument that had never once observed a
+success.
+
+What caught it was noticing the sweep contradicted a file already fetched in the
+same session.
+
+**Rule.** A control that has never seen a success is not a control. Force a
+positive through it before believing any negative it produces.
+
+## 2. Privileged tooling contaminating the measurement
+
+Lab 141 and lab 129, independently. `test -w` reported **WRITABLE** because the
+command ran through `docker exec`, which is root. The predicate was correct; the
+identity was wrong.
+
+Lab 129's companion: a `chmod` in a permissions table that ran **on the operator
+host**, where the container's path does not exist. Five rows reported `LOGIN OK`
+and one `DENIED` — all six re-testing the same unmodified file — while
+`No such file or directory` scrolled past unexamined.
+
+**Rule.** Every control runs as the identity whose capability you are measuring. A
+privileged tool does not observe a low-privilege boundary; it observes itself.
+
+## 3. The harness is the outage
+
+Lab 238. A blocking `execSync` whose `curl` called back to the **same** Express
+process deadlocked its own event loop. From outside, the app went silent — while
+`/json/list` on another thread of the same PID still answered `200`. The agent
+read it as prototype pollution, because that was recent and had a CWE.
+
+Refuted on a clean instance: the control to a different process answered in
+0.97 s, and the treatment raised its own `-m 8` timeout at exactly 8.05 s. The
+app recovered on its own once the deadlock released.
+
+**Rule.** *Process alive* is not *service serving* is not *message executed*.
+Replay the most recent action on a clean instance before theorising. Every payload
+sent through an injection primitive needs its own timeout.
+
+## 4. Your own rate limit, wearing a false negative
+
+Lab 283. The agent's own rate limiter made a working injection return `False`. It
+read as *the injection is dead*.
+
+Also lab 283: `urlencode` **double-encoded** a value that was already encoded, so
+its "encoding bypass" test was measuring its own encoder.
+
+**Rule.** Your concurrency above the target's makes every negative false. And
+check your own encoder once before you attribute a failure to the target.
+
+## 5. Binary search over a non-monotonic predicate
+
+Lab 283. The predicate "does this character match" is not monotonic, so binary
+search returned **`~~~~` for every character**. `~~~~` is the signature of a broken
+search, not a password — and the agent nearly filed it as the administrator's
+credential.
+
+**Rule.** A search that returns the same value everywhere has failed, whatever that
+value is. A uniform answer is a result about the search.
+
+## 6. Oracles that cannot fire
+
+Lab 90. A conditional oracle whose condition sat in a malformed `ON` clause, so it
+**short-circuited to one side every time** and only one derived table ever
+materialised. Four shards printed `NOTFOUND` having examined **zero lines**.
+
+Lab 36. The yescrypt scanner read field `[1]` of the **first** line of
+`/etc/shadow` — which is `root`, whose field is `*` — so `crypt()` returned `*0`
+**without ever executing the KDF**. The tell was the rate: `10705.7 candidates/s`.
+
+**Rule.** An oracle that always resolves the same way is a bias wearing the shape
+of an answer. The positive control runs **first**, not after. And when a
+cryptographic step finishes implausibly fast, the step did not run.
+
+## 7. A tool that summarises, giving you the wrong reading
+
+Lab 238. The environment's `docker logs` wrapper **truncated and summarised** the
+application's request log, and the agent drew a conclusion from the summary. Reading
+the raw stream with `PATH=/usr/bin:/bin` gave a different account.
+
+A container-management wrapper is a filter, and a filter is an instrument. Read
+raw output before you reason about it.
+
+## 8. Control flow, and what actually executes
+
+Lab 23, Spain. A self-test asserted the payload was free of `0x00` bytes. **It
+passed**, and the payload still mis-executed — `0x40` is `inc eax` in 32-bit mode,
+not `inc ecx`, so the shellcode called `getppid` where a `dup2` belonged.
+
+**Rule.** Assert what the consumer *does with* the bytes, not what the bytes *are*.
+The self-test must decode and assert the syscall arguments, and emulate the stack
+string.
+
+## 9. Truncated and complete look identical
+
+Lab 163. An arbitrary cap cut a wordlist sorted punctuation-first, where the real
+words sit at index ~105,000. The sweep reported 2 of 7 present files. **A truncated
+sweep and a complete sweep print identically.**
+
+**Rule.** Cross-check the sweep against an artefact you already fetched. Output
+shape is not evidence of coverage.
+
+## 10. The filter that was correct, and the host that was not
+
+Lab 146. The upload handler allowlisted one extension, forced `uniqid().".jpg"`, and
+trusted `originalname` not at all. It was **correct**. The RCE came from a global
+`AddType application/x-httpd-php .jpg` in the main server config, outside every
+`<Directory>`.
+
+The lab shipped three directives that "explained" the behaviour. **Two were inert**
+— and the one that named the exact behaviour, a root-owned `.htaccess`, was the
+dead one. Proven with three states: original file → executes; replaced with
+`Require all denied` → executes; **deleted** → executes.
+
+**Rule.** Patching the handler ships nothing. Read the server's content-type →
+handler map, and check whether the directory's `AllowOverride` even lets a
+per-directory file speak.
+
+---
+
+## The pattern underneath
+
+Six of the ten above are a single sentence: **the instrument, not the target,
+produced the answer.** Two more are the instrument producing a *confident
+negative*. The remaining two are the instrument reporting faithfully about
+something other than what was asked.
+
+The unifying discipline is already written into
+`decision-making.md` as *a self-test validates the tool, not the trace* — and
+these are the instances that made it concrete. The corpus is the receipt for that
+rule; this file is why the rule exists.
+## 11. A tool that does nothing, and exits 0
+
+`find -writable` does not exist in busybox. It printed its usage text, returned
+nothing, and **exited 0** — so a "no writable critical files" negative looked
+clean, and the entire privilege-escalation finding was one `test -w` away from
+being deleted. `test -w` disagreed at the same instant.
+
+This is worse than "command not found". A missing command is visible; a command
+that succeeds while doing nothing manufactures a negative that *confirms what
+you hoped*. **Rule.** Any negative that comes from a bulk enumeration gets one
+independent confirmation from a different tool, in the same shell, before it is
+recorded. Compare the tools' answers; do not average them.
+
+**Related: an alias for a real thing.** `ls -l` prints a size column that looks
+exactly like a mode. `777` read as "world-writable" when the mode was `664` and
+the file was `root:pinguinos`. The finding survived; the stated mechanism was
+wrong. A wrong mechanism in a report is a wrong report.
+
+## 12. A second tool that reads nothing, and exits 0
+
+`strings -a` on a binary `AndroidManifest.xml` returns **nothing** — the string
+pool is UTF-16, and the default scan is ASCII. An analyst running only the
+obvious command concludes the manifest is clean: no components, no permissions,
+nothing to find. `strings -a -e l` finds them all.
+
+Same failure as #11, different surface: the tool is not broken, it is being asked
+the wrong question, and it reports the empty answer with a zero exit status. A
+tool that returns "I found nothing" has made a claim about the world, not about
+itself. **Rule.** Before recording an absence, confirm the tool can *find the
+thing you expect to exist*. Point it at a string you know is present. If it does
+not come back, the tool is the problem.
+## 13. A client that follows redirects, turning every auth test into a 200
+
+Python `urllib` follows redirects by default. A test that meant to read
+`GET /dashboard` without cookies returned **200** — because the unauthenticated
+request was redirected to the login page and the login page returns 200. Every
+such test agreed, which is exactly why it was dangerous: the detector was
+always-true.
+
+The result was the **inverse of the truth**. The finding being tested was
+"`wordpress_logged_in` alone authenticates" (it does not — it alone gives 302,
+and `pluggable.php:889` requires a live session token). With redirects followed,
+the test reported 200 and the cookie looked sufficient.
+
+**Rule.** Any authorisation test must (a) disable redirect following, and
+(b) assert on something the error page cannot fake — a final URL, a status you
+expect to *fail*, or a body marker. And a negative control that returns the same
+status as the positive is not a control; it is a coincidence you have not checked.
+
+## 14. A negative that did zero work
+
+`file('/dev/stdin')` inside PHP returns **0 lines** when stdin is empty. The
+harness then reported `candidates=0 matches=0` — a clean, quiet, completely
+uninformative negative that would have been filed as "this key does not crack".
+
+The same shape: `find -writable` (§11), `strings -a` on UTF-16 (§12), PHP over
+/dev/stdin. **A tool that did nothing and a tool that found nothing produce
+identical output.** The difference is only knowable from outside the tool.
+
+**Rule.** Every negative carries its work count: bytes read, candidates tested,
+rows returned, files matched. A negative with no count is not evidence, it is
+the absence of evidence wearing evidence's clothes. If the count is zero, the
+answer is **untested**, and it belongs in the NOT-tested list with the reason.

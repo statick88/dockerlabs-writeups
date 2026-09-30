@@ -1,0 +1,70 @@
+# DockerLabs work queue — one line per lab, consumed by download-labs.sh
+# Format:  <platform_id>|<label>|<difficulty>|<why it is in the queue>
+#
+# `why` records the selection criterion, so a later session can tell whether a
+# lab is still the right pick or was added on a hunch. The pilot's rule was:
+# cover a class the methodology does not have, not a class that is merely easy.
+#
+# --- Batch 1: pilot, 5/5 solved -------------------------------------------------
+# Chosen to span stacks the first five did not (WordPress, CI/CD, monitoring,
+# video platform) and to feed untouched repo sections.
+148|Spain|dificil|buffer overflow + Python pickle deserialization; both absent from the repo
+292|Acme|muy-facil|pre-auth credential channel, world-writable docroot, execution identity
+281|PipePwned|medio|self-hosted CI runner abuse; runner identity vs writer identity
+293|Zabbixploit|medio|SQLi, session hijack, monitoring plane; target vector blocked by a working allowlist
+271|BaluHome|medio|stored XSS -> cookie without httpOnly -> RCE; multiple tester self-corrections
+# --- Batch 2: cover what batch 1 did not ---------------------------------------
+295|Baremetal|medio|IPMI/BMC design error -> hash -> GRUB bypass; bare metal and BMC absent
+62|Raas|dificul|SMB enumeration + reversing a ransomware binary (AES-256-CBC) with Ghidra
+209|Profetas|medio|XXE + Python deobfuscation + sudoers; XXE absent from the repo
+146|Elevator|dificul|Windows privilege escalation; the first five had no Windows target
+255|PinguPenguin|dificul|Spring Boot actuator; framework-specific web class absent
+186|Tokenaso|dificul|race condition + credential exposure + crypto; no concurrency oracle exists
+26|404-not-found|facil|described as LDAP injection; the code was never executed and the process could not speak LDAP
+# --- Batch 3: the gaps the audit named, in labs that actually teach them ------
+# The LDAP/Active Directory gap in active_directory.md is real and CANNOT be closed
+# here: no lab on this platform ships an actual directory. It needs a target with
+# one, and writing that section from a lab without LDAP would be unmeasured advice.
+# These five are the gaps that do have a lab.
+113|Road_To_Olympus|dificul|pivoting through three hosts with Chisel; pivoting and tunnelling have no oracle
+65|Seeker|medio|subdomain fuzzing over virtual hosting; the confirming case for the wildcard rule from 404-not-found
+6|Grandma|dificul|LFI in aiohttp (a real CVE) plus tunnelling; CVE documentation and multi-hop transport
+23|reverse|medio|log poisoning to RCE through LFI; log poisoning has no oracle anywhere
+33|chmod-4755|medio|rbash escape and SUID after SMB enumeration; restricted-shell escape is a distinct class
+# --- Batch 4: the classes still with no oracle anywhere in the repo -------------
+141|DockerLabs|facil|container security: socket exposure, privileged mode, capabilities, namespace escape
+238|Autoescuela|facil|Node/Express WebSocket to RCE under a named CVE; WebSockets have no oracle
+163|Ofuskeit|medio|JavaScript deobfuscation and API interaction; reading client code as attack surface
+118|los40ladrones|facil|port knocking plus Hydra credential attack; no credential-attack doctrine exists
+129|DockHackLab|medio|PHP upload and SSH key injection to escalate; authorized_keys injection is a distinct class
+# --- Batch 5: classes still absent, chosen because the platform has no lab for
+# GraphQL, request smuggling, CORS, NoSQL or OAuth. These are the gaps it *can* fill.
+90|Norc|dificul|CVE-2023-6063, SQLi in a WordPress plugin; a real advisory with disclosure history
+283|Los 3 Hackers|facil|evasion techniques and a SQLi blacklist; evasion and denylist filtering have no oracle
+93|Pinguinazo|facil|SSTI then an interpreter granted through sudo; a sudo grant naming an interpreter is its own class
+268|kmspwned|facil|credential reuse then escalation through a cron job; cron privesc has no oracle
+36|Verdejo|facil|XSS, SSTI and hash cracking; the repo ships four wordlists and no doctrine for breaking
+85|Aidor|facil|IDOR with a session rewritten from a request parameter; IDOR is not unauthenticated access, and a curl cookie jar that only reads is a false negative
+172|Crossfi|medio|CSRF at two levels; a CSRF token stored in the session cookie is forgeable, and the Referer check ran after the write
+296|Asturias|medio|unprotected endpoints plus a vulnerability the class is absent from the repo
+# --- Batch 6: the first mobile/APK lab. The platform names no attack surface, no
+# mechanism and no control, so the class had to be defined from scratch.
+264|ApkAdmin|facil|Android exported Activity with no permission whose only gate is a boolean extra the caller supplies; mobile/APK is an entire absent domain, not merely an uncovered one
+249|Adopting|medio|web cache deception, the class with no evidence anywhere in the repo; the cache key omits identity entirely and the classic /x.pdf/foo.css route-confusion form is REFUTED here - the real leak is a legitimate dynamic route whose extension is on the cacheable list, and Cache-Control: private, no-store is a request, not a control
+117|Pressenter|facil|WordPress platform: one lab exists (90 Norc) and a platform is not a class
+108|Whoiam|facil|WordPress platform: enumeration and role model, absent as a class
+102|Escolares|facil|WordPress platform; plugin surface not yet catalogued
+87|WalkingCMS|facil|WordPress platform; content and author enumeration
+220|CuentaAtras|medio|WordPress platform; account lifecycle
+61|BadPlugin|medio|WordPress platform; the plugin is the surface, and plugin trust is its own class
+115|Master|medio|WordPress platform; admin-reach chain
+12|Collections|medio|WordPress platform; content-type handling
+112|Asucar|medio|WordPress platform; user enumeration to auth
+32|Vulnerame|dificil|WordPress platform; a harder instance to test whether the rule generalises
+218|Internal|facil|command injection with WAF bypass plus local brute force; a concrete WAF is absent
+98|Redirection|facil|open redirect; never treated and it is its own token class
+169|SpiderRoot|medio|WAF bypass plus port forwarding plus Linux privesc
+84|Waffy|dificil|ModSecurity bypass under Apache; evasion exists but no WAF instance does
+73|ChocoPing|medio|WAF bypass class
+189|Rolarola|medio|command injection; deserialisation coverage is pickle-only so far
+219|Talent|medio|WordPress platform plus Linux privesc

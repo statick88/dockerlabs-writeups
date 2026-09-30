@@ -1,0 +1,17 @@
+# Archives and extracted lab material never belong in git. They are large,
+# re-obtainable via tooling/download-labs.sh, and their absence is exactly what
+# keeps this repo readable as evidence rather than as a storage bucket.
+dist/
+labs/
+*.zip
+*.tar
+*.tar.gz
+evidence/raw/
+
+# Fetcher working state. state/session.cookie is a LIVE SESSION CREDENTIAL and
+# must never be committed. These live outside the repo by default, but ignoring
+# them keeps an explicit DL_ROOT= here from ever staging a cookie.
+state/
+logs/
+*.cookie
+
