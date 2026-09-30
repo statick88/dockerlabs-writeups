@@ -358,3 +358,34 @@ Worth noting how it was caught: lab 108 had already tested the opposite and
 recorded that its forgery was **rejected**. The contradiction was visible across
 two writeups and nobody cross-read them. A rule that survives one lab and is
 reversed by another has not been tested — it has been sampled once.
+
+## 22. A control that runs a different code path than the target
+
+Lab 102's positive control called `wp_hash_password()`, which produces **bcrypt**
+`$wp$` hashes. The hash actually under test was **phpass** `$P$`. The control
+therefore proved the wrong algorithm, and a 34-candidate negative sat unbacked
+until `class-phpass.php` was driven directly.
+
+**Rule.** A control must exercise **the same code path as the target**, not a
+neighbouring one that happens to look similar. When the control is a wrapper, a
+convenience API or a "standard" helper, the first thing to verify is that it
+produces output in the target's format — a `$wp$` prefix where the target has
+`$P$` is not a detail, it is the whole test being wrong.
+
+## 23. The target's death is not a negative result
+
+Lab 12's container exits about 35 seconds after start: MongoDB 7.0.9 needs AVX, the
+host has none, and `mongod` dies with `Illegal instruction`. Read carelessly, that
+produces **"no MongoDB attack surface"** — which is a claim about the **class**
+wearing the clothes of a claim about the **instance**. The site was up the whole
+time; the worker proved it by overriding the container command.
+
+**Rule.** Before recording an absent surface, establish that the process that
+should be serving it was **running**. A component that failed to start and a
+component that is not installed are different findings, and only the second is a
+property of the target. If a service is unreachable, say *why* it is unreachable,
+and put an unattempted path under NOT tested rather than under negatives.
+
+Related and cheaper to check: a target that changes under you — an auto-updater, a
+re-login invalidating a nonce, a plugin reloading — also produces a confident
+negative that is really a statement about time. The same lab catalogued both.
