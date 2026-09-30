@@ -11,10 +11,26 @@ evidence has to stay specific and unedited by summary.
 ## Why they are separate
 
 The methodology cites cases as `file:line` so a future reader can re-verify a
-rule. Those citations only mean anything if the artefacts they point at actually
-exist somewhere. Keeping the evidence in its own repo makes the citation
+rule. Those citations only mean anything if the evidence they point at actually
+exists somewhere. Keeping the evidence in its own repo makes the citation
 resolvable instead of aspirational, and it stops a writeup's prose from being
 edited into agreement with a rule that later changed.
+
+**What "resolvable" means here, precisely — and where it stops.** A methodology
+citation now lands on a writeup you can open, and the writeups quote the
+decisive artefact lines verbatim. That is a real gain over a private corpus. It
+is **not** artefact-level re-verification: this repo holds **no** lab artefacts,
+so of the ~945 `file:line` citations across the corpus, **zero** can be resolved
+by a reader without the archive. Three of the four auditors in the first
+adversarial pass reported this independently, and it is the reason the historical
+CRITICAL class — a citation that does not say what it is cited for — is
+*structurally* invisible to any review here, including the native one, which
+classifies the whole corpus passive.
+
+So: a reader can check the **reasoning** and the **quoted evidence**. A reader
+cannot independently re-run the target. Treat the writeups as a transcript, not as
+a reproduction, and re-fetch the archive when a claim is load-bearing enough to
+dispute.
 
 ## Layout
 

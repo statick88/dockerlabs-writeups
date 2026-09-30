@@ -309,3 +309,21 @@ evidence that nothing was tried.
 
 Six of the nine would have deleted a finding, three would have invented one. None
 of them looked like an error. That is the whole argument for the catalogue.
+
+## 20. A self-referential ordinal is not a measurement
+
+Three separate writeups each asserted they were **"the seventeenth lab in this
+series without a `FLAG{}`"** — labs 189, 61 and 87. At most one can be right, and
+a fourth said "fifteenth" *after* one of them said "seventeenth", so the sequence
+is not even monotonic. The corpus had nine such orderings and no enumeration to
+resolve them.
+
+**Rule.** A count is a fact; a *position in a sequence you are inside* is a claim
+about the corpus's history, and it rots the moment anything is added. State the
+count, or state the property, and point at the index — here, the `FLAG{}` column
+of `corpus/INDEX.md`, which is the single source. The same applies to "the first
+time we saw X" and "the Nth lab to do Y".
+
+This is the same defect class as §14 and §19 one level up. A tool that returned a
+confident answer it did not earn is the recurring failure; a document asserting a
+position it cannot compute is the same mistake written down.

@@ -568,7 +568,7 @@ counts:
 | `/opt`, `/srv` | 2 directories | both empty |
 | Files newer than 2026-09-01 outside `/tmp`, `/proc`, `/sys`, `/run`, `/var/log` | 4 hits | `/etc/resolv.conf`, `/etc/hostname`, `/etc/hosts`, `/.dockerenv` — all container plumbing |
 
-**This is the seventeenth lab in this series without a reward**, and the first where the
+**No reward here** — count it from the `FLAG{}` column of `corpus/INDEX.md` — and the first where the
 absence is established at full privilege rather than bounded by it.
 
 ---

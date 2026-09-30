@@ -723,7 +723,8 @@ includes a successful `wget` of a real 94-byte document from `172.17.0.1`.
 ## 8. Reward
 
 **There is no reward in this lab.** Reported as a measured absence, with the search
-that establishes it — the seventeenth lab in this series without one, and the
+that establishes it — a lab with no reward, countable from the `FLAG{}` column of
+`corpus/INDEX.md` rather than asserted as a position, and the
 twenty-seventh of thirty-four writeups.
 
 - **Exhaustive shortlist, not a name guess.** The box has **1827 files** total. After

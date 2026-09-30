@@ -670,7 +670,9 @@ patterns and are empty of them. This search ran **as root**, so unlike lab 108 t
 unsearchable location to caveat: `/root`, `/etc/shadow`, `/var/lib/mysql` and
 `/home/luisillo` were all in scope.
 
-**This is the seventeenth lab in this series without a `FLAG{}`.**
+**No `FLAG{}` here.** The count of rewardless labs is derived from the `FLAG{}`
+column of `corpus/INDEX.md`; a writeup does not get to assert its own position in
+that sequence, and three of them once claimed the same ordinal.
 
 ---
 
