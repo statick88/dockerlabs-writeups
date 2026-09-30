@@ -700,7 +700,7 @@ Every row has a positive control: a case where the same detector was **shown fir
 
 Seven. None is a defect in the target; all are defects in how I measured it, and **three of
 them nearly became findings**. Read against the 19-entry catalogue in
-[`method/self-corrections.md`](../method/self-corrections.md) — this is the first corpus entry
+[`method/self-corrections.md`](../../method/self-corrections.md) — this is the first corpus entry
 to hit #1 (redirect-following) on a state machine and the first to hit #9
 (`permission_callback`-before-argument-validation) in its **admin-ajax** rather than its REST
 incarnation.
