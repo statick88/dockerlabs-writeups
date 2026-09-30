@@ -291,5 +291,7 @@ Source that settled it: <file:line>
 
 ## Next step
 
+[`corpus/HOW-IT-WAS-RESOLVED.md`](corpus/HOW-IT-WAS-RESOLVED.md) — how all 45
+engagements were actually resolved, with the discriminator that settled each one.
 [`INDEX.md`](INDEX.md) — find your class, read that writeup, check the heading the
 row names.
