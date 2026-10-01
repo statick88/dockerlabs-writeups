@@ -27,7 +27,32 @@ IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}
 docker exec <slug>_container sh -c 'cat /app/server.js'   # or the compose + entrypoint
 # 4. id first, control positive first, in that order
 docker exec <slug>_container id
+# 5. TEARDOWN — mandatory, the moment the lab is done. Images are 400-800 MB
+#    and six idle labs held simultaneously is several GB of nothing.
+#    Scope it to THIS lab by name. NEVER `docker system prune`,
+#    `docker image prune -a` or `docker volume prune` — the cybervault-*
+#    containers belong to another project and a global prune destroys them.
+docker rm -f <slug>_container
+docker rmi <slug>:latest
+# 6. record what the lab taught BEFORE moving on, while it is still fresh:
+#    a new instrument defect goes to method/self-corrections.md, a new
+#    retrieval hazard to method/retrieval-hazards.md, a new engagement
+#    criterion to PenTestMethodology sections/, and the state files
+#    (.progress, .agents) get updated. A lab resolved and not written down
+#    is a lab that will be re-learned wrong.
 ```
+
+## The loop
+
+One lab is not a task, it is a cycle:
+
+```
+fetch -> deploy -> read source -> recon (control first) -> resolve
+      -> writeup + evidence -> TEARDOWN -> feed the methodology -> next
+```
+
+The last three steps are the ones that get skipped, and they are the only ones
+that make the next lab cheaper than this one.
 
 Full procedure below. Worked examples: [`INDEX.md`](INDEX.md).
 
