@@ -1,0 +1,14 @@
+=== VERIFY 1: plugins dir identical to prestate? ===
+IDENTICAL (0 differences) to prestate
+
+=== VERIFY 2: docroot tree hash vs pre ===
+acc26d4352b399b5ff225a481e59058d464a83c7dc466b6797937ee21e360201  -
+pre was: ecdffb96fd128b6e8a5e2f0cd7cc8d378aa62410c28dac0c6af550ad92b8f6e9  -
+
+=== VERIFY 3: uploads tree has no residue ===
+
+=== VERIFY 4: positive check - service still answers ===
+root http=200
+wp-login http=302
+=== VERIFY 5: probe URL is gone (negative) ===
+probe http=200 final=http://172.17.0.2/wp-content/plugins/lab219probe/lab219probe.php/

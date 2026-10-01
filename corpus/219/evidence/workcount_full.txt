@@ -1,0 +1,52 @@
+=== WORK COUNT: lab 219 Talent, total HTTP requests to 172.17.0.2 ===
+
+RECON + ENUMERATION (5)
+  1  GET  /                        r01_root.html
+  2  GET  /info.php                r02_info.html
+  3  GET  /wp-login.php            r03_login.html
+  4  GET  /readme.html             r04_readme.html
+  5  GET  /zz_no_such_page_9f3a    ctl_nonexistent.html   [CONTROL: proves 200 is not a catch-all]
+
+AUTHENTICATION (4)
+  6  GET  /?page_id=6              r05_page6.html
+  7  POST /wp-login.php            r06_login_post.html
+  8  GET  /wp-admin/ (session)     r07_wpadmin.html
+  9  GET  /wp-admin/ (no session)  ctl_noauth.html        [CONTROL]
+
+PERSISTENCE ROUTE (7)
+ 10  GET  /wp-admin/plugin-editor.php            r08_plugineditor.html
+ 11  POST plugin-editor (new file, docroot)    r09_create.txt        -> 500
+ 12  POST plugin-editor (new file, pie-register/) r10_create2.txt      -> 500
+ 13  GET  /wp-admin/plugin-install.php?tab=upload r11_upload.html
+ 14  POST plugin-install.php?tab=upload          r12_upload_result.html -> wrong endpoint
+ 15  GET  follow the 302                          r13_upload_result2.html
+ 16  POST update.php?action=upload-plugin        r13_upload_ok.html     -> installed
+
+RCE PROOF (3)
+ 17  GET  probe?lab219_id=<nonce>    r14_identity.txt
+ 18  GET  probe?lab219_write=<nonce> r15_witness_write.txt
+ 19  GET  probe?lab219_cmd=cat /home/flag.txt  flag_via_webpath.txt
+
+PRIVESC MEASUREMENT, from uid=33 web path (12)
+ 20-23  first pass, 4 cmds            privesc_measured_from_webpath.txt  [SEE I3]
+ 24-26  re-run with 2>&1, 3 cmds      privesc_stderr_captured.txt
+ 27-31  privesc surface, 5 cmds       privesc_surface_from_webpath.txt
+
+UNAUTHENTICATED PLUGIN SURFACE (2)
+ 32  POST admin-ajax nopriv handler   nopriv_handler_test.txt
+ 33  POST admin-ajax bogus action     nopriv_control.txt       [CONTROL]
+
+RESTORE VERIFICATION (6)
+ 34  GET  /                          restore_verification.txt
+ 35  GET  /wp-login.php              restore_verification.txt
+ 36  GET  probe (-L, MISREAD)        restore_verification.txt   [SEE I6]
+ 37  GET  probe (body capture)       restore_discrepancy_investigation.txt
+ 38  GET  probe (no -L)              final_state.txt
+
+TOTAL HTTP REQUESTS = 38
+  of which explicit positive controls = 5  (reqs 5, 9, 24-26 stderr fix, 33, 38)
+
+Sweep/fan-out work counts:
+  version greps over the plugin (1 file, 341116 bytes): 3 greps, 2 bounded (first 30/40 matches)
+  sudoers/cron/setuid/user enumeration: 6 docker-exec probes, each a single bounded command
+  python-hunt: 5 independent strategies (dpkg -l, find -xdev, find no-xdev, symlink scan, direct stat)

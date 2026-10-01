@@ -1,0 +1,6 @@
+IDENTITY: uid=33(www-data) gid=33(www-data) groups=33(www-data),101(mysql)
+EFFECTIVE_UID: 33
+PHP_CWD: /var/www/html/wp-content/plugins/lab219probe
+NONCE: L219R7q2x9m4k
+
+http=200

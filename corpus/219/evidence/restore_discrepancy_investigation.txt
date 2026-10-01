@@ -1,0 +1,25 @@
+=== A: what files differ in the docroot? ===
+(recomputing pre-state is impossible; instead, list newest-modified files in docroot)
+1790879223.0315890600 /var/www/html/wp-content/debug.log 1635
+1790878968.8301249010 /var/www/html/info.php 20
+
+=== B: is the probe DIRECTORY really gone? ===
+total 40
+drwxr-xr-x 1 www-data www-data 4096 Oct  1 18:28 .
+drwxr-xr-x 1 www-data www-data 4096 Oct  1 18:27 ..
+drwxr-xr-x 1 www-data www-data 4096 Nov 12  2025 akismet
+-rw-r--r-- 1 www-data www-data 2671 Oct 21  2025 hello.php
+-rw-r--r-- 1 www-data www-data   28 Jun  5  2014 index.php
+drwxr-xr-x 1 www-data www-data 4096 Jul  8  2021 pie-register
+--- direct test ---
+DIR-GONE
+
+=== C: why did the probe URL return 200? show the body ===
+
+HTTP/1.1 301 Moved Permanently
+Location: http://172.17.0.2/wp-content/plugins/lab219probe/lab219probe.php/
+Content-Type: text/html; charset=UTF-8
+--- body head ---
+
+--- body size ---
+0 /tmp/b219

@@ -1,0 +1,6 @@
+name	status	update	version	update_version	auto_update
+akismet	inactive	available	5.6	5.7.2	off
+hello	inactive	none	1.7.2		off
+lab219probe	inactive	none	1.0		off
+--- active_plugins option ---
+["pie-register\/pie-register.php"]

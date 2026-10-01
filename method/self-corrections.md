@@ -634,3 +634,24 @@ different files with different jobs, and the manifest's one-line description is
 written for a fetcher to read, not for an operator to scope by. Before briefing any
 work, read the catalogue row. Before trusting any single-line description — in a
 manifest, a queue, a ticket, or your own memory — read the source it summarises.
+
+## 34. An empty success is an absence of observation, not a negative
+
+Three privilege-escalation probes through `shell_exec` came back with a completely
+empty response body and `http=200`. Each one was a *refusal* — the command ran and
+wrote nothing — but the status code said success and the body said nothing at all,
+which is the shape an instrument produces when it has lost stderr.
+
+The trap is that the conclusion was right by accident. "This vector produces no
+output" is defensible when you know the sink returns output. When the sink swallows
+the error stream, an empty body is compatible with *refused*, *executed and silent*,
+and *never executed*, and the response cannot separate them.
+
+The same run recorded the mirror case: `curl -L` made a **deleted** webshell answer
+`200`, because curl follows the redirect and reports the last hop. So one of those
+three probes was reading its own cleanup as a live shell.
+
+**An empty 200 is not a negative and not a positive.** Before trusting either, prove
+the channel carries the distinction you are about to read it for — force a known
+error through the same sink and confirm it is visible, or read the evidence out of
+band where the sink cannot reach it. And never verify a deletion with a URL fetch.

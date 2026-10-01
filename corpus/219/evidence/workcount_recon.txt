@@ -1,0 +1,2 @@
+WORK COUNT LOG - recon phase (lab 219 Talent)
+Each line = one HTTP request issued to 172.17.0.2

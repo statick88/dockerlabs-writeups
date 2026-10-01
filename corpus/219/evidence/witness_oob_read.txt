@@ -1,0 +1,6 @@
+=== out-of-band witness read (channel: docker exec, NOT the web path) ===
+/tmp/lab219_witness_L219R7q2x9m4k 644 www-data:www-data 37 2026-10-01 18:27:42.122846367 +0000
+--- content ---
+written-by-uid=33 nonce=L219R7q2x9m4k
+--- negative control: a nonce I never wrote must NOT exist ---
+ls: cannot access '/tmp/lab219_witness_NEVERWROTE999': No such file or directory

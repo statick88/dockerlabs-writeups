@@ -1,0 +1,14 @@
+HTTP/1.1 302 Found
+Date: Thu, 01 Oct 2026 18:26:09 GMT
+Server: Apache/2.4.41 (Ubuntu)
+Set-Cookie: wordpress_<STRIPPED-COOKIE-NAME>=<STRIPPED-SESSION-ID>; path=/wp-content/plugins; HttpOnly
+Set-Cookie: wordpress_<STRIPPED-COOKIE-NAME>=<STRIPPED-SESSION-ID>; path=/wp-admin; HttpOnly
+Set-Cookie: wordpress_logged_in_<STRIPPED-COOKIE-NAME>=<STRIPPED-SESSION-ID>; path=/; HttpOnly
+Set-Cookie: wordpress_<STRIPPED-COOKIE-NAME>=<STRIPPED-SESSION-ID>; path=/wp-content/plugins; HttpOnly
+Set-Cookie: wordpress_<STRIPPED-COOKIE-NAME>=<STRIPPED-SESSION-ID>; path=/wp-admin; HttpOnly
+Set-Cookie: wordpress_logged_in_<STRIPPED-COOKIE-NAME>=<STRIPPED-SESSION-ID>; path=/; HttpOnly
+X-Redirect-By: WordPress
+Location: http://172.17.0.2
+Content-Length: 0
+Content-Type: text/html; charset=UTF-8
+

@@ -1,0 +1,11 @@
+=== remove MY artefacts only (lab219probe + my own /tmp witness) ===
+=== any stray upload/zip/temp left by the upload? ===
+total 28
+drwxr-xr-x 1 www-data www-data 4096 Feb 17  2026 .
+drwxr-xr-x 1 www-data www-data 4096 Oct  1 18:27 ..
+drwxr-xr-x 1 www-data www-data 4096 Oct  1 18:23 2026
+drwxr-xr-x 1 www-data www-data 4096 Feb 17  2026 pie-logs
+(no lab219* hits above = clean)
+=== VERIFY: stat -c on removed paths ===
+stat: cannot stat '/var/www/html/wp-content/plugins/lab219probe': No such file or directory
+stat: cannot stat '/tmp/lab219_witness_L219R7q2x9m4k': No such file or directory

@@ -1,0 +1,8 @@
+=== REQ 1: GET / (baseline, positive control for the client path) ===
+http=200 size=67730 time=0.030751
+=== REQ 2: GET /info.php (phpinfo disclosure) ===
+http=200 size=83351
+=== REQ 3: GET /wp-login.php ===
+http=302 size=6538
+=== REQ 4: GET /readme.html (WP version disclosure) ===
+http=200 size=7425

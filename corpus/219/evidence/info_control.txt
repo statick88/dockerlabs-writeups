@@ -1,0 +1,11 @@
+=== POSITIVE CONTROL: is r02_info.html really phpinfo? ===
+1
+--- signature lines ---
+Loaded Configuration File
+phpinfo()
+PHP Version 7.4.3
+=== CONTROL: a URL that cannot exist, to prove 200 != phpinfo ===
+http=301 size=0
+=== login redirect target ===
+HTTP/1.1 302 Found
+Location: http://172.17.0.2/?page_id=6

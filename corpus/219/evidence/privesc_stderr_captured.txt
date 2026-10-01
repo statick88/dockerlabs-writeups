@@ -1,0 +1,17 @@
+=== AS www-data (web path), stderr now captured: ls -l /usr/bin/python3 2>&1; echo RC=$? ===
+ls: cannot access '/usr/bin/python3': No such file or directory
+RC=2
+
+[http=200]
+
+=== AS www-data (web path), stderr now captured: command -v python3 python python2 2>&1; echo RC=$? ===
+RC=127
+
+[http=200]
+
+=== AS www-data (web path), stderr now captured: sudo -n -u bobby /usr/bin/python3 -c 'print(1)' 2>&1; echo SUDO_RC=$? ===
+sudo: /usr/bin/python3: command not found
+SUDO_RC=1
+
+[http=200]
+

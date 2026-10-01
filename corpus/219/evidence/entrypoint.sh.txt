@@ -1,0 +1,134 @@
+#!/bin/bash
+set -e
+
+MYSQL_DATA_DIR=/var/lib/mysql
+MYSQL_SOCKET=/var/run/mysqld/mysqld.sock
+
+mkdir -p /var/run/mysqld
+chown mysql:mysql /var/run/mysqld
+
+wait_for_mysql() {
+    echo "Esperando a que MySQL esté listo..."
+    for i in {30..0}; do
+        if mysqladmin ping -uroot --silent 2>/dev/null; then
+            echo "MySQL está listo."
+            return 0
+        fi
+        echo "Esperando... $i"
+        sleep 1
+    done
+    echo "Error: MySQL no se inició a tiempo."
+    exit 1
+}
+
+if [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
+    echo "Inicializando base de datos MySQL por primera vez..."
+    mysqld --initialize-insecure --user=mysql --datadir=$MYSQL_DATA_DIR
+else
+    echo "Directorio de datos MySQL existente encontrado."
+fi
+
+echo "Arrancando MySQL..."
+mysqld --daemonize --user=mysql --datadir=$MYSQL_DATA_DIR --socket=$MYSQL_SOCKET
+wait_for_mysql
+
+echo "Configurando base de datos y usuario para WordPress..."
+mysql -uroot -e "CREATE DATABASE IF NOT EXISTS wordpress;"
+mysql -uroot -e "CREATE USER IF NOT EXISTS 'wpuser'@'localhost' IDENTIFIED WITH mysql_native_password BY 'wppass';"
+mysql -uroot -e "CREATE USER IF NOT EXISTS 'wpuser'@'127.0.0.1' IDENTIFIED WITH mysql_native_password BY 'wppass';"
+mysql -uroot -e "CREATE USER IF NOT EXISTS 'wpuser'@'%' IDENTIFIED WITH mysql_native_password BY 'wppass';"
+mysql -uroot -e "GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'localhost';"
+mysql -uroot -e "GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'127.0.0.1';"
+mysql -uroot -e "GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'%';"
+mysql -uroot -e "FLUSH PRIVILEGES;"
+
+echo "Verificando conexión como wpuser (cliente mysql)..."
+if mysql -uwpuser -pwppass -e "SELECT 1;" >/dev/null 2>&1; then
+    echo "Usuario wpuser OK (cliente)."
+else
+    echo "Error: No se puede conectar como wpuser desde cliente mysql."
+    exit 1
+fi
+
+echo "Probando conexión PHP a MySQL..."
+php -r "
+\$mysqli = @new mysqli('localhost', 'wpuser', 'wppass', 'wordpress');
+if (\$mysqli->connect_error) {
+    echo \"Error PHP: \$mysqli->connect_error\n\";
+    exit(1);
+} else {
+    echo \"Conexión PHP exitosa.\n\";
+    \$mysqli->close();
+}
+" || exit 1
+
+chmod 777 /var/run/mysqld
+usermod -aG mysql www-data
+
+rm -f /var/www/html/index.html
+
+if [ ! -f /var/www/html/.htaccess ]; then
+    echo "Creando .htaccess para WordPress..."
+    cat > /var/www/html/.htaccess <<EOF
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteBase /
+RewriteRule ^index\.php$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.php [L]
+</IfModule>
+EOF
+    chown www-data:www-data /var/www/html/.htaccess
+fi
+
+if [ ! -f /var/www/html/wp-config.php ]; then
+    echo "Creando wp-config.php con WP-CLI (usando socket)..."
+    wp config create \
+        --dbname=wordpress \
+        --dbuser=wpuser \
+        --dbpass=wppass \
+        --dbhost="localhost:/var/run/mysqld/mysqld.sock" \
+        --path=/var/www/html \
+        --allow-root \
+        --extra-php <<PHP
+define( 'WP_DEBUG', true );
+define( 'WP_DEBUG_LOG', true );
+define( 'WP_DEBUG_DISPLAY', false );
+
+// URLs dinámicas basadas en la petición
+if (isset(\$_SERVER['HTTP_HOST'])) {
+    \$scheme = (isset(\$_SERVER['HTTPS']) && \$_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    \$host = \$_SERVER['HTTP_HOST'];
+    define('WP_HOME', \$scheme . '://' . \$host);
+    define('WP_SITEURL', \$scheme . '://' . \$host);
+}
+PHP
+fi
+
+if ! wp core is-installed --path=/var/www/html --allow-root; then
+    echo "Instalando WordPress..."
+    wp core install \
+        --path=/var/www/html \
+        --url="http://localhost" \
+        --title="Mi sitio WordPress" \
+        --admin_user="admin" \
+        --admin_password="admin" \
+        --admin_email="admin@example.com" \
+        --allow-root
+fi
+
+echo "Verificando conexión de WordPress con la BD..."
+if wp db check --path=/var/www/html --allow-root; then
+    echo "WordPress puede conectar a la BD."
+else
+    echo "ERROR: WordPress no puede conectar a la BD."
+    exit 1
+fi
+
+chown -R www-data:www-data /var/www/html
+
+echo "<?php phpinfo(); ?>" > /var/www/html/info.php
+
+exec apache2ctl -D FOREGROUND
+

@@ -1,0 +1,14 @@
+=== REQ 5: login page_id=6 (the real login form) ===
+http=200 size=83778
+=== form fields present ===
+name="generator"
+name="log"
+name="loginform"
+name="piereg_login_form_nonce"
+name="pwd"
+name="redirect_to"
+name="rememberme"
+name="testcookie"
+name="viewport"
+name="_wp_http_referer"
+name="wp-submit"

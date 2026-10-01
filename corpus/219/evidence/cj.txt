@@ -1,0 +1,5 @@
+# Cookie jar from the lab 219 admin login.
+# DELIBERATELY STRIPPED: cookie names and session values removed per corpus policy
+# (no tokens, cookies or session identifiers are retained).
+# The live jar was held outside the repository at /tmp/219_cj_keep and deleted after
+# the engagement. See workcount_full.txt for the request accounting.
