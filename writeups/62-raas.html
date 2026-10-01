@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 62 Raas &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Raas</p><h1 id="raas--dockerlabs-lab-62-difficult">RAAS — DockerLabs lab 62 (Difficult)</h1>
+<p><strong>Image:</strong> <code>raas:latest</code> (Ubuntu 24.04.1 LTS, amd64) — <strong>not</strong> a Windows container.
+<strong>Deployed:</strong> <code>docker run -d --name raas_container --hostname dockerlabs raas:latest</code>
+<strong>Container IP:</strong> <code>[net-0-11]</code>
+<strong>Entry point:</strong> <code>service ssh start &amp;&amp; service smbd start &amp;&amp; tail -f /dev/null</code>
+<strong>Catalog description:</strong> <em>&quot;SMB enumeration and reversing with Ghidra of a ransomware binary (AES-256-CBC) to decrypt the information.&quot;</em></p>
+<p>Every claim below was executed. Where something could not be tested, it is in
+§7 under <em>could not test</em>, with the reason — not in the findings.</p>
+<hr />
+<h2 id="1-autocorrection-read-this-first">1. Autocorrection (read this first)</h2>
+<p>Five times during this engagement the wrong conclusion was available and cheap. Four of
+the five were <strong>defects in my own instrumentation</strong>, and each one looked like a fact
+about the target.</p>
+<h3 id="11-i-recovered-a-key-that-was-37-bytes-and-33-and-neither-was-a-target-fact">1.1 I &quot;recovered&quot; a key that was 37 bytes, and 33, and neither was a target fact</h3>
+<p>My first attempt to rebuild the key concatenated the character chunks pulled out of
+<code>recon()</code> and stripped trailing NULs. That produced a 37-byte string, because the NUL
+terminator <code>recon()</code> writes after each chunk is <strong>not</strong> trailing — it is written at
+<code>buf+strlen(buf)</code> and then <strong>overwritten by the next chunk</strong>. Stripping NULs from a
+concatenation keeps five bytes that are not in the key.</p>
+<p>My second attempt modelled the buffer but computed the append offset as <code>len(buf)</code>
+instead of the index of the first NUL. That produced 38 bytes. My third produced 33 —
+32 key bytes plus the C-string terminator.</p>
+<p>The fix was to stop modelling the <em>characters</em> and emulate the <em>buffer</em>: for each
+immediate, <code>off = buf.index(b&quot;\0&quot;) if 0 in buf else len(buf)</code>, write the immediate's
+little-endian bytes at <code>off</code>, and slice <code>[..:32]</code> at the end.</p>
+<p><strong>The generalisable defect:</strong> three consecutive plausible-looking wrong keys, none of
+which raised an error, because &quot;extract the printable chunks and concatenate&quot; <em>is</em> the
+right idea applied to the wrong representation. Had I stopped at the first one and
+reported &quot;the key is probably 37 bytes&quot;, the report would have been confidently wrong.
+The assertion <code>len(key) == 32</code> is what turned three silent wrong answers into three
+loud ones. This is <code>decision-making.md</code> §&quot;Assert what the consumer will do with the
+bytes, not what the bytes are&quot; applied to a disassembler's output rather than a payload:
+<strong>the consumer here is AES, which accepts a 32-byte key and nothing else</strong>, so the
+length is not a detail of the key, it <em>is</em> the check.</p>
+<h3 id="12-nmap---script-smb-enum-shares-returned-nothing-and-i-nearly-recorded-that-as-no-shares">1.2 <code>nmap --script smb-enum-shares</code> returned nothing, and I nearly recorded that as &quot;no shares&quot;</h3>
+<p><code>nmap -Pn -p139,445 --script smb-enum-shares,smb-enum-users</code> produced <strong>no share output
+at all</strong> — only <code>smb2-time</code> and <code>smb-protocols</code> returned data. My first conclusion was
+that anonymous enumeration was closed.</p>
+<p>It is not. The real client disagrees:</p>
+<pre><code>$ printf 'ls\nquit\n' | smbclient.py [net-0-11] -no-pass
+# Share Name                Type            Comment
+----------------------------------------------------------------------
+print$                    DISK            Printer Drivers
+ransomware                DISK
+IPC$                      IPC (SPECIAL)   IPC Service (dockerlabs server (Samba, Ubuntu))
+</code></pre>
+<p>Anonymous share <strong>listing</strong> works. What fails is anonymous <strong>access</strong>:
+<code>curl smb://[net-0-11]/ransomware/</code> returns <code>curl: (67) Login denied</code>.</p>
+<p>So the truth is two different controls with two different states — <code>browsable = yes</code>
+lets the name be enumerated, the share ACL stops the content — and my tool reported
+<em>neither</em>, it reported &quot;nothing&quot;. This is the <code>decision-making.md</code> &quot;silence indicts
+your framing, not the target&quot; rule: a script that returned no data has no discriminating
+power about the state of the service.</p>
+<h3 id="13-curl-smb-reported-every-credentialed-attempt-as-rc7-could-not-connect-to-server">1.3 <code>curl smb://</code> reported every credentialed attempt as <code>rc=7 Could not connect to server</code></h3>
+<p>I used this to &quot;prove&quot; that bob was denied the share. It was not proof of anything:</p>
+<pre><code>$ curl -sS -v -u 'bob:56000nmqpL' 'smb://[net-0-11]/ransomware/'
+* Established connection to [net-0-11] ([net-0-11] port 445) from [net-0-1] port 52706
+* closing connection #0
+curl: (7) Could not connect to server
+</code></pre>
+<p><code>rc=7</code> is a transport error and the TCP connection demonstrably succeeded. I had
+collapsed three distinct outcomes — <code>LOGON_FAILURE</code>, <code>ACCESS_DENIED</code>, and
+<code>LISTED</code> — into one exit code, and I was about to write &quot;bob is denied&quot; as a <strong>control
+that held</strong> when I had measured a libcurl limitation. The fix was a reference client
+(impacket), which reported the truth immediately and in a form that separates the three
+states. A &quot;control that held&quot; claim is a claim about the <em>target</em>, and it is only
+worth making if the tool can tell the difference between holding and being broken.</p>
+<h3 id="14-status_logon_failure-for-bob-was-correct-and-i-blamed-the-domain-first">1.4 <code>STATUS_LOGON_FAILURE</code> for bob was correct, and I blamed the domain first</h3>
+<p>impacket rejected bob's logon with <code>0xc000006d</code>. My first hypothesis was the domain:
+I had passed <code>WORKGROUP</code> (the workgroup) for a standalone server, and the correct
+value is the server name. Retrying with <code>DOCKERLABS</code> <strong>also</strong> failed — and that failure
+was the real finding: <strong>bob's Samba password differs from his Unix/SSH password.</strong> The
+decrypted note says &quot;las credenciales <strong>ssh</strong>&quot;, and it means exactly that. The share ACL
+(<code>valid users = patricio, calamardo</code>) and the password split are two independent
+controls, and only reading the first would have made me report the second as broken.</p>
+<p>I nearly discarded a correct result because I had a tidy explanation for it. The lesson
+is the inverse of the usual one: <strong>a result that survives your first explanation is
+more interesting, not less.</strong></p>
+<h3 id="15-i-nearly-reported-i-decrypted-a-binary-from-a-file-that-was-never-encrypted">1.5 I nearly reported &quot;I decrypted a binary&quot; from a file that was never encrypted</h3>
+<p>This is the one the lab plants for you, and I walked into it.</p>
+<p><code>[lab-home]/bob/pokemongo</code> — same name, <strong>same size (17592)</strong>, executable bit set. I
+decrypted it with the recovered key and got:</p>
+<pre><code>first 64 bytes hex:
+ 7f454c4602010100000000000000000003003e0001000000f0110000000000004...
+ELF magic after decrypt? True
+</code></pre>
+<p><code>\x7fELF</code>. A valid ELF header, from a file that <code>file</code> calls <code>data</code>. If I had stopped
+there — &quot;recovered key successfully decrypts the second binary&quot; — it would have been a
+confident false positive, and the false-positive rate for a wrong key producing
+<code>\x7fELF</code> is 2⁻³², so it <em>felt</em> like proof.</p>
+<p>It is a trap. Three independent checks kill it, and the first is arithmetic:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th><code>private.txt</code> (real)</th>
+<th><code>[lab-home]/bob/pokemongo</code> (decoy)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>size mod 16</code></td>
+<td><code>48 mod 16 = 0</code></td>
+<td><code>17592 mod 16 = 8</code> — <strong>impossible for CBC output</strong></td>
+</tr>
+<tr>
+<td>PKCS#7 last byte</td>
+<td><code>0x0a</code> = 10, valid</td>
+<td><code>0xd2</code> = 210, <strong>&gt; 16, invalid</strong></td>
+</tr>
+<tr>
+<td>Decrypts to a coherent whole</td>
+<td>yes</td>
+<td><strong>no</strong> — perfect for 16384 bytes, then diverges</td>
+</tr>
+</tbody>
+</table>
+<p>The file is <code>AES-256-CBC(real_binary[0:16384]) ‖ real_binary[16384:17592]</code> — the first
+16 KB genuinely encrypted, the last 1208 bytes <strong>verbatim plaintext, never encrypted</strong>.
+The divergence begins at exactly <code>0x4000</code>, and the tail is byte-identical to the real
+binary.</p>
+<p><strong>The rule this teaches is the one I would have written into the methodology if it were
+not already there:</strong> <em>checking the first block is not checking the file.</em> A
+plausible-prefix oracle is the weakest oracle there is, and the failure is
+invisible — the first 16 KB are perfect, so every spot check passes. The two checks
+that cost nothing are the ones that caught it: <strong>a cipher's output length is
+constrained by its block size</strong>, and <strong>padding is a claim the plaintext makes about
+itself that a wrong key cannot satisfy.</strong></p>
+<hr />
+<h2 id="2-real-surface">2. Real surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-11]
+PORT    STATE SERVICE     VERSION
+22/tcp  open  ssh         OpenSSH 9.6p1 Ubuntu 3ubuntu13.5 (Ubuntu Linux; protocol 2.0)
+139/tcp open  netbios-ssn Samba smbd 4
+445/tcp open  netbios-ssn Samba smbd 4
+Service Info: OS: Linux; CPE: cpe:/o/linux:linux_kernel
+Not shown: 65532 closed tcp ports (conn-refused)
+</code></pre>
+<p><strong>Three ports. No HTTP.</strong> The catalog says &quot;SMB enumeration and reversing&quot;; the
+description is directionally right and otherwise uninformative. The name &quot;RAAS&quot;
+(Ransomware-as-a-Service) is, per the eight-lab pattern, narrative and not evidence.</p>
+<p>Not present, despite being installed: <strong>Apache 2.4 + PHP 8.3 are installed and
+configured</strong> (<code>/etc/apache2/</code>, <code>/etc/php/8.3/</code>, default <code>index.html</code> in
+<code>/var/www/html</code>) but <strong>nothing listens on 80</strong>. Residual from the base image, not a
+vector. Recorded so that a later reader does not go looking for a web tier.</p>
+<h3 id="21-accounts">2.1 Accounts</h3>
+<table>
+<thead>
+<tr>
+<th>Unix</th>
+<th>uid</th>
+<th>role in the lab</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ubuntu</code></td>
+<td>1000</td>
+<td>default image account, no shell activity, <code>!</code> (locked) in shadow</td>
+</tr>
+<tr>
+<td><code>patricio</code></td>
+<td>1001</td>
+<td><strong>owner of <code>/srv/ransom</code></strong>, author of the ransom note, published the binary</td>
+</tr>
+<tr>
+<td><code>bob</code></td>
+<td>1002</td>
+<td><strong>ran the ransomware</strong>; the reward is his SSH password; holds the core dump</td>
+</tr>
+<tr>
+<td><code>calamardo</code></td>
+<td>1003</td>
+<td><strong>the account the note addresses</strong>; the sudo target</td>
+</tr>
+</tbody>
+</table>
+<p>Samba accounts exist for <code>patricio</code>, <code>bob</code>, <code>calamardo</code> only. No account has an empty
+or locked password (<code>/etc/shadow</code>: every service account is <code>*</code>, the three users are
+yescrypt <code>$y$</code> hashes).</p>
+<h3 id="22-smb">2.2 SMB</h3>
+<p><code>/etc/samba/smb.conf</code> (non-comment), verbatim:</p>
+<pre><code>[global]
+   workgroup = WORKGROUP
+   server string = %h server (Samba, Ubuntu)
+   map to guest = bad user
+   usershare allow guests = yes
+[printers]   browseable = no   guest ok = no   read only = yes
+[print$]     browseable = yes  guest ok = no   read only = yes
+[ransomware] path = /srv/ransom
+             valid users = patricio, calamardo
+             read only = yes
+             browsable = yes
+</code></pre>
+<p>Share contents (<code>/srv/ransom</code>, dir <code>drwxrwxr-x patricio:patricio</code>, files <code>-rw-rw-r--</code>):</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Size</th>
+<th>md5</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>nota.txt</code></td>
+<td>379</td>
+<td><code>3538717285104cf0a92139f4b5718b2c</code></td>
+</tr>
+<tr>
+<td><code>pokemongo</code></td>
+<td>17592</td>
+<td><code>615b385a7ce450fa35acdd6af917420a</code></td>
+</tr>
+<tr>
+<td><code>private.txt</code></td>
+<td>48</td>
+<td><code>be5ce413f47722a0421d6dcdd7946eb4</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>nota.txt</code> (the intended hint, in Spanish):</p>
+<blockquote>
+<p>estuve analizando el ransomware que el estupido de bob ejecuto para ver si lograba
+desencriptar sus archivos pero hasta ahora no he conseguido nada, me esta costando mas
+de lo que pensaba, asi que comparto el binario para que calamardo vea si puede hacer algo
+por bob.</p>
+<p>Calamardo, si logras conseguir algo, lo mas urgente es que desencriptes el archivo
+&quot;private.txt&quot; por favor</p>
+</blockquote>
+<p><code>private.txt</code> is 48 bytes of ciphertext, <code>57119752b10e1f05dcf793563c0224 13c2b67ebf6848227eaa6792d976be0f d52c0e54855ef292b028968b88cc756 886</code>.</p>
+<h3 id="23-the-deployed-surface-i-could-not-reach-and-why">2.3 The deployed surface I could not reach, and why</h3>
+<p><strong>The lab has no black-box entry path to the artifacts, and I want to be exact about
+that rather than paper over it.</strong> The binary and the ciphertext live in two places, and
+every account that can read them needs a password that is nowhere on the box:</p>
+<ul>
+<li><code>/srv/ransom/*</code> — mode <code>664</code>, dir <code>775</code>, so world-<strong>readable</strong> on the filesystem, but
+the share's <code>valid users</code> restricts it to <code>patricio, calamardo</code> over SMB.</li>
+<li><code>[lab-home]/bob/{pokemongo,private.txt,core.63123}</code> — mode <code>750</code> home owned by <code>bob</code>.</li>
+<li><strong>The only credential anywhere on the machine is inside <code>private.txt</code> itself.</strong></li>
+</ul>
+<p>I swept for a pre-auth credential and found none: the SSH banner is the stock
+<code>SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5</code> with no <code>Banner</code> directive configured;
+<code>/etc/issue.net</code> is the stock <code>Ubuntu 24.04.1 LTS</code>; there are no SSH keys in any home;
+<code>.bash_history</code> is symlinked to <code>/dev/null</code> in all four homes; no cron job, no
+<code>/opt</code> payload, no environment file. <code>nmap -sU</code> was <strong>not</strong> run (needs root, unavailable
+on this host) — declared as a coverage gap in §7, though the port table plus
+<code>/proc/net/tcp</code> and the absence of any UDP service config make a UDP plane unlikely.</p>
+<p><strong>How I obtained the artifacts, stated plainly:</strong> I used <code>docker exec</code> into the
+container as <code>uid=0(root)</code>. That is a <strong>lab-harness capability, not an attack path.</strong> I
+am not going to present it as a first hop, and the chain in §5 starts at the reversing
+for that reason. Everything from the reversing onward is reachable over the network by
+anybody who has a shell on the box.</p>
+<h3 id="24-reading-the-deployment-before-attacking-it">2.4 Reading the deployment before attacking it</h3>
+<p>Per the <code>decision-making.md</code> rule that a management plane <em>is</em> configuration: the most
+valuable single artifact in this lab is <code>smb.conf</code>, and it is readable before any packet
+is sent. It gives the share name, the exact path, the ACL, both guards' marker files
+and the read-only posture — none of which is visible from a port scan. The
+<code>sudoers.d</code> rule is likewise a configuration fact, not a runtime discovery.</p>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<h3 id="31-hard-coded-aes-256-key-and-static-iv-recoverable-from-the-binary--cwe-321--cwe-329">3.1 Hard-coded AES-256 key and static IV, recoverable from the binary — CWE-321 / CWE-329</h3>
+<p><strong>The whole lab is this finding.</strong> The key is a 32-byte ASCII string built at runtime
+and the IV is a second hard-coded 16-byte ASCII string, both recoverable statically.</p>
+<p><strong>Impact:</strong> complete confidentiality loss for every file the binary touched. Anyone
+holding the binary — which is published on the share <em>and</em> readable by every local
+account — can decrypt every victim file. The &quot;ransomware&quot; provides no protection against
+its own author, its host administrator, or any user on the machine.</p>
+<p><strong>Root cause:</strong> key material embedded in the client, plus a <strong>constant IV reused for
+every file</strong>. The IV is not merely fixed, it is <em>readable text</em>: <code>1234567890123456</code>.
+With CBC, a fixed IV means files with a common prefix produce a common ciphertext
+prefix, so the scheme additionally leaks plaintext structure across files.</p>
+<p><strong>Remediation:</strong> generate a fresh cryptographically random IV <strong>per file</strong> and store it
+in the file (it is not secret); derive the key from a passphrase with
+<code>PBKDF2-HMAC-SHA256</code> (or scrypt/Argon2) with a per-victim salt, and keep it out of the
+binary; for recoverable enterprise deployment, use a managed key-escrow rather than
+embedding anything.</p>
+<p><strong>Evidence</strong> — <code>main</code>, verbatim:</p>
+<pre><code>0x00001838      48b8313233..   movabs rax, 0x3837363534333231 ; '12345678'
+0x00001842      48ba393031..   movabs rdx, 0x3635343332313039 ; '90123456'
+0x0000184c      488985d0fb..   mov qword [var_430h], rax
+0x00001853      488995d8fb..   mov qword [var_428h], rdx
+0x0000185a      488d95d0fb..   lea rdx, [var_430h]     ; &amp;IV   (16 bytes)
+0x00001861      488d85e0fb..   lea rax, [var_420h]     ; &amp;KEY  (32 bytes)
+0x00001868      4889c6         mov rsi, rax            ; arg2 = key
+0x0000186b      488d050d08..   lea rax, [str._home_]   ; &quot;[lab-home]/&quot;
+0x00001872      4889c7         mov rdi, rax
+0x00001875      e849fcffff     call sym.encrypt_files_in_directory
+</code></pre>
+<p>and the key, built by the function <strong>named <code>recon</code></strong> — see §4.2.</p>
+<p>Recovered material:</p>
+<pre><code>key (32 B) = y0qpfjxbd79047929ew0omqad3f4gscl
+iv  (16 B) = 1234567890123456
+</code></pre>
+<p><strong>Proof of correctness — roundtrip, not plausibility.</strong> &quot;Readable plaintext&quot; is a weak
+oracle. The proof is that re-encrypting the recovered plaintext reproduces the original
+ciphertext byte for byte, which validates key, IV, mode and key↔file association at
+once:</p>
+<pre><code>original ciphertext : 48 bytes  sha256=7a5808b9a7c7a599d74f9fe00f571544a859327c5a6d11de12caf27fab837951
+recovered plaintext : 41 bytes  b'las credenciales ssh son: bob:56000nmqpL\n'
+padded              : 48 bytes (3 blocks)
+re-encrypted        : 57119752b10e1f05dcf793563c022413c2b67ebf6848227eaa6792d976be0f
+                      d52c0e54855ef292b028968b88cc756886
+original            : 57119752b10e1f05dcf793563c022413c2b67ebf6848227eaa6792d976be0f
+                      d52c0e54855ef292b028968b88cc756886
+ROUNDTRIP MATCH     : True
+</code></pre>
+<h3 id="32-ssh-account-allows-passwordless-execution-of-a-general-purpose-interpreter-as-another-user--cwe-269--cwe-250">3.2 SSH account allows passwordless execution of a general-purpose interpreter as another user — CWE-269 / CWE-250</h3>
+<pre><code># /etc/sudoers.d/  (via sudo -n -l as bob)
+User bob may run the following commands on dockerlabs:
+    (calamardo) NOPASSWD: /bin/node
+</code></pre>
+<p><code>/bin/node</code> is a full interpreter, so the rule is not &quot;run one program&quot; — it is &quot;execute
+arbitrary code as <code>calamardo</code> with no password&quot;:</p>
+<pre><code>$ sudo -n -u calamardo /bin/node -e 'console.log(require(&quot;os&quot;).userInfo().username, process.getuid())'
+calamardo 1003
+</code></pre>
+<p><strong>Impact:</strong> any code execution as <code>bob</code> becomes code execution as <code>calamardo</code>,
+password-free, with no further exploit. Identity boundary crossed on the first use.</p>
+<p><strong>Root cause:</strong> the rule pins a <em>binary</em> rather than a <em>behaviour</em>. An interpreter has
+no fixed behaviour to pin, so a rule naming one is equivalent to granting a shell.</p>
+<p><strong>Remediation:</strong> remove the rule. If a specific automation genuinely needs to run
+something as <code>calamardo</code>, grant the narrowest possible wrapper — a root-owned script
+with a fixed argument list, <code>root:root 0755</code> — rather than an interpreter. Prefer a
+purpose-built service account over a human user's account.</p>
+<p><strong>The privilege boundary above <code>calamardo</code> held.</strong> Measured from the <code>calamardo</code>
+identity: <code>/bin/node</code> <code>0755</code> root-owned and not writable; <code>/etc/sudoers.d</code>, <code>/etc/cron.d</code>,
+<code>/opt</code>, <code>/var/www/html</code>, <code>/usr/local/bin</code> all root-owned and not writable; <code>/root</code> is
+<code>0700</code>; <code>sudo -n -l</code> returns <code>rc=1</code> (password required); <code>su - root</code> times out
+awaiting a password. <code>calamardo</code> reads <code>/srv/ransom/*</code> (world-readable <code>664</code>) and cannot
+read <code>[lab-home]/bob</code> or <code>[lab-home]/patricio</code>. <strong>There is no third hop.</strong> See §4 for the full
+measurement table.</p>
+<h3 id="33-samba-logging-redirected-to-devnull--cwe-778">3.3 Samba logging redirected to <code>/dev/null</code> — CWE-778</h3>
+<pre><code>$ ls -la /var/log/samba/
+lrwxrwxrwx 1 root root    9 Jan  5  2025 log. -&gt; /dev/null
+lrwxrwxrwx 1 root root    9 Jan  5  2025 log.smbd -&gt; /dev/null
+lrwxrwxrwx 1 root root    9 Jan  5  2025 log.[net-0-1] -&gt; /dev/null
+... (13 symlinks, all -&gt; /dev/null)
+</code></pre>
+<p>Every SMB log, including the per-client ones, is a symlink to <code>/dev/null</code>.</p>
+<p><strong>Impact:</strong> no authentication record for a service holding victim data. Failed
+logons, share accesses and the exact moment of the mass encryption are all unrecoverable
+after the fact. The log also happens to remove <em>my</em> best diagnostic (§4.1).</p>
+<p><strong>Remediation:</strong> write to <code>/var/log/samba/</code> with log rotation and ship off-host.</p>
+<p><strong>Why this is worth reporting beyond the missing-log cliché:</strong> it destroyed a specific,
+documented investigative technique. <code>infrastructure.md</code> → <em>Monitoring Agents</em> records a
+verified oracle where a correctly framed request from the network returned nothing while
+the daemon's log named the exact control that rejected it. That oracle is <strong>structurally
+unavailable here</strong>, and the config that removes it is a single readable line.</p>
+<h3 id="34-encrypted-artifacts-and-a-core-dump-retained-in-a-user-home-directory--cwe-530--cwe-497">3.4 Encrypted artifacts and a core dump retained in a user home directory — CWE-530 / CWE-497</h3>
+<p><code>[lab-home]/bob/</code> contains <code>pokemongo</code> (the ransomware), <code>private.txt</code> (its ciphertext) and
+<code>core.63123</code>, a <strong>1 110 016-byte core dump of the encryption process</strong>:</p>
+<pre><code>core.63123: ELF 64-bit LSB core file, x86-64, version 1 (SYSV), SVR4-style,
+            from './encript2', real uid: 1002, effective uid: 1002,
+            execfn: './encript2'
+</code></pre>
+<p><strong>Impact:</strong> the process image contains the key <strong>and</strong> the IV <strong>in cleartext, on the
+stack, contiguously</strong> (see §4.3). Recovery does not require reversing at all — a
+<code>strings</code> call is sufficient. Any account that reaches the home directory — a backup, a
+snapshot, a forensic image, a misconfigured share — recovers every plaintext in one
+command. Retaining a core dump of a cryptographic process is equivalent to retaining
+the key.</p>
+<p><strong>Remediation:</strong> disable core dumps for processes that handle key material
+(<code>fs.suid_dumpable=0</code>, a restrictive <code>/proc/sys/kernel/core_pattern</code>, <code>ulimit -c 0</code> in
+the service unit), and treat any core dump as secret material.</p>
+<h3 id="35-the-binary-is-designed-to-refuse-analysis-and-to-destroy-data-in-place--cwe-733--cwe-693">3.5 The binary is designed to refuse analysis and to destroy data in place — CWE-733 / CWE-693</h3>
+<p>Three gates in <code>main</code> before any encryption, all exiting <code>1</code> with
+<code>Ten cuidado con lo que ejecutas!</code>:</p>
+<ol>
+<li><code>gethostname(buf, 0x400)</code> then <code>strcmp(buf, &quot;dockerlabs&quot;)</code> — the host <strong>must</strong> be
+named <code>dockerlabs</code>.</li>
+<li><code>file_exists(&quot;/opt/ak.pk1&quot;)</code> — a 2-byte marker file (<code>\n</code>), root-owned.</li>
+<li><code>file_exists(&quot;/bin/12bn&quot;)</code> — a 2-byte marker file, root-owned.</li>
+</ol>
+<p>All three were confirmed empirically (§4.4) by driving them with an <code>LD_PRELOAD</code> shim
+that overrides <code>gethostname</code>/<code>stat</code> on a <strong>copy</strong> of the binary, with an interlock on
+<code>opendir</code> so the encryption path was unreachable by construction.</p>
+<p>Impact of gate 1 in a real incident: the operator who renames the host — the standard
+first response to an active encryption — <strong>stops the malware from running further</strong>,
+which is a dual-edged control. The gates are anti-analysis, not anti-remediation, and
+the markers in <code>/bin</code> and <code>/opt</code> mean the presence check is itself evidence the host
+was targeted before.</p>
+<hr />
+<h2 id="4-reverse-engineering-entry-criterion-and-how-the-key-was-proved">4. Reverse engineering: entry criterion, and how the key was proved</h2>
+<h3 id="41-the-entry-criterion-and-what-i-discarded">4.1 The entry criterion, and what I discarded</h3>
+<p>This is the part the methodology lacked, so it is worth stating as a decision rather
+than a transcript.</p>
+<p><strong>A ransomware binary has an expected shape, and the <em>imports</em> tell you which parts are
+present before you read a single instruction.</strong> The lookups, in order:</p>
+<table>
+<thead>
+<tr>
+<th>Looking for</th>
+<th>Why</th>
+<th>Found?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a KDF (<code>PBKDF2</code>, <code>scrypt</code>, <code>Argon2</code>, <code>bcrypt</code>)</td>
+<td>if one exists, the key is <em>derived</em> and you must find the passphrase — a completely different, much longer engagement</td>
+<td><strong>absent</strong></td>
+</tr>
+<tr>
+<td><code>EVP_EncryptInit_ex</code> / <code>EVP_CIPHER_CTX_new</code></td>
+<td>names the library and version</td>
+<td>present, <code>OPENSSL_3.0.0</code></td>
+</tr>
+<tr>
+<td><code>EVP_aes_256_cbc</code></td>
+<td><strong>names the algorithm, key size and mode in one symbol</strong></td>
+<td>present</td>
+</tr>
+<tr>
+<td><code>EVP_Decrypt*</code></td>
+<td>tells you whether the author shipped a decryptor</td>
+<td><strong>absent</strong></td>
+</tr>
+<tr>
+<td><code>gethostname</code>, <code>snprintf</code></td>
+<td>non-crypto string building; often the key/IV assembly</td>
+<td>present</td>
+</tr>
+<tr>
+<td><code>malloc(size+16)</code> next to the read</td>
+<td>the <code>+16</code> is PKCS#7 block slack</td>
+<td>present</td>
+</tr>
+</tbody>
+</table>
+<p>One <code>rabin2 -i</code> therefore decided the whole strategy. <strong>No KDF import ⇒ the key is not
+derived ⇒ it is a literal in the image, and the engagement is minutes, not days.</strong> If a
+KDF <em>had</em> been present, every minute spent on the binary would have been wasted and the
+correct next step would have been the passphrase, not the code.</p>
+<p>What I explicitly discarded, and why:</p>
+<ul>
+<li><strong><code>[lab-home]/patricio/.ssh/python3</code></strong> — 8 MB, executable, sitting in a <code>.ssh</code> directory:
+the shape of a stashed backdoor. It is <strong>byte-identical to <code>/usr/bin/python3</code></strong>
+(md5 <code>67e2b7af8c0f36110c6704b9e7e8a699</code> both). Not SUID, so running it as any identity
+grants nothing. Decoy.</li>
+<li><strong><code>[lab-home]/bob/pokemongo</code></strong> — same name, <strong>same size</strong>, executable bit. Not an ELF
+(<code>file</code> says <code>data</code>), 7.817 bits/byte entropy, and a <strong>half-encrypted</strong> file. The
+single cheapest discriminator between the two copies is <code>file</code>: one line, and it
+returns the answer that a full reversing budget would have wasted hours on.</li>
+<li><strong><code>/opt/ak.pk1</code></strong> and <strong><code>/bin/12bn</code></strong> — 2-byte files, <code>root:root 0644</code>. Gate markers,
+not payloads.</li>
+<li><strong>The <code>recon</code> symbol name</strong> — see §4.2.</li>
+</ul>
+<p><strong>The single most valuable instruction in this engagement was the <em>absence</em> of an import.</strong></p>
+<h3 id="42-recon-does-no-reconnaissance--the-symbol-name-is-a-lie">4.2 <code>recon()</code> does no reconnaissance — the symbol name is a lie</h3>
+<p><code>recon</code> is the most attractive symbol in the binary and it is not what it says. It
+performs no scanning, touches no network, and returns no data. It is the <strong>key builder</strong>:</p>
+<pre><code>0x00001301  mov dword [rax],        0x70713079          ; 'y0qp'
+0x00001307  mov byte  [rax+4],      0x00                ; terminator
+0x00001312  call sym.imp.strlen                          ; find the append point
+0x00001321  mov dword [rax],        0x62786a66          ; 'fjxb'
+0x00001327  mov word  [rax+4],      0x0064              ; 'd'
+0x00001343  mov dword [rax],        0x34303937          ; '7904'
+0x00001349  mov word  [rax+4],      0x0037              ; '7'
+0x00001365  mov dword [rax],        0x65393239          ; '929e'
+0x0000136b  mov word  [rax+4],      0x0077              ; 'w'
+0x00001387  movabs   rcx,           0x66336461716d6f30  ; '0omqad3f'
+0x00001394  mov byte  [rax+8],      0x00
+0x000013ae  mov dword [rax],        0x63736734          ; '4gsc'
+0x000013b4  mov word  [rax+4],      0x006c              ; 'l'
+</code></pre>
+<p>32 characters. The <code>H</code> suffix on the immediates in a <code>strings</code> dump is the x86-64
+64-bit-immediate display convention — <code>0x0omqad3fH</code> is not hex, it is eight ASCII bytes
+being displayed as a qword, and reading it as a number is how you lose an afternoon.</p>
+<p>This is <code>decision-making.md</code> §7 landing in a symbol table: <strong>a name is a claim about
+intent, and intent is not behaviour.</strong> <code>recon</code> was the most confident-looking label in
+the binary and it pointed at the answer while describing something else. A
+label-confirming hypothesis is a stopping condition wherever it appears — a comment, a
+function name, a lab name, a catalog description.</p>
+<h3 id="43-recognising-cryptographic-material--and-why-the-contrast-is-the-method">4.3 Recognising cryptographic material — and why the <em>contrast</em> is the method</h3>
+<p>The task's real question is how to tell a key from data from a pointer. Here the
+discriminator was not magic, it was <strong>co-location and adjacency</strong>.</p>
+<p><strong>In the disassembly.</strong> High-entropy-looking 64-bit immediates are weak evidence on
+their own — the AES round constant <code>0x63636363</code> and the S-box bytes are the classic
+false positives, and so is any compiler-materialised pointer. What settles it is
+<strong>which buffer the pointer is passed to and when</strong>. Tracing the <code>EVP_EncryptInit_ex</code>
+call resolves the register shuffle unambiguously:</p>
+<pre><code>0x000013ed  call sym.imp.EVP_aes_256_cbc
+0x000013f2  mov rsi, rax            ; type   = EVP_aes_256_cbc()
+0x000013f5  mov rcx, qword [var_30h]; arg4
+0x000013f9  mov rdx, qword [var_28h]; arg3
+0x00001401  mov r8, rcx
+0x00001404  mov rcx, rdx            ; key    = arg3
+0x00001407  mov edx, 0              ; impl   = NULL
+0x0000140c  mov rdi, rax            ; ctx
+0x0000140f  call sym.imp.EVP_EncryptInit_ex
+</code></pre>
+<p><code>EVP_EncryptInit_ex(ctx, type, impl, key, iv)</code> ⇒ <code>arg3 = key</code>, <code>arg4 = iv</code>. A 5-argument
+call with a constant in the 5th slot is a <em>structural</em> signature of a key and an IV, and
+it does not require recognising any constant by value. <strong>Prefer the call site to the
+constant table.</strong></p>
+<p><strong>In the core dump — the same answer, with no reversing at all.</strong> <code>core.63123</code> contains:</p>
+<pre><code>1105712:1234567890123456
+1105728:y0qpfjxbd79047929ew0omqad3f4gscl
+</code></pre>
+<p>Two high-entropy 16/32-byte runs of printable ASCII, <strong>exactly 16 bytes apart</strong>, inside
+a core dump of the encryption process. Adjacency is the tell: a key and its IV are
+allocated as sibling locals in one stack frame, so in a memory image they appear next to
+each other. Random key material in a heap would not be 16-byte aligned against an IV.</p>
+<p>And the stack layout independently corroborates the disassembly:
+<code>var_430h</code> (IV) and <code>var_420h</code> (key) are 16 bytes apart in <code>main</code>'s frame
+(<code>sub rsp, 0x430</code>), which is exactly the gap observed in the core. <strong>Two methods, one
+answer, from unrelated evidence — that is what makes it a result rather than a guess.</strong></p>
+<h3 id="44-descifrar-vs-adivinar-the-oracle-and-the-one-that-is-not-enough">4.4 Descifrar vs. adivinar: the oracle, and the one that is not enough</h3>
+<p>This is the distinction the methodology was missing, and the lab contains a clean
+demonstration of why the <em>usual</em> oracle is insufficient.</p>
+<p>Decryption is CBC, so <code>plaintext_i = AES-128-block-decrypt_K(C_i) XOR C_{i-1}</code>, with
+<code>C_0 = IV</code>. Two consequences fall straight out, and they are the whole oracle:</p>
+<ul>
+<li><strong>Changing the key corrupts every block</strong>, because every block's first step is
+decryption under <code>K</code>.</li>
+<li><strong>Changing the IV corrupts only block 0</strong>, because <code>C_0</code> appears in exactly one XOR.</li>
+</ul>
+<p>Measured, with the recovered key and a deliberately corrupted IV:</p>
+<pre><code>--- POSITIVE  recovered key + recovered IV ---
+  pkcs7_valid  : True
+  printable    : 100.0%
+  plaintext    : b'las credenciales ssh son: bob:56000nmqpL\n'
+
+--- NEGATIVE  correct key, wrong IV ---
+  pkcs7_valid  : True          &lt;-- PASSES the padding check
+  printable    : 97.6%
+  plaintext    : b']S@\x14VDR\\\\^R[RXPD ssh son: bob:56000nmqpL\n'
+
+--- NEGATIVE  zero key + zero IV ---
+  pkcs7_valid  : False
+  printable    : 29.2%
+
+--- NEGATIVE  key with last byte flipped ---
+  pkcs7_valid  : False
+  printable    : 39.6%
+</code></pre>
+<p><strong><code>pkcs7_valid</code> is not a sufficient oracle, and this is the finding.</strong> A correct key with
+a wrong IV <em>passes</em> PKCS#7 validation and is 97.6% printable, because padding lives in
+the last block and the last block never depends on the IV. Reporting &quot;padding valid&quot; as
+proof of a key recovery would have been wrong in the one case that matters.</p>
+<p>What the negative controls do give you is a <strong>positional</strong> signal that is worth more
+than any single pass/fail:</p>
+<ul>
+<li><strong>Tail perfect, head garbage ⇒ wrong IV, right key.</strong> Block 0 is the only block the IV
+touches. This is the inverse of the usual &quot;plausible first block then it degrades&quot;
+heuristic, and it is the same measurement read from the other end.</li>
+<li><strong>Everything degrades together ⇒ wrong key.</strong></li>
+</ul>
+<p>And a wrong key does not fail uniformly — it fails as <em>entropy</em>. A correct key yields
+100% printable; a wrong key yields 29–40% printable, which is what random bytes look
+like. <code>printable ratio</code> is a continuous, quantitative oracle that needs no reference
+value, and it separates the hypotheses that a binary pass/fail merges.</p>
+<p>The three checks that are stronger than any of the above, in increasing cost:</p>
+<ol>
+<li><strong>Length vs. block size.</strong> CBC output is always a multiple of 16. <code>48 mod 16 = 0</code> for
+the real ciphertext; <code>17592 mod 16 = 8</code> for the decoy, which falsifies the decoy with
+one number and no decryption at all.</li>
+<li><strong>Padding validity.</strong> <code>0x0a</code> = 10 on the real file; <code>0xd2</code> = 210 on the decoy, which
+is &gt; 16 and therefore not a padding byte.</li>
+<li><strong>Roundtrip.</strong> Re-encrypt and compare to the original. <code>ROUNDTRIP MATCH: True</code> with
+identical sha256. This is the only one that validates the key, the IV, the mode <em>and</em>
+the key↔file association together, because all four enter the ciphertext.</li>
+</ol>
+<h3 id="45-cost-of-the-dynamic-approach-honestly">4.5 Cost of the dynamic approach, honestly</h3>
+<ul>
+<li><strong><code>LD_PRELOAD</code> shim — the cheapest dynamic instrument here, and the one I would
+recommend.</strong> Overriding <code>gethostname</code>/<code>stat</code> drove all three anti-reproduction guards
+to their refusal branch and confirmed them behaviourally, on a copy, with an
+<code>opendir</code> interlock making the destructive path unreachable. Cost: ~30 lines of C.
+It tests <em>behaviour</em>; it cannot tell you the key.</li>
+<li><strong>Core dump — better than reversing for this class, and free.</strong> It gave the key and IV
+directly, with the 16-byte adjacency as free corroboration. Whenever a target has
+already run, a memory image beats a static analysis, and reversing the binary is only
+needed when no image exists.</li>
+<li><strong>Ghidra was not available on this host</strong> (<code>which ghidra analyzeHeadless</code> → nothing).
+radare2 with <code>aa; pdf</code> was used instead, and the binary is <strong>not stripped</strong>, so
+<code>sym.encrypt</code>, <code>sym.recon</code>, <code>sym.main</code> and <code>sym.file_exists</code> resolve directly. I am
+flagging this as a <strong>difficulty caveat</strong>: an unstripped 64-bit ELF with named symbols
+and no anti-debug is the easy case. None of the reasoning above would be available
+from a stripped binary — the key builder would have to be found from
+<code>strlen</code>-in-a-loop plus <code>EVP_EncryptInit_ex</code> call sites, and the argument mapping would
+have to be inferred from stack layout rather than read. I did not get to measure that
+gap, so I am not claiming it.</li>
+<li><strong>What headless Ghidra would still not have given me:</strong> the argument shuffle at
+<code>0x13f2-0x140c</code> (§4.3) and the adjacency observation in the core (§4.3). Those are
+semantic questions about which value is a key, and no batch extractor answers them.</li>
+</ul>
+<hr />
+<h2 id="5-chain-in-order-with-each-jump-justified">5. Chain, in order, with each jump justified</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Step</th>
+<th>Justification</th>
+<th>Identity after</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Obtain <code>pokemongo</code> + <code>private.txt</code></td>
+<td><strong>Lab-harness access, not an attack path</strong> (§2.3). No credential for <code>patricio</code>/<code>calamardo</code> exists on the box.</td>
+<td><code>uid=0</code> <em>in-container, via <code>docker exec</code></em></td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>rabin2 -i</code> → no KDF, <code>EVP_aes_256_cbc</code> present</td>
+<td>Entry criterion (§4.1). Decides the whole strategy in one command.</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>r2 -c 'aa; s sym.main; pdf'</code> → IV from two <code>movabs</code>, key from <code>recon()</code></td>
+<td>Key is a literal, so it is in the image.</td>
+<td>—</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>recon</code> immediates → key, <strong>emulating the buffer, not concatenating chars</strong></td>
+<td>§1.1. Three plausible wrong keys otherwise.</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Decrypt <code>private.txt</code>, <strong>verify by roundtrip</strong></td>
+<td>§4.4. Plausibility is not decryption.</td>
+<td>—</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>ssh bob@[net-0-11]</code> → <strong><code>id</code> first</strong></td>
+<td><code>decision-making.md</code> §8. Measured, not assumed.</td>
+<td><strong><code>uid=1002(bob)</code></strong></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>sudo -n -l</code> → read the deployment, not just try things</td>
+<td>The sudoers rule is configuration.</td>
+<td><code>bob</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>sudo -n -u calamardo /bin/node -e ...</code></td>
+<td>CWE-269 (§3.2). The rule names an interpreter, so it is arbitrary code.</td>
+<td><strong><code>uid=1003(calamardo)</code></strong></td>
+</tr>
+<tr>
+<td>8</td>
+<td>Read <code>/srv/ransom/*</code> as <code>calamardo</code></td>
+<td>Confirms the intended identity — the note addresses <code>calamardo</code>.</td>
+<td><code>calamardo</code></td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>Stop.</strong> No third hop.</td>
+<td>Every candidate root path measured and denied (§4 of this table / §3.2).</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Hop count: 2.</strong> Planned from the sudoers rule and the note: 2. The important part is
+not that the number matched — it is that <strong>the boundary above <code>calamardo</code> held</strong>, and
+that is a result rather than an absence of one.</p>
+<hr />
+<h2 id="6-reward--literal">6. Reward — literal</h2>
+<p>There is <strong>no <code>FLAG{}</code></strong> in this lab. The reward is the plaintext of <code>private.txt</code>:</p>
+<pre><code>las credenciales ssh son: bob:56000nmqpL
+</code></pre>
+<p>i.e. <em>&quot;the SSH credentials are&quot;</em>, and the credential is:</p>
+<pre><code>user: bob
+pass: 56000nmqpL
+</code></pre>
+<p>Verified by use, not by inspection — the first command over SSH was <code>id</code>:</p>
+<pre><code>$ ssh bob@[net-0-11] 'id; hostname'
+uid=1002(bob) gid=1002(bob) groups=1002(bob),100(users)
+dockerlabs
+</code></pre>
+<p><code>private.txt</code> md5 <code>be5ce413f47722a0421d6dcdd7946eb4</code>, ciphertext sha256
+<code>7a5808b9a7c7a599d74f9fe00f571544a859327c5a6d11de12caf27fab837951</code>.</p>
+<hr />
+<h2 id="7-tested--not-tested--could-not-test">7. Tested / not tested / could not test</h2>
+<p><strong>Tested.</strong> Full TCP port scan with version detection; anonymous SMB share enumeration
+with a real client; share ACL behaviour for anonymous / <code>bob</code> / wrong-password; the SMB
+vs. Unix password split; SSH banner; <code>/etc/issue.net</code>; <code>smb.conf</code> and <code>sudoers.d</code> in
+full; account and shadow enumeration; SUID/SGID sweep; writability and reachability of
+every plausible escalation target from the <code>calamardo</code> identity; static analysis of the
+binary to its argument flow; all three anti-reproduction guards, empirically; key
+recovery by two independent methods; decryption validated by roundtrip; the decoy
+falsified by three independent checks.</p>
+<p><strong>Not tested (out of scope, stated so it is not assumed).</strong> Brute-force or
+password-spraying any account — the notes contain no password-hint and guessing is not
+a technique (<code>decision-making.md</code>, RoE). Whether the <code>pokemongo</code> key material is
+reused by any <em>other</em> sample. Whether <code>patricio</code>/<code>calamardo</code> are weak, since neither
+hash was attacked.</p>
+<p><strong>Could not test, with reasons.</strong></p>
+<ol>
+<li><strong><code>nmap -sU</code></strong> — needs root; no sudo on this host. The Baremetal lesson applies
+directly: a <code>-p-</code> scan is a <strong>TCP</strong> statement. Mitigated but not closed by
+<code>/proc/net/tcp</code> and the absence of any UDP service in the image config; the
+<code>623/udp</code> case from that lab cannot be excluded by evidence I gathered.</li>
+<li><strong>Executing the binary's success path.</strong> Deliberately not run. <code>main</code> calls
+<code>encrypt_files_in_directory(&quot;[lab-home]/&quot;, ...)</code> <strong>unconditionally and recursively</strong>, and
+it destroys files in place (<code>fseek(0)</code> + <code>fwrite</code>, no rename, no extension change, no
+original retained). Running it would have destroyed the shipped lab state, and the
+binary hardcodes <code>[lab-home]/</code> so <code>HOME</code> cannot redirect it. The three refusal branches
+were exercised instead, with an <code>opendir</code> interlock; the encryption path was
+unreachable by construction. I therefore assert the <em>guards</em> behaviourally and the
+<em>encryption</em> only from disassembly plus the roundtrip.</li>
+<li><strong>UTS namespace isolation</strong> to drive the hostname guard natively — <code>unshare -u</code>
+fails <code>Operation not permitted</code> even as container root. Worked around with
+<code>LD_PRELOAD</code>, which is why the guard evidence is from the shim and not from a real
+hostname change.</li>
+<li><strong>What a stripped binary would have cost.</strong> No Ghidra on this host and the sample is
+unstripped, so the gap between &quot;named symbols available&quot; and &quot;symbols stripped&quot; is
+unmeasured. I am not claiming a number for it.</li>
+<li><strong>Whether <code>calamardo</code> can read the private key of anything.</strong> No key material was
+present in that home directory.</li>
+</ol>
+<hr />
+<h2 id="8-controls-that-held">8. Controls that held</h2>
+<p>Reported with the same prominence as the findings, because a reader cannot tell an
+untested control from a holding one.</p>
+<ol>
+<li><strong>Samba share ACL — held.</strong> <code>valid users = patricio, calamardo</code> excluded <code>bob</code>,
+whose <em>Unix</em> account is otherwise valid in Samba's database. <code>bob</code> is a Samba user
+(<code>pdbedit -L</code> lists him) and still cannot use the share.</li>
+<li><strong>Anonymous SMB access — held.</strong> <code>curl: (67) Login denied</code>; the share content is not
+reachable without a credential. <em>(Listing the share <em>name</em> is allowed — <code>browsable = yes</code> — which is a weaker exposure and is called out as such, not conflated.)</em></li>
+<li><strong>The SSH/SMB password separation — held, and is load-bearing.</strong> <code>bob</code>'s SSH password
+is rejected by SMB with <code>STATUS_LOGON_FAILURE</code>, so recovering the reward does not
+hand over the share. This is why the lab's own design does not collapse into a
+one-credential win.</li>
+<li><strong>The privilege boundary above <code>calamardo</code> — held.</strong> No SUID path (<code>/bin/node</code> is
+<code>0755</code> root-owned, not writable, not setuid), no writable root-executed directory,
+<code>/root</code> <code>0700</code>, <code>sudo -n -l</code> requires a password, <code>su - root</code> blocked. The chain
+stopped at <code>uid=1003</code> because the configuration says so.</li>
+<li><strong>No credential in any pre-auth channel — held.</strong> Stock SSH banner, stock
+<code>/etc/issue.net</code>, no <code>Banner</code> directive, no SSH keys, all <code>.bash_history</code> symlinked to
+<code>/dev/null</code>. The Acme-style pre-auth banner disclosure did <strong>not</strong> occur here.</li>
+<li><strong>The anti-reproduction guards — held, and I proved it three ways.</strong> A renamed host
+or a deleted marker file stops the binary before it touches anything, which is
+anti-analysis rather than a security control against the attacker.</li>
+<li><strong><code>/root/.node_repl_history</code> (mode <code>0600</code>) — held.</strong> <code>EACCES</code> from both <code>bob</code> and
+<code>calamardo</code>.</li>
+</ol>
+<hr />
+<h2 id="9-design-observations-about-the-lab">9. Design observations about the lab</h2>
+<ul>
+<li><strong>The description is honest about the class and silent about the port.</strong> Seven labs in
+a row lied in the name or the description; this one is the first where the
+description's <em>only</em> error is under-specification, and the entry mechanism is absent
+entirely (§2.3). If a participant is told to start &quot;from the IP&quot;, there is no first
+move. Adding one weak credential for <code>calamardo</code> — who the note already addresses —
+would close it without touching the reversing at all.</li>
+<li><strong>The binary is not stripped and has no anti-debug.</strong> For a lab billed <em>Difficult</em>,
+the reversing is the easy part for the reason in §4.1: the absence of a KDF import
+reduces a hard problem to reading a string builder. The genuine difficulty is the
+decoy, and the decoy is a <em>reasoning</em> trap, not a reversing one.</li>
+<li><strong><code>[lab-home]/bob/pokemongo</code> is the best thing in the lab.</strong> It is the same size, the same
+name and executable, it decrypts to a valid ELF header, and it is not a program. A
+participant who stops at &quot;I got an ELF&quot; ships a false positive. The three cheap
+discriminators (§1.5) are all arithmetic or <code>file</code>, and none of them require the
+binary to be stripped.</li>
+<li><strong>The core dump is a shortcut that makes the intended reversing unnecessary.</strong> It is
+mode <code>600</code> in a <code>750</code> home, so it is <em>not</em> reachable before the reversing — the
+design places it correctly. But once you are <code>bob</code> (via the reward), <code>strings</code> beats
+Ghidra, and the writeup should say so rather than pretending otherwise.</li>
+<li><strong>The narrative is unusually well-constructed</strong> and the characters have real
+motivations: <code>patricio</code> publishes the binary out of spite, <code>calamardo</code> is asked to
+help, <code>bob</code> is the victim who ran the malware and kept a core dump. The
+<code>sudoers</code> rule is the only place where the fiction and the mechanics meet, and it is
+placed exactly where the note points.</li>
+<li><strong><code>docker exec</code> is a hole in the lab's own model.</strong> For any DockerLabs target, root in
+the container is one command away, which means &quot;did you get in from outside?&quot; is not
+answerable from the artefacts alone. Worth stating as a property of the whole
+platform.</li>
+</ul>
+<hr />
+<h2 id="10-restoration">10. Restoration</h2>
+<p>Left as shipped, verified by hash.</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>md5 before</th>
+<th>md5 after</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/srv/ransom/nota.txt</code></td>
+<td><code>3538717285104cf0a92139f4b5718b2c</code></td>
+<td><code>3538717285104cf0a92139f4b5718b2c</code></td>
+</tr>
+<tr>
+<td><code>/srv/ransom/pokemongo</code></td>
+<td><code>615b385a7ce450fa35acdd6af917420a</code></td>
+<td><code>615b385a7ce450fa35acdd6af917420a</code></td>
+</tr>
+<tr>
+<td><code>/srv/ransom/private.txt</code></td>
+<td><code>be5ce413f47722a0421d6dcdd7946eb4</code></td>
+<td><code>be5ce413f47722a0421d6dcdd7946eb4</code></td>
+</tr>
+<tr>
+<td><code>[lab-home]/bob/private.txt</code></td>
+<td><code>be5ce413f47722a0421d6dcdd7946eb4</code></td>
+<td><code>be5ce413f47722a0421d6dcdd7946eb4</code></td>
+</tr>
+<tr>
+<td><code>[lab-home]/bob/core.63123</code></td>
+<td><code>9528e9cefe4b31d5d26d6c40fb6115f0</code></td>
+<td><code>9528e9cefe4b31d5d26d6c40fb6115f0</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The binary was never executed on the target</strong>, so the destructive path was never
+entered — see §7 item 2. All work was read-only (<code>docker exec</code> reads, <code>docker cp</code> out,
+SFTP read). No file on the container was created, modified or deleted. <code>auto_deploy.sh</code>
+was <strong>not</strong> run, as instructed; the container was managed directly and removed with
+<code>docker rm -f</code>.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

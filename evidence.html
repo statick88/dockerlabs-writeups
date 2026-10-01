@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Evidence &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="index.html">DockerLabs corpus</a><nav><a href="index.html">Root cause</a><a href="evidence.html" class="on">Evidence</a><a href="corrections.html">Corrections</a><a href="hazards.html">Hazards</a><a href="labs.html">Labs</a><a href="resolved.html">Resolutions</a></nav></header>
+<main>
+<h1 id="evidence">Evidence</h1>
+<blockquote>
+<p>Citations of the form &quot;one engagement&quot; in this section are audit trail against a private corpus of past engagements. They are not re-verifiable by a reader of this repository, and they are not offered as such.</p>
+</blockquote>
+<p><strong>Read this if you are about to write the words &quot;not present&quot;, &quot;no results&quot;, or &quot;not exploitable&quot; into a report.</strong> Those three phrases are the output of an instrument, and an instrument that never looked produces them too. This section is about the difference, and about the three questions you must answer before a negative is admissible.</p>
+<p>The other sections answer <em>how to execute</em>. They assume the measurement works. This one is the section that says: verify that assumption before you build anything on it, because in a corpus of fifty-two engagements the single dominant failure was not a missing technique. It was a measurement that was wrong producing output indistinguishable from a result. None of the cases below errored. Every one would have shipped, and several would have been filed to a client as a finding or as a clean negative.</p>
+<h2 id="the-root-defect">The root defect</h2>
+<blockquote>
+<p><strong>A tool that found nothing and a tool that never looked produce identical output.</strong></p>
+</blockquote>
+<p>Thirty-two catalogued instances of this, across credential attack, container
+security, deserialization, web enumeration, privilege escalation, documentation
+maintenance, and one mobile manifest. Of the nine instruments the corpus tallies,
+six would have deleted a finding that existed and three would have invented one;
+the remaining entries carry no such tally. None looked like an error. That is the
+entire argument for this section: the defect is invisible from the output, so it
+has to be ruled out from outside the output.</p>
+<p>The discipline already lives in <code>decision-making.md</code> as <em>a self-test validates the
+tool, not the trace</em> and as <em>a control that cannot fail is not a control</em>. This
+section is those two rules applied systematically to the negative result, which is
+where they earn their keep, because a negative is the only output nobody
+cross-checks.</p>
+<h2 id="the-three-questions">The three questions</h2>
+<p>Every negative must answer all three. Missing the first two produces the
+confident false negative, and missing the third is the largest single source of
+<strong>real findings being deleted</strong>: your own rate limiter, concurrency, encoder,
+client, or identity answers for the target, and the result arrives as a clean
+negative.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Question</th>
+<th>If unanswered</th>
+<th>Discriminator</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Did the tool work?</td>
+<td>An oracle that cannot fire reports absence</td>
+<td>Force a positive through it, <strong>before</strong> believing any negative</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Did it look where it needed to?</td>
+<td>A blind spot reads as an absent service</td>
+<td>A work count: rows, bytes, candidates, addresses</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Is the failure the target's and not mine?</td>
+<td>Your own client, rate limit, or identity is the cause</td>
+<td>Change one variable, or run the same probe against a known-good reference</td>
+</tr>
+</tbody>
+</table>
+<p>The three are ordered, not interchangeable. A green positive control (1) with a
+zero work count (2) still fails, because the control may have fired on a code path
+the target never takes. And a negative that passes 1 and 2 is still unusable until
+you have excluded your own tooling as the cause (3).</p>
+<h2 id="1-did-the-tool-work">1. Did the tool work?</h2>
+<p><strong>Rule, stated first: a control that has never seen a success is not a control.
+Force a positive through every detector before you believe a negative it produces,
+and run that control first rather than after.</strong> An oracle that always resolves the
+same way is a bias wearing the shape of an answer.</p>
+<p>This is the cheapest rule in the section and the most often skipped, because the
+positive control costs time and produces nothing you can put in a report. It is
+also the only thing standing between a clean report and a fabricated one. Cheap to
+<strong>apply</strong> is a different axis from expensive to have been wrong about:
+<a-unlinked><code>api_web.md</code></a> ranks the short-circuiting oracle — the case under
+<em>Oracles that cannot fire</em> below — as that file's most expensive single bug,
+and both hold: the control costs one request, the defect costs the finding.</p>
+<h3 id="oracles-that-cannot-fire">Oracles that cannot fire</h3>
+<p>The failure mode is uniform output. Four shards each printed a not-found marker
+having examined <strong>zero lines</strong>, because a conditional predicate sat inside a
+malformed clause and short-circuited to one side every time, so only one derived
+table ever materialised. Nothing errored. The only external tell was structural:
+the count was zero.</p>
+<p>A cryptographic scanner read the second field of the <em>first</em> line of a password
+file — which belongs to an account whose field is a lock marker — so the KDF was
+never invoked and a well-formed placeholder came back. <strong>The tell was the rate:</strong>
+a rate in the tens of thousands of candidates per second is not a fast KDF, it is
+no KDF. When a deliberately expensive step finishes implausibly fast, the step did
+not run.</p>
+<p>A search over a non-monotonic predicate returned the <strong>same value for every
+character</strong>. A uniform answer across a varied input is a result about the search.
+This one nearly filed as the administrator's credential, because the value it
+returned for every input was a plausible secret-shaped string.</p>
+<p><strong>Generalised: a detector whose output stopped varying has lost its discriminating
+power, whatever the value is.</strong> Vary something that changes the answer, or the
+probe proves nothing.</p>
+<h3 id="a-control-that-runs-a-different-code-path">A control that runs a different code path</h3>
+<p>A positive control called the framework's convenience hashing helper, which
+produces a different hash format from the one actually under test. The control
+proved the wrong algorithm, and the negative it backed — a few dozen candidates —
+sat unchallenged until the target's own implementation was driven directly.</p>
+<p><strong>A control must exercise the same code path as the target, not a neighbouring one
+that happens to look similar.</strong> When the control is a wrapper, a convenience API,
+or a &quot;standard&quot; helper, the first thing to verify is that it produces output in the
+target's format. A prefix mismatch between control and target is not a detail; it
+is the whole test being wrong.</p>
+<p>The stronger form: <strong>a control is valid only if it comes from a payload you have
+already seen succeed.</strong> A liveness control constructed from nothing — a working
+payload with one character changed — produced silence, because the variant is not
+itself a detectable pattern. It was not a weak control; it was designed from
+nothing, so its silence proved nothing about the thing it was meant to prove.</p>
+<h3 id="a-detector-whose-negative-branch-is-its-positive-branch">A detector whose negative branch is its positive branch</h3>
+<p>An existence predicate matched on a substring that the <em>failure</em> path also emits —
+the error message quoting the name that does not exist. It fired on the first poll,
+on nothing, and nothing downstream could detect it. Match the positive form of the
+thing you want: a mode string, a status you expect to <em>fail</em>, a length, a hash.</p>
+<p>A request client followed redirects by default, so every authentication test
+received <code>200</code> from the login page the unauthenticated request was redirected to.
+Every such test <strong>agreed with every other</strong>, which is what made it dangerous: the
+detector was always-true, and it returned the inverse of the truth. Any
+authorisation test must disable redirect following and assert on something the
+error page cannot fake — a final URL, a body marker, a status you expected to fail.
+<strong>A negative control that returns the same status as the positive is not a control;
+it is a coincidence you have not checked.</strong></p>
+<p>A readability test was silent in both branches — false silent, true silent through a
+print — so both collapsed into an empty substitution and the enclosing listing
+printed its own working directory. The result looked like a successful listing of
+the directory that was actually being denied. The sibling instances: a status
+summary reporting &quot;in operation&quot; with zero of sixteen recorded failures, and a
+version-control safety refusal producing empty stdout and a zero exit status inside
+a pipeline that hid it completely.</p>
+<h3 id="oracles-that-eat-their-own-control-space">Oracles that eat their own control space</h3>
+<p><strong>Rule: an oracle that mutates the namespace is not idempotent, so a control drawn
+from that namespace is consumed by the first use.</strong> Draw the control from outside
+the namespace you are enumerating, or snapshot and restore between repetitions. A
+control that changes its answer between runs is evidence that your earlier runs
+changed the world, not that the control was wrong.</p>
+<p>In one engagement a sweep of a large candidate space hit an endpoint that inserts
+on success. The manual probe on the first run created a record; the negative
+control on the second run — a value chosen precisely because it could not exist —
+answered <strong>present</strong>. The harness caught it, which is the only reason it is a
+defect and not a finding.</p>
+<p>The same shape with no mutation at all: the artefact shipped a preloaded result
+file containing a mix of real and invented names, planted in the environment before
+a single request. Some phantom artefacts are the target's fault; that one was the
+platform's. <strong>Check what the environment already tells you before believing what
+you found.</strong></p>
+<h3 id="the-general-form">The general form</h3>
+<p>A tool that returns &quot;I found nothing&quot; has made a claim about the world, not about
+itself. Before recording an absence, point the tool at something you know is
+present. A file-read helper over an empty input stream reports zero lines; a binary
+string extractor asked for narrow-encoded content reports no strings; a permission
+enumeration flag that does not exist in a minimal userland prints its usage text,
+returns nothing, and <strong>exits zero</strong>.</p>
+<p>That last one is worse than &quot;command not found&quot;, and the difference matters. A
+missing command is visible. <strong>A command that succeeds while doing nothing
+manufactures a negative that confirms what you hoped</strong>, and the entire finding next
+to it is one check away from being deleted.</p>
+<h2 id="2-did-it-look-where-it-needed-to">2. Did it look where it needed to?</h2>
+<p><strong>Rule, stated first: every negative carries its work count — bytes read, candidates
+tested, rows returned, files matched, addresses probed. A negative with no count is
+not evidence, it is the absence of evidence wearing evidence's clothes. If the count
+is zero, the answer is <code>untested</code> and it belongs in the NOT-tested list with the
+reason.</strong></p>
+<p>The count is not bureaucracy. It is the only piece of information the tool cannot
+fabricate, because it comes from outside the tool's conclusion.</p>
+<h3 id="counts-that-arrive-blank">Counts that arrive blank</h3>
+<p>A shared scratch directory was removed by a concurrent worker, so every byte count
+in a batch came back empty. <strong>Blank and zero look identical in a report</strong>, and
+&quot;returns an empty body&quot; was one transcription away from being filed as a measured
+property of the application. Real figures were in the dozens. Confirm the scratch
+path exists before trusting a batch, and write each count next to the result it
+belongs to rather than in a summary table at the end.</p>
+<h3 id="two-process-pipelines">Two-process pipelines</h3>
+<p>A redirect in a compound command belongs to the shell that reads it, not the one it
+is aimed at. A log-slicing harness counted lines by redirecting a file into a
+command running inside a container: the host shell consumed the redirect, the
+container-side command received an empty stream, an error scrolled past on stderr,
+and the harness reported <strong>zero log lines for every probe</strong>. Believing it would
+have inverted the headline finding into &quot;the filter detects nothing&quot;, when the
+filter was in fact blocking correctly.</p>
+<p><strong>In any two-process pipeline — host into container, client into proxy, harness into
+target — count the work on each side independently, and prove both sides carried
+something before believing a zero from either.</strong> A count of zero alone cannot tell
+you which half of the pipeline lied.</p>
+<h3 id="truncated-and-complete-look-identical">Truncated and complete look identical</h3>
+<p>An arbitrary cap cut a wordlist sorted punctuation-first, where the real entries
+sat far past the cut. The sweep reported two of seven files present. <strong>A truncated
+sweep and a complete sweep print identically.</strong> What caught it was cross-checking
+the sweep against an artefact already fetched in the same session.</p>
+<p>Same family: a container log wrapper that <strong>truncated and summarised</strong> the
+application's request log, and a conclusion was drawn from the summary. Reading the
+raw stream gave a different account. A wrapper that summarises is a filter, and a
+filter is an instrument.</p>
+<h3 id="scanning-is-not-enumerating">Scanning is not enumerating</h3>
+<p>The cheapest blind spot in the corpus to get right, because it hides whole classes
+rather than individual entries.</p>
+<table>
+<thead>
+<tr>
+<th>What ran</th>
+<th>What it answered</th>
+<th>What it could not see</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TCP range scan</td>
+<td>Which TCP ports accept a connection</td>
+<td>A UDP management plane granting administrative access with no credential</td>
+</tr>
+<tr>
+<td>HTTP scanner against a live WebSocket channel</td>
+<td>Zero endpoints</td>
+<td>A live channel answering a protocol upgrade</td>
+</tr>
+<tr>
+<td>Virtual-host sweep on a catch-all server</td>
+<td>Every name resolves</td>
+<td>Real hosts, when the baseline answer is identical for all of them</td>
+</tr>
+<tr>
+<td>Range scan tunnelled through a misconfigured proxy</td>
+<td>Ports open</td>
+<td>Anything — it scanned the operator's own machine</td>
+</tr>
+<tr>
+<td>Request scanner against an out-of-band-channel payload</td>
+<td>No finding</td>
+<td>The exfiltration, when the expanded value is rendered back in the response</td>
+</tr>
+</tbody>
+</table>
+<p>Four implications, each a rule:</p>
+<ul>
+<li><strong>Enumerate the address family and transport your port is in.</strong> A TCP port table
+is a statement about TCP. If a UDP scan was not possible, declare the coverage
+gap; do not report it as a closed port.</li>
+<li><strong>A blind spot is not an absent service.</strong> Where a platform is hidden behind a
+renamed path, the path is not the control — the authorisation decision is. Read
+the rewrite rules.</li>
+<li><strong>Normalise the body, hash it, and include a name or address you can prove
+cannot exist as the control.</strong> Many names sharing one hash means the sweep found
+nothing. Few names sharing one hash among provably-absent controls means it found
+everything. The computation is identical and the verdicts are opposite; the
+asymmetry is where the error happens. <strong>And stability is mandatory before the hash
+is a discriminator at all: read each candidate host N times with no writes and
+require the hash to repeat.</strong> A host whose hash moves has dynamic content and is
+not thereby a different host; only a hash that is stable and differs from the
+baseline is a host. Skip the stability control and this rule does not merely miss
+hosts — it fabricates them, because &quot;every name returned a different hash&quot; is the
+most successful-looking output a sweep can produce, and that is a <strong>false positive
+dressed as success</strong>: the one bias here opposite to every other detector, and so
+the one most likely to be believed. The control and its measured case are set out
+in <a-unlinked><code>decision-making.md</code></a>. And the corollary: a catch-all
+default response is the baseline, not a finding.</li>
+<li><strong>Prove where the tunnel points before you trust the scan.</strong> A proxy that
+silently scans the operator's own workstation produces a perfectly plausible port
+table describing the wrong host.</li>
+</ul>
+<h3 id="identity-are-you-measuring-the-target">Identity: are you measuring the target?</h3>
+<p><strong>Rule: measure the target, not a copy of the target. A control on a clone is
+evidence; a result on a clone is not a result.</strong> State which one you have, and let
+the summary column reflect the weaker of the two claims.</p>
+<p>An escalation leg proved on a container built from the same image, with the
+credential supplied, was labelled clearly and still unsettled the question of what
+the summary should say. The reasoning is one level up from the framework case below:
+measure the value the framework consumes, not the value the file contains.</p>
+<p>The same shape, easier to get wrong: <em>the artefact and the deployed instance are the
+same image, therefore the result transfers.</em> It nearly transfers, which is why it is
+tempting. It does not transfer when the missing step is a credential, a race, or
+anything that did not happen on the target.</p>
+<p><strong>The target must also have been alive.</strong> A component that failed to start and a
+component that is not installed are different findings, and only the second is a
+property of the target. In one engagement a database process died on an instruction
+set the host did not provide; read carelessly that yields a claim about the absence
+of an entire attack surface — a claim about the <em>class</em> wearing the clothes of a
+claim about the <em>instance</em>. The site was up the whole time. The recovery was to
+override the entrypoint and prove it.</p>
+<p><strong>Before recording an absent surface, establish that the process that should be
+serving it was running.</strong> If a service is unreachable, say <em>why</em> it is unreachable,
+and put the unattempted path under NOT tested rather than under negatives.</p>
+<h3 id="working-privilege-and-operational-privilege-are-two-ladders">Working privilege and operational privilege are two ladders</h3>
+<p><strong>Rule: every check runs as the identity whose capability you are measuring. A
+privileged tool does not observe a low-privilege boundary; it observes itself.</strong></p>
+<p>Recorded across thirteen engagements and established independently by two of them.
+A writability predicate reported writable because the command ran through a
+container-exec path, which is root. <strong>The predicate was correct; the identity was
+wrong.</strong> The companion failure: a permission change intended for a container path
+executed on the operator host, where the path does not exist, and six rows of a
+results table — five successes and one denial, all re-testing the same unmodified
+file — sat above an unexamined &quot;no such file or directory&quot; scrolling past on stderr.</p>
+<p>Read the mode back <strong>as the identity that owns it</strong>, and count what is writable by
+<em>another</em> principal. A write primitive landing in a tree the attacker already owns
+is not an escalation, and reporting it as one is a fabricated finding.</p>
+<h3 id="labels-are-claims">Labels are claims</h3>
+<p><strong>Rule: a class label is a claim about a component, and a component is either
+present and countable or it is not.</strong> Every label in the chain — a queue entry, a
+hostname, a framework constant, a decompiler listing, a queue gap column — is a
+statement by a writer who was not looking at the artefact you are looking at.</p>
+<table>
+<thead>
+<tr>
+<th>Label</th>
+<th>What the label claimed</th>
+<th>What was true</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A queue entry's acronym</td>
+<td>Enumerating a name-service record set</td>
+<td>A structured-identifier existence oracle; zero occurrences of the name-service string anywhere in the application tree</td>
+</tr>
+<tr>
+<td>A queue gap column paraphrasing a catalogue entry</td>
+<td>A second escalation route</td>
+<td>No escalation primitive of any kind: no restricted-command grant, no scheduler the attacker can write, stock setuid binaries with no writable parent, no capabilities</td>
+</tr>
+<tr>
+<td><code>defined( 'CONFIG_KEY' )</code></td>
+<td>The framework uses this value</td>
+<td>Trivially true of any constant; the framework's salt function pre-seeds and <em>skips</em> any constant holding the installer placeholder, so the file's value is ignored, not overriding</td>
+</tr>
+<tr>
+<td>A packaged binary's integrity check</td>
+<td>The tree is pristine</td>
+<td>The check compares stored digests, not modes — so a setuid bit is invisible to it</td>
+</tr>
+<tr>
+<td>A filename</td>
+<td>The component's version or class</td>
+<td>A label; read the version from the artefact's own manifest, not from the name</td>
+</tr>
+<tr>
+<td>A size column in a long listing</td>
+<td>A mode string</td>
+<td>A different column entirely</td>
+</tr>
+</tbody>
+</table>
+<p>Two of these deserve their own discipline:</p>
+<ul>
+<li><strong>A framework that validates, defaults, or overrides configuration will routinely
+ignore a value that is present and well-formed.</strong> Measure the value the framework
+<strong>consumes</strong> — call the accessor, read the parsed tree — not the value the file
+contains. And when a measurement contradicts the sentence it is placed under,
+resolve the contradiction in favour of the measurement before writing the
+sentence. In the recorded case the quoted output was already refuting the sentence
+next to it: a short placeholder cannot produce a long generated salt.</li>
+<li><strong>Two values printed next to each other are not in a precedence relationship.</strong>
+Adjacency is not precedence.</li>
+</ul>
+<p>And the self-referential variant: a pattern search over a tree that includes your
+own tooling finds your own tooling. Before reporting a hit, <strong>read the hit</strong>. The
+probability rises with how distinctive the pattern is — a value no one writes by
+accident. Two workers in one engagement read a UI stylesheet rule and a document
+formatter template as payload hits. The verifier's absence is not the property's
+absence: the tool answered the question it was asked, not the question that mattered.</p>
+<h3 id="a-format-constraint-you-did-not-measure-is-not-a-filter">A format constraint you did not measure is not a filter</h3>
+<p><strong>Rule: run every constraint you intend to apply against the records you already
+hold, before you apply it.</strong> Measured both ways on a small set of real records: the
+public check character excludes <strong>all four of them, none of the four satisfying it</strong>,
+so a sweep filtered by it would have reported an empty namespace. The filter
+excluded every real row.</p>
+<p>This is the <em>refusal tells you about the component that refused</em> rule with the
+polarity flipped. A refusal tells you about the component that refused; an
+unverified assumption about the data tells you nothing about either.</p>
+<p>The same applies to a <em>position in a sequence you are inside</em>. Several documents in
+one corpus independently asserted their own ordinal in a series, with at most one
+able to be right and one contradicting another's count. <strong>A count is a fact; a
+position in a sequence rots the moment anything is added.</strong> State the count, or state
+the property and point at the index.</p>
+<h3 id="claims-the-components-make-about-themselves">Claims the components make about themselves</h3>
+<p><code>Content-Length</code>, a zero exit status, a <code>403</code>, and a header asserting absence are
+<strong>claims by the component that produced the bytes</strong> about what it produced. None is
+evidence about the artefact.</p>
+<p>A large archive failed verification at its full advertised length, having arrived
+short by exactly a round proxy boundary, with the truncated length reported as the
+content length. A fetcher reading <em>received size equals expected</em> as &quot;not truncated&quot;
+is correct when the server describes the real file and <strong>wrong whenever the server is
+describing its own cut.</strong> Six attempts across two client versions produced the
+identical size and the identical failure, which is what ruled transit damage out and
+pointed at a boundary.</p>
+<p><strong>When an artefact fails verification at its full advertised length, ask the
+artefact, not the server.</strong> Walk the container's local headers, sum the declared
+data extents, compare against the bytes on disk: shorter than its own declared
+extent means truncated whatever the headers said; longer means the excess is the
+central directory. The control matters — on a healthy archive the declared extent
+came out a small number of bytes <em>below</em> the file, which is exactly the central
+directory. That test requires a container without data descriptors and unencrypted;
+where either is present it returns zero, so it is a test you skip rather than one
+that guesses.</p>
+<h2 id="3-is-the-failure-the-targets-and-not-mine">3. Is the failure the target's and not mine?</h2>
+<p><strong>Rule, stated first: change one variable at a time, and prefer the cheaper test on
+your own tooling.</strong> Your client, your rate limiter, your identity, and your parser
+are more likely to be the cause of a clean negative than the target is — and unlike
+the target, you can test them.</p>
+<h3 id="the-instrument-as-the-outage">The instrument as the outage</h3>
+<p><strong>Process alive is not service serving is not message executed.</strong> Three separate
+oracles, routinely collapsed into one. A blocking synchronous call whose HTTP
+request called back into the same server process deadlocked its own event loop. From
+outside, the application went silent — while a different route on another thread of
+the same PID still answered. It was read as prototype pollution, because that was
+recent and had a CWE.</p>
+<p>The isolation was one differential with a positive control: the same call reaching
+a <strong>different</strong> process answered in under a second, and the self-directed request
+failed at exactly its own inner timeout, after which the service <strong>recovered on its
+own</strong>.</p>
+<p><strong>A service that died while you were testing it has two candidate causes, and the
+cheaper test is on your own tooling.</strong> An availability finding whose evidence
+includes &quot;it stopped responding shortly after I sent X&quot; is not a finding until X has
+been replayed against a freshly created instance with a control running beside it.
+<strong>The most recent, most CWE-named action is the most attractive hypothesis</strong>,
+because proximity in time plus a matching weakness identifier is exactly what makes
+it attractive — and the state you are reasoning about is a state you have already
+perturbed.</p>
+<p>Corollaries:</p>
+<ul>
+<li><strong>Every payload sent through an injection primitive carries its own timeout.</strong>
+Not because the target is slow, but because a slow target and a target you have
+stopped are indistinguishable, and the second is indistinguishable from a finding
+you would be proud of.</li>
+<li><strong>Existence is not content.</strong> A payload whose redirect created a marker file was
+read as proof of execution while the file was <strong>zero bytes</strong> — a redirect creates
+the file before the write. Assert a byte count on the artefact, never its
+existence.</li>
+</ul>
+<h3 id="your-own-concurrency-encoder-and-identity">Your own concurrency, encoder, and identity</h3>
+<p>Three instruments that turned a working attack into a clean negative.</p>
+<ul>
+<li><strong>When your concurrency exceeds the target's, the scan measures the target's worker
+count and every negative in it is false.</strong> A port sweep driven through a
+single-worker server at high parallelism killed it mid-run; a file-read oracle
+that had been returning clean multi-state results then returned the same connection
+error for every input, <strong>including paths known to exist</strong>. This is the most
+dangerous failure in the list precisely because the earlier readings were correct,
+so there is nothing to distrust. Recovery is to re-measure serially, not to re-run
+the same load. <strong>A wall of identical answers is the signature of a broken
+instrument, not a target that refuses.</strong></li>
+<li><strong>Your own rate limiter made a working injection return a false result.</strong> It read
+as &quot;the injection is dead&quot;. A per-tool limiter is as much a part of your
+instrument as the request builder.</li>
+<li><strong>Your own encoder rewrote the payload before it left your machine.</strong> A URL
+quoter applied to an already-encoded value double-encoded it, so the &quot;encoding
+bypass&quot; test was measuring the encoder. The control and the negative differed by a
+<strong>single character</strong>, which is what made the result read as a filter blocking the
+input.</li>
+</ul>
+<p><strong>Check your own encoder once, before you attribute a failure to the target.</strong>
+Symmetrically: before believing a negative from a file endpoint, confirm your
+tooling transmitted the bytes you meant to send, and keep a known-present file as
+the positive control.</p>
+<h3 id="assert-what-the-consumer-does-not-what-the-bytes-are">Assert what the consumer does, not what the bytes are</h3>
+<p>A self-test asserted the payload was free of null bytes. <strong>It passed</strong>, and the
+payload still mis-executed — one opcode byte means a different register increment
+in 32-bit mode than the author assumed, so the shellcode called the wrong syscall.</p>
+<p><strong>Assert what the consumer does with the bytes, not what the bytes are.</strong> Decode the
+payload and assert the syscall arguments, and emulate the stack string. The same
+rule applies outside shellcode: for a token, assert <code>decode(encode(x)) == x</code>; for a
+value built in an immediate, assert a struct roundtrip.</p>
+<p><strong>A self-test that passes while the artefact is wrong is worse than no self-test</strong>,
+because it converts an unknown into a false assurance.</p>
+<h3 id="a-sanitiser-rewrites-every-language-it-did-not-validate">A sanitiser rewrites every language it did not validate</h3>
+<p>An HTML output encoder escaped the shell background operator into an entity. The
+payload returned a full success page, appended zero bytes, and still cost the full
+request time — because the exec call blocks on the pipe the backgrounded child
+holds. It reads exactly like a filter blocking the input.</p>
+<p><strong>A sanitiser changes the parse of every language it did not validate. Before
+trusting an escape, name the second grammar that reads the same bytes.</strong> An output
+encoder defends one context and is silent about a shell, a query language, a filter
+syntax, and a path. Here the encoding was not a weakness in the <em>output</em> handling;
+it was a bypass of the <em>input</em> handling, and nothing in the response said so.</p>
+<h3 id="two-blocks-are-not-one-block-and-a-status-code-is-not-an-attribution">Two blocks are not one block, and a status code is not an attribution</h3>
+<p>Two layers of the same filter returned two different denial bodies. <strong>A status code
+cannot attribute a block to a rule — the discriminator is the body.</strong> And the
+positive control for a bypass claim runs <em>before</em> any belief about the bypass: a
+filter that blocks three of three known operators is a working filter, and that is
+the state a bypass must be measured against.</p>
+<p>For the same reason, read the deployment's content-type-to-handler map rather than
+the application filter. In one engagement the application-level upload filter was
+correct and the execution came from a global type mapping outside every per-directory
+block. Three configuration fragments &quot;explained&quot; the behaviour; <strong>two were inert</strong>,
+and the one that named the exact behaviour — a root-owned per-directory file — was
+the dead one, because its enclosing directory did not permit per-directory overrides
+to speak.</p>
+<p><strong>Patching the handler ships nothing.</strong> Settle any configuration claim with a
+differential: change the control's own content, re-run the <em>same</em> request, and
+require the answer to move. Three deliberately different states, one observation.
+<strong>A control you cannot show moving is a claim.</strong> And the corollary: if the <em>remedy</em>
+would itself have to be written in the same inert file, the remedy is inert too.</p>
+<h3 id="cracking-cost-must-be-measured-not-asserted">Cracking cost must be measured, not asserted</h3>
+<p><strong>Rule: state the rate you ran at and the candidate count you covered. A crackability
+claim with no measured rate behind it is an opinion.</strong></p>
+<p>Two engagements in this corpus asserted a credential was uncrackable, and in both
+cases the assertion was the weakest link — not because the credential was crackable,
+but because nobody could say what had been covered. The cheap version: run the
+shipped wordlists at a stated rate and report the count. The strong version, when a
+key derivation function is involved, is to confirm the KDF actually executed — an
+implausibly high candidate rate means it did not, and the negative describes the
+scanner rather than the key space.</p>
+<p>And the general form for any bounded search: <strong>a search that returns the same value
+everywhere has failed, whatever that value is.</strong> Also report where in the space you
+looked. A cap applied to a sorted input cuts the interesting entries, and the
+resulting sweep and a complete sweep print identically.</p>
+<h3 id="a-document-asserting-what-it-cannot-compute-is-the-same-mistake-written-down">A document asserting what it cannot compute is the same mistake written down</h3>
+<p>A row whose cell count does not match the header's renders as a wider, wrong table:
+the class text is sliced mid-sentence and nothing errors.</p>
+<ul>
+<li><strong>A literal pipe inside a table cell must be escaped — including inside a code
+span</strong>, because a code span does not protect it in GitHub-flavoured markdown.
+Quoting a shell pipeline verbatim inside a table is the reliable way to trigger
+this. The check is one line of arithmetic, and it must run over <strong>every</strong> row, not
+the ones that look wrong.</li>
+<li><strong>A carriage return inside a table row arrives from an unescaped backslash escape
+in a non-raw string literal.</strong> The row was written with one, which split it across
+two physical lines and made the cell count read short. The orphaned continuation
+line looks like prose. Use raw string literals for anything containing a
+backslash escape you meant literally, and re-run the cell-count check after every
+edit to the table, not only on the row you touched.</li>
+<li><strong>Do not paraphrase a catalogue entry into another field.</strong> Copy it, or write your
+own words from the artefact. A paraphrase silently changed a method into a
+different class of attack, and both fields then looked reasonable in isolation —
+which is worse than either being obviously wrong.</li>
+</ul>
+<h2 id="before-you-believe-a-negative">Before you believe a negative</h2>
+<p>Run this. An item you cannot tick does not go in the negatives column; it goes in
+NOT tested, with the reason.</p>
+<p><strong>Calibration</strong></p>
+<ul>
+<li>[ ] A positive was forced through every detector in this chain, and it fired</li>
+<li>[ ] The control exercises the <strong>same code path</strong> as the target, not a neighbouring
+one that looks similar</li>
+<li>[ ] The control's output is in the <strong>target's format</strong> — prefix, encoding, shape</li>
+<li>[ ] The control came from a payload already <strong>observed to succeed</strong>, not designed
+from nothing</li>
+<li>[ ] The detector's negative branch cannot also match its positive branch</li>
+<li>[ ] No detector's output is uniform across a deliberately varied input</li>
+<li>[ ] Any destructive or inserting oracle: the control is drawn from <strong>outside</strong> the
+namespace, or the namespace was restored between runs</li>
+</ul>
+<p><strong>Scope accounting</strong></p>
+<ul>
+<li>[ ] Every negative carries a <strong>work count</strong> — rows, bytes, candidates, addresses</li>
+<li>[ ] The count is non-zero, and a zero count is recorded as <strong>untested</strong>, not as zero</li>
+<li>[ ] Counts are non-blank, and blank is distinguished from zero</li>
+<li>[ ] Every process in the pipeline carried work, counted <strong>independently per side</strong></li>
+<li>[ ] No cap, truncation, or summariser sits between the request and the reading</li>
+<li>[ ] The sweep's result is cross-checked against an artefact already fetched</li>
+<li>[ ] The transport and address family the scan covered is stated; what it could not
+see is declared as a coverage gap</li>
+<li>[ ] The process that should be serving this surface was <strong>running</strong></li>
+<li>[ ] The target did not change under you mid-run; if it did, the timing is recorded</li>
+</ul>
+<p><strong>Identity</strong></p>
+<ul>
+<li>[ ] Every check ran <strong>as the identity whose capability is being measured</strong></li>
+<li>[ ] Modes and ownership are read back as the owning identity, and &quot;writable by
+another principal&quot; is counted separately from &quot;writable&quot;</li>
+<li>[ ] A result obtained on a clone, a rebuilt instance, or an artefact is labelled as
+such and does not carry a claim about the target</li>
+</ul>
+<p><strong>Attribution</strong></p>
+<ul>
+<li>[ ] Every negative comes with a <strong>cause</strong> — not &quot;returned nothing&quot; but &quot;returned
+nothing, and the endpoint cannot distinguish empty from absent from denied&quot;</li>
+<li>[ ] Your own rate limiter, concurrency, encoder, proxy, and path-rewriting were
+excluded, one at a time</li>
+<li>[ ] The most recent action was replayed against a clean reference instance before
+a weakness was attributed</li>
+<li>[ ] Every payload through an injection primitive carried its own timeout</li>
+<li>[ ] Block attribution rests on a <strong>body differential</strong>, not a status code</li>
+<li>[ ] The bypass claim was measured against a filter proven to block known operators</li>
+<li>[ ] Every crackability claim states the <strong>rate</strong> and the count covered</li>
+<li>[ ] Bounded searches state where in the space they looked, and are not uniform</li>
+</ul>
+<p><strong>Reporting</strong></p>
+<ul>
+<li>[ ] Class labels, queue entries, hostnames, framework constants, and decompiler
+output are treated as claims and re-derived from the artefact</li>
+<li>[ ] Hit lists were <strong>read</strong>, not counted</li>
+<li>[ ] Content lengths, exit statuses, and denial codes are recorded as claims by the
+component that produced them</li>
+<li>[ ] Any table you edited passes the cell-count check, over every row</li>
+</ul>
+<h2 id="next-step">Next step</h2>
+<p><a-unlinked><code>decision-making.md</code></a> — the evidence-discipline and
+self-deception rules this section generalises, and the reporting discipline that
+carries the result into a deliverable.</p>
+<p><a-unlinked><code>agentic_pentest.md</code></a> — when the operator is an agent, and what
+that agent must attach for its return to be admissible under the rules above.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

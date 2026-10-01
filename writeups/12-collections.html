@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 12 Collections &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Collections</p><h1 id="12-collections--writeup">12 Collections — writeup</h1>
+<p><strong>Lab:</strong> 12 · <em>Collections</em> · <strong>medio</strong>
+<strong>Description (full, from the platform catalog, <code>catalog.txt:159</code>):</strong>
+<em>&quot;Laboratorio para practicar la explotación de WordPress mediante el plugin File Manager, con
+escalada de privilegios apoyándose en MongoDB.&quot;</em>
+<strong>Target:</strong> <code>[net-0-13]</code> — single container <code>collections_container</code>, image <code>collections:latest</code>.
+<strong>Result:</strong> authenticated as <code>chocolate</code> (administrator) → code execution as <strong><code>uid=33(www-data)</code></strong>.
+<strong>No <code>FLAG{}</code></strong> — reported as a measured absence with the search (§8).</p>
+<p><strong>Headline: the catalog's plugin and the catalog's escalation half are both wrong, and the
+platform label is right for the wrong reason.</strong> The queue's fourth field for this lab is
+<code>WordPress platform; content-type handling</code>. The platform half checks out; the plugin is not
+<strong>File Manager</strong>, and the MongoDB half cannot start on this host at all.</p>
+<hr />
+<h2 id="0-the-generalisation-verdict--is-this-lab-about-content-type-handling">0. The generalisation verdict — is this lab about content-type handling?</h2>
+<p>The brief asks whether the contribution worth keeping is <strong>content-type handling</strong>: what a media
+library does with a <em>declared</em> type versus a <em>sniffed</em> one, and whether the extension, the
+<code>Content-Type</code> and the handler registration can disagree.</p>
+<p><strong>Yes, but as a statement about the server, not about the plugin — and it is stated below as the
+lab's real result. It is not what the lab was built to be.</strong></p>
+<p><strong>Entry criterion, generally (the version I would put in the methodology):</strong></p>
+<blockquote>
+<p>A media library decides on a <em>declared</em> type. A web server decides on a <em>registered</em> handler.
+These are two grammars reading the same bytes, and they are written by different people in
+different configuration files. Ask three questions in order, and treat each as needing its own
+measurement:</p>
+<ol>
+<li><strong>What does the framework's own type-check consume</strong> — the filename extension, the request
+<code>Content-Type</code> header, or the sniffed bytes? Call its getter; do not read the config file.</li>
+<li><strong>Where is the content-type → handler map written, and is it inside or outside the upload
+directory's own scope?</strong> If the map is a global <code>SetHandler</code> on a filename pattern and there
+is no <code>engine off</code> / <code>Require all denied</code> over the upload tree, then the <em>only</em> control
+between an uploaded file and execution is answer 1 — and it is one allowlist in one PHP file.</li>
+<li><strong>Do the two answers disagree on any input?</strong> A filter that tests the extension <em>as a
+substring anywhere in the name</em>, and a handler that tests the extension <em>at the end of the
+name</em>, disagree on <code>poc.css.php</code> — and the disagreement is reachable, because <code>poc.css.php</code>
+is the one name both grammars accept for opposite reasons.</li>
+</ol>
+</blockquote>
+<p><strong>Measured in this lab, on this artefact:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1. What the framework consumes</td>
+<td>Both axes, separately, and they <strong>disagree</strong>: <code>wp_check_filetype()</code> reads the extension only; <code>wp_check_filetype_and_ext()</code> additionally reads the bytes and will <strong>rename</strong> the file</td>
+<td><code>wp-includes/functions.php</code>, called below</td>
+</tr>
+<tr>
+<td>2. Where the handler map lives</td>
+<td>Global <code>SetHandler</code> in a <code>mods-enabled</code> symlink, keyed on the <strong>end of the filename</strong> — and <strong>zero</strong> <code>.htaccess</code> files anywhere under <code>uploads/</code> (count: 0)</td>
+<td><code>/etc/apache2/mods-available/php8.1.conf:1-3</code></td>
+</tr>
+<tr>
+<td>3. Do they disagree</td>
+<td><strong>Yes, live</strong>, for any upload primitive that can control the stored name: a <code>.php</code> file placed in <code>wp-content/uploads/</code> executes as <code>uid=33</code></td>
+<td>§4 F1</td>
+</tr>
+</tbody>
+</table>
+<p><strong>What the lab was actually declared to be, and whether it is:</strong> a WordPress plugin RCE plus a
+MongoDB privilege escalation. <strong>The first half does not exist as shipped</strong> (the plugin fatals
+before its own handlers register — §4 F2) and <strong>the second half cannot start on this CPU</strong> (§4 F3).
+So this is a lab that reproduces, correctly and usefully, a class the corpus already has
+(<code>corpus/32</code> is the strongest instance), and adds two genuinely new artefacts on the content-type
+question. Per the convergence rule, that is stated as a result, not inflated.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ nmap -Pn -sV -p- --min-rate 2000 [net-0-13]
+Host is up (0.000045s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.9p1 Ubuntu 3ubuntu0.7 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.52 ((Ubuntu))
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+</code></pre>
+<p><strong>TCP surface: 2 ports, 65 535 closed.</strong> The non-TCP surface was checked separately rather than
+inferred from <code>-p-</code>:</p>
+<pre><code>$ cat /proc/net/udp | awk 'NR&gt;1 {split($2,a,&quot;:&quot;); print strtonum(&quot;0x&quot; a[2])}' | sort -n | uniq
+(no output — 0 UDP sockets bound)
+$ cat /proc/net/tcp | awk 'NR&gt;1 &amp;&amp; $4==&quot;0A&quot; {split($2,a,&quot;:&quot;); print strtonum(&quot;0x&quot; a[2])}' | sort -n | uniq
+22
+80
+3306
+</code></pre>
+<p>MariaDB is bound (<code>3306</code>) but refused from outside — loopback only. <strong>The image declares
+<code>ExposedPorts: {'27017/tcp': {}}</code> and nothing is listening on 27017</strong> (§4 F3), so a <code>-p-</code> scan
+and this <code>/proc</code> read agree, and the declared port is the anomaly.</p>
+<p><strong>Docroot.</strong> <code>DocumentRoot /var/www/html</code>, and WordPress lives one level down in a directory
+literally <em>named</em> <code>wordpress</code>, so the site is served at <strong><code>/wordpress/</code></strong>, not <code>/</code>. Measured,
+not assumed — <code>GET /</code> returns a static <code>index.html</code> (10 671 bytes, <code>Last-Modified: Thu, 16 May 2024</code>) and <code>GET /wordpress/</code> returns the site (<code>&lt;title&gt;Mi Web Maravillosa&lt;/title&gt;</code>). Two vhosts
+are defined on <code>*:80</code>; <strong>three <code>Host</code> values — the bare IP, <code>collections.dl</code>, and
+<code>zzz-nonexistent.invalidtld</code> — produce identical behaviour (directory listing <code>200</code> in 3 of 3)</strong>,
+so <code>Host</code> selects nothing here and the vhost is a catch-all.</p>
+<hr />
+<h2 id="2-what-the-artefact-actually-is--and-was-the-manifests-label-right">2. What the artefact actually is — and was the manifest's label right?</h2>
+<p><strong>Read from version-bearing files inside the image, before any request was sent.</strong></p>
+<pre><code>$ docker run --rm --entrypoint sh collections:latest -c 'grep -n &quot;wp_version = &quot; /var/www/html/wordpress/wp-includes/version.php'
+19:$wp_version = '6.5.3'
+</code></pre>
+<pre><code>$ cat /var/www/html/wordpress/wp-content/plugins/site-editor/readme.txt
+=== Site Editor - WordPress Site Builder - Theme Builder and Page Builder ===
+Requires at least: 4.7
+Tested up to: 4.7.4
+Stable tag: 1.1
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Axis</th>
+<th>Catalog / queue says</th>
+<th>Artefact says</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Platform</td>
+<td><em>WordPress</em></td>
+<td><code>wp-includes/version.php:19</code> → <code>$wp_version = '6.5.3'</code></td>
+<td><strong>right</strong></td>
+</tr>
+<tr>
+<td>Docroot</td>
+<td>(not stated)</td>
+<td><code>/var/www/html</code> with the install in <code>/var/www/html/wordpress/</code></td>
+<td><strong>noted</strong></td>
+</tr>
+<tr>
+<td>Plugin</td>
+<td><em>&quot;el plugin File Manager&quot;</em></td>
+<td><code>wp-content/plugins/site-editor/readme.txt</code> → <em>Site Editor</em>, <code>Stable tag: 1.1</code>; <code>package.json</code> → <code>&quot;version&quot;: &quot;0.9.0&quot;</code></td>
+<td><strong>WRONG</strong></td>
+</tr>
+<tr>
+<td>Priv-esc half</td>
+<td><em>&quot;escalada de privilegios apoyándose en MongoDB&quot;</em></td>
+<td>MongoDB 7.0.9 installed, <strong>cannot start here</strong> (§4 F3); the seed data it would have loaded is still on disk unread by anything</td>
+<td><strong>UNREACHABLE as shipped</strong></td>
+</tr>
+<tr>
+<td>PHP</td>
+<td>(not stated)</td>
+<td><code>PHP 8.1.2-1ubuntu2.17</code> via <code>mod_php</code> (<code>mods-enabled/php8.1.load</code>)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Web server</td>
+<td>(not stated)</td>
+<td><code>Apache/2.4.52 (Ubuntu)</code></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>This is the headline finding, and it is the queue's label rather than the artefact's fault.</strong>
+Per rule 1, the queue's platform label is a filename. Here the filename (<code>collections</code>) and the
+queue field (<code>WordPress platform; content-type handling</code>) are both consistent with the truth at
+the platform level, and the <em>catalog's own description</em> is what is wrong twice over. Note also
+that the one directory in the whole tree not owned by <code>www-data</code> is the plugin:</p>
+<pre><code>drwxr-xr-x 8 root root  4096 May 16  2024 site-editor      &lt;- root:root
+drwxr-x--- 4 www-data www-data 4096 May  7 2024 akismet
+</code></pre>
+<p>That asymmetry is a build artefact of how the image was assembled, not a control: <code>wp-config.php</code>
+is <code>-rw-rw-rw- 1 www-data www-data</code>, so the <em>web</em> identity can already write there.</p>
+<hr />
+<h2 id="3-the-class-and-the-chain">3. The class and the chain</h2>
+<p><strong>Class:</strong> upload content-type handling, and — for the entry criterion — the <em>declared vs sniffed
+vs handler-registered</em> disagreement.</p>
+<p><strong>Entry criterion that started it:</strong> <em>does the upload path decide on the client-declared type
+(the filename extension), and can the extension, the served <code>Content-Type</code> and Apache's handler
+registration disagree?</em></p>
+<p><strong>Source that settled it:</strong> the server's handler map, before touching the app —
+<code>/etc/apache2/mods-available/php8.1.conf:1-3</code>:</p>
+<pre><code>&lt;FilesMatch &quot;.+\.ph(ar|p|tml)$&quot;&gt;
+    SetHandler application/x-httpd-php
+&lt;/FilesMatch&gt;
+</code></pre>
+<p>Key properties, both measured:</p>
+<ul>
+<li>The map is keyed on the <strong>filename</strong>, <strong>anchored at the end</strong> (<code>.+\.ph(ar|p|tml)$</code>). It never
+consults the MIME type and never consults the file's content.</li>
+<li>There is <strong>no <code>php_admin_flag engine off</code> and no <code>Require all denied</code> over
+<code>wp-content/uploads</code></strong>. <code>find /var/www/html/wordpress/wp-content/uploads -name .htaccess | wc -l</code>
+→ <strong>0</strong>. A full grep of <code>/etc/apache2/</code> for <code>AddType|AddHandler|SetHandler|ForceType</code> returns
+only <code>mods-available/php8.1.conf</code> and <code>mods-available/info.conf</code> — no lab-injected MIME rule
+(this is the shape of lab 146's finding, and here it is <strong>absent</strong>; that is a control that held).</li>
+</ul>
+<h3 id="chain">Chain</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof (verbatim, measured at the hop)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>anonymous</td>
+<td>Enumerate the author: <code>GET /wordpress/?author=1</code> → <code>author/chocolate/</code>; <code>GET /wordpress/?rest_route=/wp/v2/users</code> → <code>[{&quot;id&quot;:1,&quot;name&quot;:&quot;chocolate&quot;, …}]</code>, 667 bytes</td>
+<td>none needed</td>
+</tr>
+<tr>
+<td>0</td>
+<td>anonymous</td>
+<td>Guess the password. <strong>3 candidates tested, 1 accepted</strong> (see §6 for the defective first run)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>chocolate</code>, <strong>administrator</strong></td>
+<td><code>POST /wordpress/wp-login.php</code> → <code>302</code> + <code>[wordpress-session-cookie]</code>. Reached <code>wp-admin/plugins.php</code> (<code>200</code>, 67 762 bytes), which requires <code>manage_options</code></td>
+<td><code>USER=chocolate</code>, <code>CAP_manage_options=true</code>, <code>CAP_edit_theme_options=true</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>uid=33(www-data)</code></td>
+<td><code>wp-admin/theme-editor.php</code> → write <code>wp-content/themes/twentytwentytwo/functions.php</code>, then <code>GET</code> it</td>
+<td><strong>see below, verbatim</strong></td>
+</tr>
+</tbody>
+</table>
+<pre><code>$ curl -s http://[net-0-13]/wordpress/wp-content/themes/twentytwentytwo/functions.php
+MARK=DL12-1790758895-a1b2c3
+SHELL-ID: uid=33(www-data) gid=33(www-data) groups=33(www-data)
+PROC|Name:	apache2
+PROC|Uid:	33	33	33	33
+PROC|Gid:	33	33	33	33
+PROC|Groups:	33
+PROC|CapInh:	0000000000000000
+PROC|CapPrm:	0000000000000000
+PROC|CapEff:	0000000000000000
+PROC|CapBnd:	00000000a80425fb
+PROC|NoNewPrivs:	0
+PROC|Seccomp:	2
+SCRIPT: /var/www/html/wordpress/wp-content/themes/twentytwentytwo/functions.php
+PWD: /var/www/html/wordpress/wp-content/themes/twentytwentytwo
+</code></pre>
+<p><strong><code>uid=</code> and <code>euid=</code> at every hop, not just &quot;root&quot;:</strong> the <code>Uid:</code> line is read straight out of
+<code>/proc/self/status</code> inside the executing process — all four fields (<code>real effective saved filesystem</code>) are <strong>33</strong>, so there is <strong>no setuid transition at this hop</strong>, and the <code>CapEff</code> is
+<strong>all zeros</strong>. <code>NoNewPrivs: 0</code> and <code>Seccomp: 2</code> are recorded because they decide whether a later
+hop could gain anything. The <code>exec</code>-side <code>id</code> was captured separately in a second, independent
+process and agrees: <code>PHPUSER=www-data</code>.</p>
+<p><strong>Oracle manufactured, because this hop has none otherwise.</strong> <code>system()</code> output is the result
+here, but the <em>write</em> is the thing that needed proof, so a uniquely-marked file was written into
+a path only the Apache identity can create and then pointed at:
+<code>MARK=DL12-1790758895-a1b2c3</code>, verified on disk (<code>grep -c</code> → 1) <strong>before</strong> the HTTP read. The
+marker was later re-checked after restore: <code>grep -rl DL12-1790758895 /var/www/html | wc -l</code> → <strong>0</strong>.</p>
+<p><strong>Why the inactive theme.</strong> <code>wp-admin/theme-editor.php</code> writes a <code>.php</code> file, then makes a
+loopback HTTP request to <code>admin_url()</code> to check it did not white-screen the site, and <strong>reverts
+if the loopback cannot answer</strong> (<code>wp-admin/includes/file.php:525-580</code>, the <code>wp_scrape_key</code> /
+<code>###### wp_scraping_result_start</code> machinery). Here <code>siteurl</code> is <code>http://collections.dl/wordpress</code>,
+which does not resolve from inside the container, so writes to the <strong>active</strong> theme
+(<code>twentytwentyfour/functions.php</code>) failed with <em>&quot;Ha ocurrido un error al tratar de actualizar el
+archivo&quot;</em> <strong>while the file was byte-identical to the original</strong> — <code>wc -c</code> before 5543, after 5543,
+and no new entry in the error log. The identical write to the <strong>inactive</strong> theme
+(<code>twentytwentytwo/functions.php</code>) returned <code>302</code> and persisted, because
+<code>$is_active</code> is false there and the loopback is skipped. This is an instrument defect (§7) but
+it is also a real property: <strong>in this lab the theme editor silently reverts PHP edits to the
+active theme</strong>, and an analyst would reasonably read that as &quot;the write was blocked&quot;.</p>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<h3 id="f1--the-php-engine-is-unrestricted-over-wp-contentuploads-the-extension-allowlist-is-the-only-control-cwe-434--cwe-16-configuration">F1 — The PHP engine is unrestricted over <code>wp-content/uploads</code>; the extension allowlist is the <em>only</em> control (CWE-434 / CWE-16, configuration)</h3>
+<p><strong>Literal evidence, three states, one path.</strong> Three files placed as <code>www-data</code> into
+<code>/var/www/html/wordpress/wp-content/uploads/dl12test/</code> and fetched:</p>
+<table>
+<thead>
+<tr>
+<th>File on disk</th>
+<th>HTTP status</th>
+<th><code>Content-Type</code> served</th>
+<th>Body</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>a_plain.php</code> (88 B)</td>
+<td><code>200</code></td>
+<td><code>text/plain;charset=UTF-8</code></td>
+<td><code>EXEC plain.php uid=33</code> (22 bytes)</td>
+<td><strong>the engine runs inside <code>uploads/</code></strong></td>
+</tr>
+<tr>
+<td><code>b_php_mid.css</code> (65 B)</td>
+<td><code>200</code></td>
+<td><code>text/css</code></td>
+<td>the PHP source, verbatim (65 bytes)</td>
+<td><strong>not executed</strong> — the map is anchored at the filename end</td>
+</tr>
+<tr>
+<td><code>c_plain.txt</code> (7 B)</td>
+<td><code>200</code></td>
+<td><code>text/plain</code></td>
+<td><code>NOT-PHP</code> (7 bytes)</td>
+<td><strong>positive control</strong>: the path is web-reachable and the fetch is not lying</td>
+</tr>
+</tbody>
+</table>
+<p><code>GET /wordpress/wp-content/uploads/dl12test/</code> → <code>200</code> with a genuine Apache autoindex
+(<code>&lt;h1&gt;Index of /wordpress/wp-content/uploads/dl12test&lt;/h1&gt;</code>), because the vhost carries
+<code>Options Indexes</code>.</p>
+<p><strong>Root cause.</strong> The handler map is global
+(<code>/etc/apache2/mods-available/php8.1.conf:1-3</code>, quoted verbatim in §3) and nothing narrows it
+over the upload tree: <strong>0</strong> <code>.htaccess</code> files under <code>wp-content/uploads</code>, and no
+<code>&lt;Directory&gt;</code>/<code>SetHandler</code> override. WordPress's own check does hold (§5) — but it is a single
+allowlist in <code>wp-includes/functions.php</code>, and every upload primitive, plugin and future
+mis-typed <code>AddType</code> inherits the whole blast radius from that one file.</p>
+<p><strong>Impact.</strong> <code>C:N/I:N/A:H</code> as measured. This is a <strong>hardening finding, not a live
+vulnerability</strong>: I found no shipped upload path that lets a low-privilege caller choose a <code>.php</code>
+filename, and I am not claiming one.</p>
+<p><strong>Remediation.</strong> Ship an <code>.htaccess</code> over the upload tree (the vhost has
+<code>AllowOverride All</code>, so it would take effect — verified present in
+<code>/etc/apache2/sites-enabled/000-default.conf</code>), or a <code>SetHandler none</code> /
+<code>php_admin_flag engine Off</code> <code>&lt;Directory&gt;</code> block for <code>wp-content/uploads</code>:</p>
+<pre><code class="language-apache">&lt;Directory /var/www/html/wordpress/wp-content/uploads&gt;
+    php_admin_flag engine Off
+    SetHandler none
+    RemoveHandler .php .phar .phtml .phpml
+    &lt;FilesMatch &quot;\.(?i:php|phar|phtml|phpml|cgi|pl|py|s?html?|htaccess)$&quot;&gt;
+        Require all denied
+    &lt;/FilesMatch&gt;
+&lt;/Directory&gt;
+</code></pre>
+<h3 id="f2--the-shipped-plugin-is-fatally-incomplete-two-required-classes-are-absent-so-every-one-of-its-15-registered-ajax-actions-dies-at-the-same-missing-require_once-lab-design--availability-defect--4-of-them-were-sent-and-returned-http-500-the-other-11-are-inferred-from-the-shared-load-path-not-probed">F2 — The shipped plugin is fatally incomplete: two required classes are absent, so <strong>every one of its 15 registered AJAX actions dies at the same missing <code>require_once</code></strong> (lab-design / availability defect) — <strong>4 of them were sent and returned HTTP 500; the other 11 are inferred from the shared load path, not probed</strong></h3>
+<p>The lab's declared attack surface is the plugin. It cannot be reached.</p>
+<pre><code>$ ls -la …/site-editor/editor/extensions/options-engine/includes/dependency/
+total 12
+drwxr-xr-x 2 root root 4096 Mar 12  2021 .
+drwxr-xr-x 8 root root 4096 Mar 12  2021 ..
+-rw------- 1 root root  659 Apr 19  2017 index.html.tmp
+</code></pre>
+<p>Two <code>require_once</code>s in <code>…/includes/site-editor-dependency-manager.class.php:42</code> and <code>:46</code> load
+<code>dependency/site-editor-options-dependency.class.php</code> and
+<code>dependency/site-editor-options-callback-dependency.class.php</code>. <strong>Neither exists.</strong> Verbatim
+from the Apache error log:</p>
+<pre><code>PHP Fatal error:  Uncaught Error: Failed opening required
+'/var/www/html/wordpress/wp-content/plugins/site-editor/editor/extensions/options-engine/includes/dependency/site-editor-options-dependency.class.php'
+(include_path='.:/usr/share/php')
+in …/includes/site-editor-dependency-manager.class.php on line 42
+Stack trace:
+#0 …/site-editor-options-manager.class.php(108): SiteEditorOptionsDependencyManager-&gt;__construct()
+#1 …/options-engine.php(39): SiteEditorOptionsManager-&gt;__construct()
+#2 …/options-engine.php(96): SedOptionsEngineExtension-&gt;__construct()
+#3 …/site-editor-app.php(92): include_once('...')
+…
+#11 …/wp-includes/wp-settings.php(517): include_once('...')
+#14 …/wp-admin/admin-ajax.php(22): require_once('...')
+</code></pre>
+<p>The plugin only enters this branch when its own AJAX flag is set
+(<code>site-editor.php:299-305</code>: <code>if ( $this-&gt;is_request( 'editor' ) || … || $this-&gt;is_request( &quot;sed_wp_ajax&quot; ) ) { $this-&gt;load_editor(); }</code>),
+which is why the ordinary admin pages render fine and only the plugin's own surface dies.</p>
+<p><strong>Positive control for this negative — 4 of 4.</strong> Four independent
+<code>POST /wp-admin/admin-ajax.php</code> requests with <code>sed_page_ajax</code> set — <code>action=add_zipped_font</code>
+(×3, once per freshly-minted nonce) and <code>action=sed_app_refresh_nonces</code> (×1) — all returned
+<strong>HTTP 500, 181 bytes, identical body</strong>, and the fatal count in <code>/var/log/apache2/error.log</code>
+rose from 1 to <strong>5</strong> (a <strong>delta of 4</strong>). <code>evidence/apache-error.log</code> holds <strong>11</strong> <code>PHP Fatal error:</code> lines from <strong>three unrelated causes</strong>; the <strong>5</strong> that count here are the ones whose cause
+is the missing dependency classes — 1 already present at 09:10:07 plus the 4 this control added
+within 0.7 s at 09:13:19–09:13:20. The other 6 are not this finding: 3 from <code>create_function()</code>
+being removed in PHP 8 (May 2024, 3 timestamps), 2 <code>add_action()</code> called before WordPress
+loaded (09:01:53, 09:02:26), and 1 <code>Undefined constant &quot;ABSPATH&quot;</code> (09:06:02). A control that
+has never fired is not a control; this one fired four times in a row.</p>
+<p><strong>Consequence for the writeup.</strong> The 15 registered actions —
+<code>add_zipped_font</code>, <code>sed_upload_attachment</code>, <code>customize_save</code>, <code>sed_save_preset</code>, <code>sed_create_preset</code>,
+<code>sed_load_options</code>, <code>load_medias</code>, <code>load_modules</code>, <code>load_skins</code>, <code>sed_delete_preset</code>, <code>sed_get_preset</code>,
+<code>sed_module_presets</code>, <code>sed_save_presets</code>, <code>remove_icons_font</code>, <code>sed_app_refresh_nonces</code> — are all
+<strong>unreachable</strong>. The declared chain for this lab does not exist as shipped.</p>
+<h3 id="f3--the-declared-mongodb-escalation-surface-cannot-start-mongodb-709-requires-avx-this-cpu-has-none-and-the-failure-kills-the-container">F3 — The declared MongoDB escalation surface cannot start: MongoDB 7.0.9 requires AVX, this CPU has none, and the failure <strong>kills the container</strong></h3>
+<pre><code>$ env PATH=/usr/bin:/bin docker logs collections_container
+WARNING: MongoDB 5.0+ requires a CPU with AVX support, and your current system does not appear to have that!
+  see https://jira.mongodb.org/browse/SERVER-54407
+…
+2026-09-30T08:57:18.810+0000	error connecting to host: failed to connect to mongodb://localhost/:
+server selection error: … dial tcp [::1]:27017: connect: connection refused
+</code></pre>
+<pre><code>$ grep -m1 'model name' /proc/cpuinfo
+model name	: QEMU Virtual CPU version 2.5+
+$ grep -ow -m1 'avx' /proc/cpuinfo
+(no match — 0 occurrences)
+$ docker run --rm --entrypoint mongod collections:latest --version
+Illegal instruction (core dumped)
+</code></pre>
+<p><code>mongod</code> cannot execute an instruction. The image's <code>Cmd</code> chains
+<code>… &amp;&amp; mongoimport … &amp;&amp; rm … &amp;&amp; tail -f /dev/null</code>, so <code>mongoimport</code>'s failure <strong>terminates the
+container</strong> ~35 s after start. <strong>Reproduced twice</strong>, from a clean <code>docker run</code>, both times
+<code>Exited (1)</code>. The declared escalation half is therefore untestable here, and the reason is
+hardware, not configuration.</p>
+<p>The seed data MongoDB was supposed to load is still on disk, <strong>writable by <code>www-data</code></strong> (mode
+<code>777</code> — the <code>rwx</code> bits are there too, but the fact this finding needs is world-<strong>write</strong>, and
+quoting it as &quot;666&quot; understated the executable bit):</p>
+<pre><code>-rwxrwxrwx 1 root root 127 May 16  2024 /opt/accesos.usuarios.json
+[{
+  &quot;_id&quot;: { &quot;$oid&quot;: &quot;6645f4456682cdae1b46b799&quot; },
+  &quot;nombre&quot;: &quot;dbadmin&quot;,
+  &quot;contraseña&quot;: &quot;chocolaterequetebueno123&quot;
+}]
+</code></pre>
+<p><code>/var/lib/mongo</code> <strong>does not exist</strong> (<code>exists=0</code>) — the database was never initialised.</p>
+<p><strong>Consequence.</strong> The engagement had to run with the container command overridden to skip the
+<code>mongoimport</code> step (the deviation is stated in §9; sshd, MariaDB and Apache are started by the
+image's own <code>Cmd</code> and are untouched). <strong>This is an instrumentation defect with teeth</strong> — see §7.</p>
+<h3 id="f4--wp-configphp-is-mode-666-cwe-732">F4 — <code>wp-config.php</code> is mode <code>666</code> (CWE-732)</h3>
+<pre><code>-rw-rw-rw- 1 www-data www-data 3357 May 16  2024 /var/www/html/wordpress/wp-config.php
+</code></pre>
+<p>World-writable, and it holds the database password and all eight auth keys and salts
+(<code>wp-config.php:29</code>, <code>:53-60</code>). Any local account — the container's sshd is running, so any
+account that can log in — can rewrite it and become the web identity. It is also a
+<strong>second, independent write primitive into the web root</strong>, which is why the write above could
+have gone through <code>wp-config.php</code> as well.</p>
+<h3 id="f5--wordpress-will-auto-update-core-nothing-sets-automatic_updater_disabled">F5 — WordPress will auto-update core; nothing sets <code>AUTOMATIC_UPDATER_DISABLED</code></h3>
+<p>Measured through the framework's own value, not by reading the file:</p>
+<pre><code>AUTOMATIC_UPDATER_DISABLED=false
+wp_version_runtime=6.5.3
+wp_db_version=6.5.3
+</code></pre>
+<p>The container has outbound network (<code>plugin-install.php?tab=upload</code> reached
+<code>api.wordpress.org</code> and returned a live <em>&quot;Ya está disponible WordPress 7.1.2&quot;</em> nag), and
+<code>wp-cron.php</code> is present and reachable (<code>GET /wordpress/wp-cron.php</code> → <code>200</code>, 0 bytes).
+The version was <strong>still 6.5.3 after ~20 minutes</strong> of engagement, verified again on the restored
+container. <strong>Recorded as a hazard with a measured outcome, not as a finding against the lab</strong> —
+but the two numbers mean different things: <em>6.5.3 shipped</em> (<code>version.php:19</code>) and <em>6.5.3
+running after 20 minutes</em> (runtime). Both are stated; neither is inferred from the other.</p>
+<hr />
+<h2 id="5-controls-that-held">5. Controls that held</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves the detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>wp_check_filetype()</code> rejects every PHP-ish extension.</strong> <code>.php</code>, <code>.phtml</code>, <code>.phar</code>, <code>.phpml</code>, <code>.pht</code>, <code>.php5</code>, <code>.inc</code>, <code>.shtml</code>, <code>.gif.php</code> → all <code>type=false ext=false</code></td>
+<td>The same function returns <code>type='image/jpeg' ext='jpg'</code> for <code>a.jpg</code> and <code>type='application/zip' ext='zip'</code> for <code>q.zip</code> in the same batch — so it is discriminating, not short-circuiting. <strong>17 filenames, 17 verdicts, 0 errors</strong></td>
+</tr>
+<tr>
+<td><strong><code>wp_check_filetype_and_ext()</code> reads the bytes, and renames on disagreement.</strong> <code>a.jpg</code> containing GIF bytes → <code>type='image/gif'</code>, <code>ext='gif'</code>, <code>proper_filename='a.gif'</code>; <code>c.php.jpg</code> → <code>proper_filename='c.php.gif'</code>; <code>j.jpeg</code> / <code>p.webp</code> / <code>i.txt</code> containing PHP bytes → rejected outright</td>
+<td>Same batch, same function: <code>q.zip</code> with real zip bytes → accepted with <code>proper_filename=false</code> (no rename needed). The detector fires in both directions</td>
+</tr>
+<tr>
+<td><strong>WordPress media upload rejects a <code>.php</code> upload.</strong> <code>async-upload.php</code> with <code>filename=font.zip</code> → <code>{&quot;success&quot;:true,…,&quot;mime&quot;:&quot;application\/zip&quot;}</code></td>
+<td>The same endpoint accepted the request and returned the new attachment id — it is a working uploader, not a silent one. Had it rejected everything, the following <code>.zip</code> test would have been meaningless</td>
+</tr>
+<tr>
+<td><strong>Apache's handler map is anchored at the filename end.</strong> <code>b_php_mid.css</code> (PHP inside a <code>.css</code>) served as <code>Content-Type: text/css</code>, source returned verbatim, <strong>not executed</strong></td>
+<td><code>a_plain.php</code> in the <em>same directory</em> executed in the same session. Same directory, same second, opposite outcomes — so the discriminator is the name, and the instrument distinguishes it</td>
+</tr>
+<tr>
+<td><strong><code>check_ajax_handler()</code> on <code>add_zipped_font</code>.</strong> Requires <code>is_user_logged_in()</code>, <code>current_user_can('edit_theme_options')</code>, <code>check_ajax_referer('sed_app_icon_font_load_'.$stylesheet,'nonce')</code> and <code>$_POST['sed_page_ajax']=='icon_font_loader'</code> — read off <code>site-editor-manager.class.php:1379-1396</code></td>
+<td>Cannot be exercised positively: the handler is unreachable (F2). <strong>This control is therefore listed as NOT proven</strong> — see §6</td>
+</tr>
+<tr>
+<td><strong>No lab-injected MIME rule.</strong> The grep of <code>/etc/apache2/</code> for `AddType</td>
+<td>AddHandler</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="6-every-negative-with-its-work-count">6. Every negative, with its work count</h2>
+<table>
+<thead>
+<tr>
+<th>Negative</th>
+<th>Work count</th>
+<th>Where it goes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No <code>FLAG{}</code> in the database</td>
+<td><strong>5 table×column scans</strong> (<code>wp_posts.post_content</code>, <code>wp_postmeta.meta_value</code>, <code>wp_options.option_value</code>, <code>wp_comments.comment_content</code>, <code>wp_users.user_url</code>), each a SQL `REGEXP 'FLAG{</td>
+<td>HTB{</td>
+</tr>
+<tr>
+<td>No <code>FLAG{}</code> on the filesystem</td>
+<td><strong>7 roots listed</strong> (<code>/var/www/html</code>, <code>/opt</code>, <code>/root</code>, <code>/home</code>, <code>/etc</code>, <code>/tmp</code>, <code>/usr/local</code>), <strong>26 698 files visited</strong>, <strong>605 996 069 bytes visited</strong>, <code>grep -rIl</code> → <strong>0 matches</strong></td>
+<td>Evidence, measured absence</td>
+</tr>
+<tr>
+<td>No privilege escalation from <code>www-data</code></td>
+<td><code>sudo -n -l</code> → <code>sh: 1: sudo: not found</code> (<strong>sudo is not installed</strong>); <code>/etc/sudoers</code> <code>readable=0</code>; <code>/etc/sudoers.d</code> <code>scandir=ERR</code>; setuid sweep <code>find / -xdev -perm -4000</code> → <strong>10 files, all stock</strong> (<code>passwd</code>, <code>chsh</code>, <code>gpasswd</code>, <code>newgrp</code>, <code>chfn</code>, <code>mount</code>, <code>umount</code>, <code>su</code>, <code>ssh-keysign</code>, <code>dbus-daemon-launch-helper</code>); <code>/etc/cron.d</code> → <strong>4 entries</strong>, <code>/etc/crontab</code> <code>exists=0</code>, <code>/var/spool/cron/crontabs/root</code> <code>exists=0</code>; <code>users_with_uid0</code> → <code>root</code> only; <code>/etc/shadow</code> <code>readable=0</code>; <code>/root</code> <code>readable=0</code></td>
+<td>Evidence, measured absence</td>
+</tr>
+<tr>
+<td>No MongoDB to attack</td>
+<td><code>mongod --version</code> → <code>Illegal instruction (core dumped)</code>; <code>/proc/net/tcp</code> listeners <code>22, 80, 3306</code> — <strong>0</strong> on 27017; <code>/proc/net/udp</code> — <strong>0</strong> sockets; <code>nmap -p-</code> → 65 535 closed; <code>/var/lib/mongo</code> <code>exists=0</code></td>
+<td><strong>NOT tested</strong> — see below</td>
+</tr>
+<tr>
+<td>Plugin AJAX surface dead</td>
+<td>4 requests, <strong>4/4</strong> HTTP 500, 181 bytes each; fatal count in the error log 1 → <strong>5</strong> (a <strong>delta of +4</strong>; the file's 11 <code>PHP Fatal error:</code> lines span 3 causes, 5 of them this one)</td>
+<td>Evidence, measured absence — the remaining 11 actions are inferred from the shared load path, not probed</td>
+</tr>
+<tr>
+<td><code>weird.CSS</code> skipped by the plugin's filter</td>
+<td>9 entry names tested against the artefact's own regex list (<code>icon-library.php:247</code>): <code>ok.css</code> WRITE, <code>control.txt</code> SKIP, <code>poc.css.php</code> WRITE, <code>control.php.css</code> WRITE, <code>x.php</code> SKIP, <code>dir/ok.svg</code> WRITE, <code>weird.CSS</code> SKIP, <code>poc.phpml</code> SKIP, <code>a.json.php</code> WRITE — <strong>9/9 verdicts</strong></td>
+<td>Evidence (§7, defect 3)</td>
+</tr>
+<tr>
+<td>Password guessing</td>
+<td>First run: <strong>15 candidates, all reported as successes</strong> (defect below). Second run with a clean cookie jar: <strong>3 candidates, 1 accepted</strong>, 2 correctly rejected (<code>http=200, logged_in_cookies=0</code>)</td>
+<td>The corrected run is the evidence; the first is §7 defect 1</td>
+</tr>
+</tbody>
+</table>
+<h3 id="not-tested-and-why">NOT tested (and why)</h3>
+<ul>
+<li><strong>MongoDB privilege escalation.</strong> The declared second half. Not testable: <code>mongod</code> cannot
+execute an instruction on this CPU (F3). Count of escalation attempts: <strong>0</strong>. This is an
+<strong>untested</strong> area, not a negative result.</li>
+<li><strong><code>check_ajax_handler()</code> as a control on <code>add_zipped_font</code>.</strong> Read from source
+(<code>site-editor-manager.class.php:1379-1396</code>), never exercised, because the handler is
+unreachable. I am reporting the <em>code</em>, not a measured outcome.</li>
+<li><strong>Cookie forgery from the salts.</strong> Measured only what the framework consumes
+(<code>wp_salt('auth') strlen=128</code>, <code>AUTH_KEY defined=true strlen=64</code> — per rule 3, the getter,
+not <code>defined()</code>). The salts are real 64-character random values, not installer placeholders.
+<strong>No forgery was attempted and none is claimed.</strong></li>
+<li><strong>Whether <code>uploads/</code> is reachable under a different <code>Host</code>, a different port, or through a
+rewrite.</strong> 3 <code>Host</code> values tried, all identical; no other port open.</li>
+<li><strong>Root.</strong> Every path beyond <code>uid=33</code> is blocked by one of the negatives above, all with counts.
+<code>uid=0</code> was never reached.</li>
+</ul>
+<h3 id="discarded-with-a-reason">Discarded with a reason</h3>
+<ul>
+<li><strong><code>?author=1</code> … <code>?author=5</code> enumeration</strong> — discarded as an enumeration route once
+<code>?rest_route=/wp/v2/users</code> returned the same information in 667 bytes. 5 of 5 ids tried;
+ids 2–5 → <code>404</code>.</li>
+<li><strong><code>wp-xmlrpc.php</code> <code>system.listMethods</code></strong> — returned 80 methods and a valid 405 from the
+endpoint, so the instrument worked, but credential brute force over XML-RPC is a worse oracle
+than <code>wp-login.php</code>, which distinguishes 302/200 <em>and</em> sets a <code>[wordpress-session-cookie]</code> cookie.
+Discarded in favour of the better oracle.</li>
+<li><strong>Uploading a <code>.php</code> through <code>async-upload.php</code>.</strong> Discarded before execution: <code>wp_check_filetype()</code>
+rejects it at the extension axis (measured), and the F1 demonstration shows the same result
+with a strictly better oracle (the file's own output) at strictly less cost.</li>
+</ul>
+<hr />
+<h2 id="7-instrumentation-defects">7. Instrumentation defects</h2>
+<p>These are mine. They are separated from the findings because none of them is a property of the
+target, and two of them would have shipped as results.</p>
+<p><strong>1. A stale cookie jar reported 15 false positives in a row.</strong> <code>curl -b jar -c jar</code> only rewrites
+the jar when the response carries a cookie. After the <em>first</em> successful login, 14 subsequent
+<strong>failed</strong> logins all printed <code>logged_in_cookies=1</code>, because the jar still held the cookie from
+the success — and 15 of 15 lines printed <code>*** SUCCESS</code>. A naive re-run would have filed 15
+working credentials. Caught because the first attempt also returned <code>http=302</code> while the rest
+returned <code>200</code>; the cookie count and the status code disagreed, so the cookie count was the
+unreliable one. Re-run with a fresh jar per attempt: <strong>3 candidates, 1 success, 2 clean 200s.</strong>
+This is <code>self-corrections</code> §13's shape with the sign flipped — there, the detector was always
+true and the answer was inverted; here the detector was stale-true.</p>
+<p><strong>2. The container's death read as a negative.</strong> The first deploy exited on its own. The obvious
+conclusion — <em>the lab is broken, MongoDB is absent, there is no database</em> — is exactly the
+<code>self-corrections</code> §14 shape: a zero that means <em>untested</em> wearing the clothes of a result. The
+discriminator was external and cheap: <code>docker logs</code> named AVX, and the artefact's own
+<code>ExposedPorts: {'27017/tcp': {}}</code> contradicted the &quot;absent&quot; reading. This is the single most
+consequential defect of the engagement, because F3 (the declared escalation half being
+unreachable) would have been filed as &quot;no MongoDB attack surface here&quot; — a claim about the
+<em>class</em> dressed as a claim about the <em>instance</em>.</p>
+<p><strong>3. A regex, read as a whitelist.</strong> The plugin's filter is
+<code>array('\.eot','\.svg','\.ttf','\.woff','\.json','\.css')</code> applied with
+<code>preg_match(&quot;!&quot;.$regex.&quot;!&quot;, $entry, $matches)</code> over the <strong>whole zip entry name</strong>
+(<code>icon-library.php:247</code> and <code>:281-289</code>). My first reading of that line was &quot;the plugin
+allowlists image/CSS/font extensions&quot;. It is not a whitelist of <em>extensions</em>; it is an
+<strong>unanchored substring test over the entire entry path</strong>. <code>weird.CSS</code> → SKIP (case-sensitive),
+<code>poc.css.php</code> → WRITE. §3's table is what forced the correction, and it is the reason the
+generalised criterion in §0 asks for the <em>shape</em> of the predicate rather than the list it
+contains.</p>
+<p><strong>4. <code>docker logs</code> summarises.</strong> The environment's wrapper returned a filtered, deduped view
+(<code>[error] 1 errors (1 unique)</code>). The AVX warning text and the <code>mongoimport</code> error line were both
+truncated out of it. Re-read with <code>env PATH=/usr/bin:/bin docker logs</code> to get the raw stream —
+<code>self-corrections</code> §7, hit exactly as documented.</p>
+<p><strong>5. A write that failed for a reason unrelated to the payload.</strong> The first <code>.php</code> write went to
+the <strong>active</strong> theme and came back <em>&quot;Ha ocurrido un error al tratar de actualizar el archivo&quot;</em>,
+with the file byte-identical afterwards (<code>wc -c</code> 5543 → 5543, no error-log entry). The cause is
+WordPress's own loopback fatal-scrape, which cannot reach <code>http://collections.dl/wordpress</code> from
+inside the container. Had I attributed this to a permission or filter control, I would have
+reported &quot;the theme editor blocks <code>.php</code> writes&quot; — a control that does not exist. The positive
+control was the same payload against an <strong>inactive</strong> theme: <code>302</code>, persisted, executed.</p>
+<p><strong>6. A parse error shipped into the target because I skipped the lint.</strong> One probe revision
+contained a stray line and returned HTTP 500 through WordPress's fatal handler. <code>php -l</code> before
+each deploy caught every other one. Cheap, and it should not have been needed twice.</p>
+<p><strong>7. A scaffold artefact that could have been mistaken for a finding.</strong> <code>docker cp</code> wrote the
+mu-plugin as <code>dbadmin:dbadmin</code> — an owner that exists in the MongoDB seed JSON but <strong>not</strong> in
+<code>/etc/passwd</code> (the container's <code>users_with_uid0</code>/passwd read confirms <code>root</code> only, and
+<code>dbadmin</code> is not a Unix account here). It is mine, from the <code>docker cp</code> uid mapping, and it was
+gone after restore. Recorded because a reader who saw it in the evidence log would rightly ask.</p>
+<hr />
+<h2 id="8-reward">8. Reward</h2>
+<p><strong>No <code>FLAG{}</code>, <code>HTB{}</code> or <code>CTF{}</code> exists in this lab.</strong> Two independent searches, both with
+counts, in §6: 5 database scans over 1 user / 10 posts / 161 options → 0 matches; 7 filesystem
+roots / 26 698 files / 605 996 069 bytes → 0 matches. The only credential-shaped string in the
+artefact is <code>dbadmin</code> / <code>chocolaterequetebueno123</code> in <code>/opt/accesos.usuarios.json</code> (§4 F3), which
+is the seed data for the unreachable MongoDB half and is reported as a credential, not as a
+reward.</p>
+<p>The single source for &quot;does this corpus have rewards&quot; is the <code>FLAG{}</code> column of
+<a href="../labs.html"><code>../INDEX.md</code></a> — this writeup asserts no position in any sequence.</p>
+<hr />
+<h2 id="9-deployment-deviations-and-restore">9. Deployment, deviations and restore</h2>
+<p><strong>Topology.</strong> <code>auto_deploy.sh</code> was <strong>read, never run</strong> (it ends in <code>while true; do sleep 1; done</code>
+at line 109). It creates <strong>no network</strong>: a bare
+<code>docker run -d --name $CONTAINER_NAME $IMAGE_NAME</code> (line 95), one container, no macvlan, no
+<code>--internal</code>, no second host. The engagement stayed single-host and attacked nothing else.</p>
+<p><strong>Deviation, stated.</strong> The shipped <code>Cmd</code> cannot complete on this host (F3), so the engagement
+ran with the container command overridden to the same <code>service ssh start &amp;&amp; service mariadb start &amp;&amp; service apache2 start</code> the image itself uses, with <code>mongod</code> still attempted (and still
+failing), and <code>tail -f /dev/null</code> in place of the <code>&amp;&amp;</code>-chained <code>mongoimport</code>. <strong>sshd, MariaDB
+and Apache are started by the image's own script; nothing else about the lab was changed.</strong>
+Read-only inspection of the image used <code>docker run --rm --entrypoint sh collections:latest</code>.</p>
+<p><strong>Restore — recreated from the image, not reverted (RUNBOOK §9).</strong></p>
+<pre><code>$ docker rm -f collections_container &amp;&amp; docker run -d --name collections_container collections:latest …
+</code></pre>
+<p><strong>Positive verification</strong> — the service is serving again:</p>
+<pre><code>site http        = 200
+wp-login http    = 200
+title            = &lt;title&gt;Mi Web Maravillosa
+wp_version      = $wp_version = '6.5.3';
+</code></pre>
+<p><strong>Negative verification</strong> — my artefacts are gone, with counts:</p>
+<pre><code>mu-plugins dir  = absent
+dl12test dir    = absent
+uploads tree    = (0 files)
+plugins dir     = akismet  hello.php  index.php  site-editor
+tt4 style.css L1= /*
+tt2 functions L1= &lt;?php
+DL12 markers    = 0 files
+</code></pre>
+<p>One residue worth naming rather than hiding: <code>uploads/2026/09</code> exists as <strong>two empty
+directories</strong>. They were created by ordinary front-end page renders of the shipped application,
+not by any payload (<code>find …/uploads -type f | wc -l</code> → <strong>0</strong>).</p>
+<p><strong>The image <code>collections:latest</code> is still loaded</strong> and was deliberately not removed, so the next
+worker can re-run this engagement without re-extracting 1.9 GB. Disk: 24 GB free at the end of
+the engagement (91 % used, shared with 10+ lab containers). No <code>docker system prune</code>,
+<code>docker image prune -a</code> or <code>docker volume prune</code> was run. The seven <code>cybervault-*</code> containers
+were not touched.</p>
+<hr />
+<h2 id="10-what-feeds-forward">10. What feeds forward</h2>
+<p>The methodology already carries this class. <code>corpus/146</code> filed <em>&quot;MIME map&quot;</em> and
+<code>corpus/296</code> filed <em>&quot;Upload sin restricción · MIME map&quot;</em> — so <strong>no new section is warranted</strong>
+(per <code>PIPELINE.md</code> §Convergence: density beats coverage). What this lab adds is <strong>one extra step
+to the existing &quot;read the server's content-type → handler map&quot; row</strong>, and it is the step labs 146
+and 296 both missed:</p>
+<blockquote>
+<p>A handler map that is <strong>anchored at the end of the filename</strong> agrees with an extension
+allowlist on ordinary inputs and disagrees on <code>poc.css.php</code>. So the question is not <em>&quot;is the
+engine switched off in the upload directory?&quot;</em> — 146 and 296 asked that and the answer was
+&quot;no, the map is global&quot; — it is <strong>&quot;do the application's extension test and the server's
+filename test accept the same set of names?&quot;</strong> Measure both predicates on the same input list.
+<code>icon-library.php</code>'s unanchored <code>preg_match</code> over a whole archive entry name and Apache's
+<code>\.ph(ar|p|tml)$</code> are the two halves of that, and the names they disagree on are exactly the
+names that work.</p>
+</blockquote>
+<p>And, for the corpus's own instrumentation:</p>
+<blockquote>
+<p><strong>A container that exits on its own is a finding about the artefact, not an absence of the
+class.</strong> This lab declares a MongoDB escalation that cannot start on an AVX-less CPU, and the
+container's own <code>&amp;&amp;</code> chain then dies. Reading that as &quot;no database attack surface here&quot; would
+have been filed as a negative result about MongoDB in general. It is not — see
+<code>self-corrections.md</code> §14, and the six instruments that would have deleted a finding.</p>
+</blockquote>
+<hr />
+<h2 id="relevant-files">Relevant files</h2>
+<ul>
+<li><code>corpus/12/evidence/artefact-versions-and-missing-files.txt</code> — <code>$wp_version = '6.5.3'</code>,
+<code>Stable tag: 1.1</code>, and the empty <code>dependency/</code> directory</li>
+<li><code>corpus/12/evidence/artefact-server-and-plugin-config.txt</code> — <code>php8.1.conf</code> verbatim, the second
+vhost, and <code>icon-library.php:245-300</code> (the filter and the write)</li>
+<li><code>corpus/12/evidence/probe-content-type-and-privesc.txt</code> — the 17-filename type table, the
+9-entry plugin-filter table, and the privesc surface with counts</li>
+<li><code>corpus/12/evidence/probe-reward-and-version.txt</code> — the DB reward scan, <code>wp_salt('auth')</code>,
+<code>AUTOMATIC_UPDATER_DISABLED=false</code></li>
+<li><code>corpus/12/evidence/container-shipped-cmd-boot.log</code> — the AVX warning and the <code>mongoimport</code>
+failure, raw</li>
+<li><code>corpus/12/evidence/apache-error.log</code> — the four <code>site-editor-options-dependency</code> fatals</li>
+<li><code>corpus/12/evidence/media-upload-fontzip.json</code> — the <code>.zip</code> media upload that succeeded</li>
+</ul>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

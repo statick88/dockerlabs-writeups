@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>How each lab was resolved &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="index.html">DockerLabs corpus</a><nav><a href="index.html">Root cause</a><a href="evidence.html">Evidence</a><a href="corrections.html">Corrections</a><a href="hazards.html">Hazards</a><a href="labs.html">Labs</a><a href="resolved.html" class="on">Resolutions</a></nav></header>
+<main>
+<h1 id="how-each-lab-was-resolved">How each lab was resolved</h1>
+<p>The resolution layer: for every engagement, <strong>the class, the discriminator that
+settled it, and where the evidence is</strong>. Derived from the writeups, not from
+anyone's memory — which is why the columns can be checked.</p>
+<p><strong>Read this first if you read nothing else.</strong> Thirty-seven of the sixty-two engagements carry
+no reward value, and that is a <em>measurement</em>, not an oversight — the criterion is stated
+below, because an unstated criterion is how a count rots. Four produced a
+class the queue had mislabelled. Six carry a defect in the lab's own design. One
+cannot be obtained at all. A report that says &quot;52 of 52 solved&quot; is wrong in five
+different ways, and this file is where those five are named.</p>
+<hr />
+<h2 id="the-shape-of-a-resolution">The shape of a resolution</h2>
+<p>Every chain in this corpus ends the same way, and that is the transferable part:</p>
+<pre><code>get the archive          verify before deploying, not after
+read the source          the sink, the version, and the middleware order are all here
+identify the class       from the entry criterion, not from the lab's name
+prove the positive       a control that has never fired is not a control
+chained identity         uid/euid at every hop, never &quot;root&quot;
+prove the negative       with a work count, or it is untested
+restore and re-verify    from the image, checked positively
+feed forward             extend the class table, or say the class already exists
+</code></pre>
+<p>Two of those steps are where the corpus went wrong, repeatedly, and they are the
+reason this file exists: <strong>the positive control</strong> and <strong>the negative's work count</strong>.</p>
+<hr />
+<h2 id="resolution-map">Resolution map</h2>
+<p><code>Discriminator</code> is the one measurement that settled the class. <code>Reward</code> is what the
+platform actually served, not what the writeup hoped for.</p>
+<p><strong>The <code>Class</code> column below spans three platforms, and its entries are not comparable
+until you know which one a row came from.</strong> 32 is Joomla 4.0.3 and 82 is Drupal 8.5.0;
+neither is WordPress, and the <em>unit of trust</em> differs in all three, so a rule that holds
+for one does not transfer to the next without being re-derived:</p>
+<table>
+<thead>
+<tr>
+<th>Platform</th>
+<th>Row</th>
+<th>What the unit of trust is</th>
+<th>So a write primitive is…</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WordPress</td>
+<td>61</td>
+<td><strong>an activation list</strong> — <code>wp_options.active_plugins</code> names files core <code>include</code>s; no manifest, no per-item permission, no sandbox</td>
+<td>code execution, with no further step</td>
+</tr>
+<tr>
+<td>Drupal</td>
+<td>82</td>
+<td><strong>the compiled service container</strong>, cached in a <strong>database row</strong> (<code>cache_container</code>: 2 rows, 643 537 B; state in <code>config.core.extension</code>, 42 names)</td>
+<td>a <code>services.yml</code> or a config object. And measured: the <code>services.yml</code> <strong>does not exist</strong>, so the guard is a directory mode — <code>sites/default</code> is <code>555</code> — which one <code>chmod</code> reopens with nothing in the application objecting</td>
+</tr>
+<tr>
+<td>Joomla</td>
+<td>32</td>
+<td><strong>neither</strong> — no <code>wp-content</code>, no <code>wp-includes</code>, no plugin: the tree is core</td>
+<td>8 118 writable files, <strong>0</strong> of them owned by another principal; 16 stock setuid; <code>getcap</code> empty</td>
+</tr>
+</tbody>
+</table>
+<p>The practical consequence: <em>&quot;activation is not a boundary&quot;</em> is a WordPress sentence. In
+Drupal there is no activation to abuse and the file that would be its analogue is absent;
+in Joomla the extension tree is not a trust surface at all, so the same write lands
+nowhere. <strong>A class claim here holds for the platform it was measured on, and the row
+names which.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Lab</th>
+<th>Class</th>
+<th>Discriminator</th>
+<th>Reward</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="writeups/6-grandma.html">6</a> Grandma</td>
+<td>LFI → log poisoning → tunnelling</td>
+<td>aiohttp advisory, quoted from upstream; CVSS recomputes to 5.9</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/12-collections.html">12</a> Collections</td>
+<td>content-type: declared vs registered</td>
+<td>the app's extension test and the server's filename test <strong>accept different name sets</strong></td>
+<td>absent; MongoDB leg unreachable (no AVX)</td>
+</tr>
+<tr>
+<td><a href="writeups/23-reverse.html">23</a> reverse</td>
+<td>log poisoning via LFI</td>
+<td>the sink, read in the artefact</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/26-404-not-found.html">26</a> 404-not-found</td>
+<td>mislabelled LDAP injection</td>
+<td>the process cannot speak LDAP at all</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/32-vulnerame.html">32</a> Vulnerame</td>
+<td><strong>Joomla 4.0.3, not WordPress</strong></td>
+<td><code>Version.php</code> reads 4/0/3; docroot merely <em>named</em> <code>wordpress</code></td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/33-chmod-4755.html">33</a> chmod-4755</td>
+<td>rbash escape + SUID</td>
+<td>planted positive control re-run over 15 roots</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/36-verdejo.html">36</a> Verdejo</td>
+<td>hash cracking</td>
+<td>the shipped wordlists, run to a stated rate</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/61-badplugin.html">61</a> BadPlugin</td>
+<td>plugin trust: activated code</td>
+<td>46 REST routes, all <code>manage_options</code>, <strong>zero</strong> <code>__return_true</code></td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/62-raas.html">62</a> Raas</td>
+<td>reversing a ransomware binary</td>
+<td>round-trip oracle on its own <code>system()</code></td>
+<td>functional reward, no <code>FLAG{}</code></td>
+</tr>
+<tr>
+<td><a href="writeups/65-seeker.html">65</a> Seeker</td>
+<td>subdomain fuzzing over virtual hosting</td>
+<td>a name that <strong>cannot exist</strong> shares the baseline hash</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/82-ejotapete.html">82</a> Ejotapete</td>
+<td><strong>Drupal 8.5.0</strong>, no WordPress</td>
+<td>el fix son 99 líneas <strong>una capa por encima</strong> de todo formulario: <code>diff -u</code> de <code>FormBuilder.php</code> 8.5.0→8.5.1 <strong>no produce salida</strong>, y <code>find -name RequestSanitizer.php</code> → <strong>0</strong></td>
+<td>secreto funcional, no <code>FLAG{}</code> (0 de 23 898 ficheros; el único <code>flag{</code> es una clase jQuery UI)</td>
+</tr>
+<tr>
+<td><a href="writeups/83-grooti.html">83</a> Grooti</td>
+<td>enumeración; escalada = un bit de modo</td>
+<td><code>root:grooti</code> modo <strong>764</strong>: el grupo tiene <code>w</code> y <code>grooti</code> es su grupo primario — y el crontab de <code>grooti</code> <strong>no puede dispararse nunca</strong>, <code>/opt/cleanup.sh</code> es 754 y da <strong>rc=126</strong> leído como <code>grooti</code></td>
+<td>arte braille en <code>/root/grooti.txt</code> a <code>euid=0</code>; no <code>FLAG{}</code></td>
+</tr>
+<tr>
+<td><a href="writeups/84-waffy.html">84</a> Waffy</td>
+<td>ModSecurity + OWASP CRS</td>
+<td>the CRS scores <strong>variables</strong>; the sink composes them</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/85-aidor.html">85</a> Aidor</td>
+<td>IDOR ≠ unauthenticated</td>
+<td>three byte-distinguishable cases in one handler</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/87-walkingcms.html">87</a> WalkingCMS</td>
+<td>enumeration, done properly</td>
+<td><code>COUNT(*)=1</code> makes 199 negatives evidence</td>
+<td>absent, searched as euid=0</td>
+</tr>
+<tr>
+<td><a href="writeups/90-norc.html">90</a> Norc</td>
+<td>real CVE in a WordPress plugin</td>
+<td>advisory read from primary sources, not recalled</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/93-pinguinazo.html">93</a> Pinguinazo</td>
+<td>a sudo grant naming an interpreter</td>
+<td><code>{{7*7}}</code> positive control <strong>first</strong></td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/98-redirection.html">98</a> Redirection</td>
+<td>open redirect</td>
+<td><strong>Apache builds the <code>Location</code> from the <code>Host</code></strong></td>
+<td>absent; no consumer exists</td>
+</tr>
+<tr>
+<td><a href="writeups/102-escolares.html">102</a> Escolares</td>
+<td>WordPress + File Manager</td>
+<td>phpass driven directly, oracle green</td>
+<td>absent; entry path unresolved</td>
+</tr>
+<tr>
+<td><a href="writeups/108-whoiam.html">108</a> Whoiam</td>
+<td>WordPress, salts</td>
+<td><code>pluggable.php</code> discards the install placeholder</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/112-asucar.html">112</a> Asucar</td>
+<td><strong>the lab's own chain does not run</strong></td>
+<td>two required classes absent from the image</td>
+<td>absent; root proved by other means</td>
+</tr>
+<tr>
+<td><a href="writeups/113-road-to-olympus.html">113</a> Road_To_Olympus</td>
+<td>pivoting, three hosts</td>
+<td>SOCKS scanned the <em>operator's</em> own machine</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/115-master.html">115</a> Master</td>
+<td>WordPress + LMS plugin</td>
+<td>privilege reachability is <strong>non-deterministic</strong>: 41/57 then 1/57</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/117-pressenter.html">117</a> Pressenter</td>
+<td>two vhosts, one a decoy</td>
+<td>theme editor validated via loopback; plugin installer did not</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/118-los-40-ladrones.html">118</a> los40ladrones</td>
+<td>port knocking</td>
+<td>a partial knock leaves <strong>no</strong> window</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/129-dockhacklab.html">129</a> DockHackLab</td>
+<td>PHP upload + SSH key injection</td>
+<td>the mode check, read <strong>as the writing identity</strong></td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/141-dockerlabs.html">141</a> DockerLabs</td>
+<td>container security</td>
+<td>socket exposed; a container <strong>with</strong> the socket as positive control</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/146-elevator.html">146</a> Elevator</td>
+<td>global MIME→handler mapping</td>
+<td>a 3-state <code>.htaccess</code> differential</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/148-spain.html">148</a> Spain</td>
+<td>buffer overflow + pickle</td>
+<td>the KDF's <strong>absence</strong> in the import table</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/163-ofuskeit.html">163</a> Ofuskeit</td>
+<td>JS deobfuscation</td>
+<td>the client string table is attack surface</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/167-winfake.html">167</a> WinFake</td>
+<td>el código fuente <strong>es</strong> la entrada</td>
+<td>CSS inválido (<code>top: pipe;</code>, <code>index.html:14</code>) <strong>nombra la cuenta</strong>, y el caso especial <code>su root</code> (<code>windows.py:215</code>) está <strong>ausente</strong> de la blocklist de 18 de la línea 35</td>
+<td>parcial: <code>user.txt</code> leído en el target como <code>uid=1000</code>; <code>root.txt</code> sólo como propiedad de la imagen</td>
+</tr>
+<tr>
+<td><a href="writeups/168-pingctf.html">168</a> PingCTF</td>
+<td>ejecución de comandos; el filtro es <strong>ninguno</strong></td>
+<td>la app se distribuye <strong>sin su dependencia</strong> (<code>ping_rc=127</code>): el <code>200</code> de 359 B es el fallo del sumidero y <code>&amp;&amp;</code> <strong>nunca dispara</strong> — y la ausencia de filtro la establecen <strong>recuentos con control positivo</strong>, no un 403</td>
+<td>ausente, probado: <code>FLAG{</code> en 0 de 15 132 ficheros</td>
+</tr>
+<tr>
+<td><a href="writeups/172-crossfi.html">172</a> Crossfi</td>
+<td>CSRF, two levels</td>
+<td>the token lives in the cookie ⇒ forgeable</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/186-tokenaso.html">186</a> Tokenaso</td>
+<td>race condition</td>
+<td>the check and the act, measured apart</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/188-wargames.html">188</a> Wargames</td>
+<td>reconocimiento; la credencial vive en la <strong>capa de build</strong></td>
+<td>la credencial existe <strong>sólo en una capa de build</strong>: el <code>chpasswd</code> de <code>docker history</code> la deja en claro y <strong>ningún fichero de ejecución</strong> la contiene — <code>/etc/shadow</code> guarda un hash yescrypt, no hay <code>.bash_history</code>, ni <code>authorized_keys</code>, ni script de build</td>
+<td><code>WOPR{…}</code> recuperado a <code>euid=0</code>; no hay <code>FLAG{}</code></td>
+</tr>
+<tr>
+<td><a href="writeups/189-rolarola.html">189</a> Rolarola</td>
+<td>command injection + pickle</td>
+<td>an <strong>undeclared</strong> sudoers grant, no arg restriction</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/209-profetas.html">209</a> Profetas</td>
+<td>XXE + deobfuscation</td>
+<td>a return value known in advance</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/218-internal.html">218</a> Internal</td>
+<td>two-layer PHP WAF</td>
+<td>two 403 bodies, one WAF — hash them separately</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/220-cuentaatras.html">220</a> CuentaAtrás</td>
+<td>account lifecycle</td>
+<td>a confirmation channel that <strong>does not exist</strong></td>
+<td>absent; reward unreachable</td>
+</tr>
+<tr>
+<td><a href="writeups/238-autoescuela.html">238</a> Autoescuela</td>
+<td>WebSocket → RCE</td>
+<td>the advisory, read from four sources</td>
+<td>absent, proven</td>
+</tr>
+<tr>
+<td><a href="writeups/243-duque.html">243</a> Duque</td>
+<td>dos bugs web, y son <strong>independientes</strong></td>
+<td>el admin entra <strong>sin inyección alguna</strong> (<code>Admin</code>/<code>admin123</code>, 200/79 B) ⇒ arreglar la SQLi no arregla el otro; y el caso intermedio es un <strong>refusal</strong> (5 467 B, <code>Acceso Denegado</code>), no una lectura cruzada</td>
+<td>ausente, probado, con control positivo</td>
+</tr>
+<tr>
+<td><a href="writeups/249-adopting.html">249</a> Adopting</td>
+<td>cache deception</td>
+<td>the cache is <strong>in-process</strong>, key has no <code>Host</code></td>
+<td>functional; no <code>FLAG{}</code></td>
+</tr>
+<tr>
+<td><a href="writeups/255-pingupenguin.html">255</a> PinguPenguin</td>
+<td>Spring Boot actuator</td>
+<td>the version read from the artefact</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/264-apkadmin.html">264</a> ApkAdmin</td>
+<td>mobile / APK</td>
+<td><code>targetSdk≥31</code> makes <code>exported</code> a <strong>decision</strong></td>
+<td>absent, searched at root</td>
+</tr>
+<tr>
+<td><a href="writeups/271-baluhome.html">271</a> BaluHome</td>
+<td>stored XSS → no <code>httpOnly</code> → RCE</td>
+<td>the cookie flag, measured both ways</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/281-pipepwned.html">281</a> PipePwned</td>
+<td>CI runner abuse</td>
+<td>runner identity vs writer identity</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/282-hannah-coffee.html">282</a> Hannah's Coffee</td>
+<td>LFI → log poisoning → RCE; escalada que no cierra</td>
+<td>el secreto al que apunta el grant sudo (<code>G'2'ZkcHsulI*vE+D,</code>) <strong>no autentica ninguna cuenta</strong>: 0 coincidencias en 383 786 240 bytes de 12 050 ficheros, con control positivo verde</td>
+<td>2 × <code>dl{…}</code>, sólo con una credencial del host de build — inalcanzable desde el contenedor</td>
+</tr>
+<tr>
+<td><a href="writeups/283-los-3-hackers.html">283</a> Los 3 Hackers</td>
+<td><strong>previene vs detecta</strong></td>
+<td>the same filter, measured in both directions</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/292-acme.html">292</a> Acme</td>
+<td>pre-auth credential channel</td>
+<td>world-writable docroot, execution identity read</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/293-zabbixploit.html">293</a> Zabbixploit</td>
+<td>SQLi → session hijack</td>
+<td>the token at a <strong>fixed offset</strong>, same in both cases</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/295-baremetal.html">295</a> Baremetal</td>
+<td>IPMI → hash → GRUB</td>
+<td>bare metal and BMC, absent from a container world</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/296-asturias.html">296</a> Asturias</td>
+<td>unprotected endpoints</td>
+<td>derive the sink, never look for the label</td>
+<td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="labs.html">6→268</a> kmspwned</td>
+<td>—</td>
+<td><strong>unobtainable</strong>: truncated at 75–95%, no Range</td>
+<td>never reached</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="the-five-ways-52-of-52-solved-is-wrong">The five ways &quot;52 of 52 solved&quot; is wrong</h2>
+<ol>
+<li>
+<p><strong>Forty-five of the fifty-two have no reward value.</strong> Measured on the reward column
+with one stated criterion: a cell counts as a reward only if it contains a <strong>literal
+value</strong> — <code>FLAG{…}</code> or another <code>prefix{…}</code> token with content. A cell reading
+<em>&quot;no <code>FLAG{}</code>&quot;</em> counts as <strong>no</strong> reward, because it is. <strong>Three</strong> engagements carry a
+literal <code>FLAG{…}</code> (292, 255, 218), three more carry another format (<code>WOPR{…}</code> 188,
+<code>DL{…}</code> 238, <code>dl{…}</code> 282 — the last two unreachable from inside the target), and the
+remaining forty-five are absences with a search and a count behind them. A reward in
+another format is a reward; a reward you could not reach is not a solution.</p>
+<blockquote>
+<p>This number was <strong>wrong by sixteen</strong> on first pass, in the very document that warns
+about this defect. The tally counted <code>FLAG{</code> as a substring, which also matches a
+cell saying <em>no</em> <code>FLAG{}</code> — so every measured absence scored as a reward. §26 is not a
+lesson about grep patterns in a lab; it is a lesson about a number in a summary.</p>
+</blockquote>
+</li>
+<li>
+<p><strong>Four were mislabelled by the queue.</strong> Labs 32 and 220 are not WordPress; 12
+ships a different plugin than the catalog names; 26 is not the class advertised.
+A class label is a filename, not a fingerprint — and since lab 82 the corpus is no
+longer one platform to mislabel. See the three-platform table above.</p>
+</li>
+<li>
+<p><strong>Six carry a defect in the lab's own design</strong> — 112's chain cannot run on its
+image, 102's entry path is unresolved, 220's reward is unreachable from the
+identity reached, 168 ships an application whose own binary is missing, 282's
+<code>sudoers</code> grant points at a decoy secret, and 83's advertised database leg cannot
+execute as written. Reported as the lab's problem, not the tester's.</p>
+</li>
+<li>
+<p><strong>One is permanently unobtainable.</strong> 268 is truncated by the server and there is
+no Range, so it cannot be resumed. Not pending work.</p>
+</li>
+<li>
+<p><strong>Four did not fully succeed and say so.</strong> Lab 115 reached no RCE and lists its
+escalation as an inference under NOT tested. Lab 167 proves its <code>uid=0</code> leg on a
+<strong>clone of the same image</strong> and does not count it as the target. Lab 282 completes
+root with a credential from the image build metadata and labels that hop
+<code>OPERATOR-SIDE</code>. Lab 102 reads its password with root on the artefact, so the
+external entry is unresolved.</p>
+</li>
+</ol>
+<hr />
+<h2 id="what-was-wrong-and-got-fixed">What was wrong and got fixed</h2>
+<p>The corpus is not self-certifying. A four-way adversarial audit found <strong>five CRITICAL
+defects</strong>, all re-verified and all corrected. It ran over the 45 writeups that existed
+at the time; <strong>the seven rows added above were not in its scope</strong>, and nothing here
+should be read as clearing them. The five it did find:</p>
+<ul>
+<li>a writeup that <strong>credited a sibling lab with a mechanism it does not contain</strong>,
+and used it to suppress a candidate finding</li>
+<li>a controls table asserting a boundary the filter does not have, contradicting
+the same document two lines above</li>
+<li>a count of &quot;six of eight execute&quot; against a table showing <strong>two of seven</strong></li>
+<li>a <code>substr</code> offset wrong in both directions, sold as an offline proof</li>
+<li>a citation pointing at a file's docblock instead of the code it claimed</li>
+</ul>
+<p>A native review of this corpus returns <code>risk_level: low</code>, <code>selected_lenses: []</code>,
+reason <code>non_executable_only</code>. It cannot see any of that. <strong>The receipt attests that
+the change is documentation, not that the documentation is correct</strong> — which is
+why an adversarial read is a required step here, not a courtesy.</p>
+<p>Full detail: <a href="corrections.html"><code>../method/self-corrections.md</code></a> —
+23 instrument failures, and the pattern that reduces all of them to one thing.</p>
+<hr />
+<h2 id="next-step">Next step</h2>
+<p><a-unlinked><code>../RUNBOOK.md</code></a> for the procedure,
+<a href="labs.html"><code>INDEX.md</code></a> for the class table, and each writeup above for the
+evidence. If a claim here is load-bearing enough to dispute, <strong>re-fetch the
+archive</strong>: this corpus holds no artefacts, so it is a transcript, not a
+reproduction.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Self-corrections &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="index.html">DockerLabs corpus</a><nav><a href="index.html">Root cause</a><a href="evidence.html">Evidence</a><a href="corrections.html" class="on">Corrections</a><a href="hazards.html">Hazards</a><a href="labs.html">Labs</a><a href="resolved.html">Resolutions</a></nav></header>
+<main>
+<h1 id="self-corrections--the-failures-that-recur">Self-corrections — the failures that recur</h1>
+<p>52 engagements produced one dominant failure shape, and it is not a
+missing technique. It is this:</p>
+<blockquote>
+<p><strong>A measurement that is wrong looks exactly like a result.</strong></p>
+</blockquote>
+<p>Every case below produced well-formed output. None of them errored. Each would
+have shipped, and several of them would have been filed to a client as a finding
+or as a negative result. They are ordered by how much they cost.</p>
+<hr />
+<h2 id="1-the-positive-control-that-had-never-seen-a-success">1. The positive control that had never seen a success</h2>
+<p>Lab 118, credential attack. The agent's own control script had port 22 hardcoded
+and was talking to <strong>the host's sshd, not to its control container</strong>. It was about
+to certify <strong>17,000 negatives</strong> from an instrument that had never once observed a
+success.</p>
+<p>What caught it was noticing the sweep contradicted a file already fetched in the
+same session.</p>
+<p><strong>Rule.</strong> A control that has never seen a success is not a control. Force a
+positive through it before believing any negative it produces.</p>
+<h2 id="2-privileged-tooling-contaminating-the-measurement">2. Privileged tooling contaminating the measurement</h2>
+<p>Recorded in <strong>thirteen</strong> engagements, established by labs <strong>129</strong> and <strong>249</strong>
+independently. <code>test -w</code> reported <strong>WRITABLE</strong> because the command ran through
+<code>docker exec</code>, which is root. The predicate was correct; the identity was wrong.</p>
+<blockquote>
+<p><strong>Corrected.</strong> This entry previously credited labs <em>141 and 129</em>. Lab 141 contains
+no <code>test -w</code> at all — an adversarial cross-read counted zero occurrences, and the
+two matches are the word &quot;writable&quot; in prose. The misattribution sat in the file
+whose purpose is to stop exactly this. See the note at the end of this catalogue.</p>
+</blockquote>
+<p>Lab 129's companion: a <code>chmod</code> in a permissions table that ran <strong>on the operator
+host</strong>, where the container's path does not exist. Five rows reported <code>LOGIN OK</code>
+and one <code>DENIED</code> — all six re-testing the same unmodified file — while
+<code>No such file or directory</code> scrolled past unexamined.</p>
+<p><strong>Rule.</strong> Every control runs as the identity whose capability you are measuring. A
+privileged tool does not observe a low-privilege boundary; it observes itself.</p>
+<h2 id="3-the-harness-is-the-outage">3. The harness is the outage</h2>
+<p>Lab 238. A blocking <code>execSync</code> whose <code>curl</code> called back to the <strong>same</strong> Express
+process deadlocked its own event loop. From outside, the app went silent — while
+<code>/json/list</code> on another thread of the same PID still answered <code>200</code>. The agent
+read it as prototype pollution, because that was recent and had a CWE.</p>
+<p>Refuted on a clean instance: the control to a different process answered in
+0.97 s, and the treatment raised its own <code>-m 8</code> timeout at exactly 8.05 s. The
+app recovered on its own once the deadlock released.</p>
+<p><strong>Rule.</strong> <em>Process alive</em> is not <em>service serving</em> is not <em>message executed</em>.
+Replay the most recent action on a clean instance before theorising. Every payload
+sent through an injection primitive needs its own timeout.</p>
+<h2 id="4-your-own-rate-limit-wearing-a-false-negative">4. Your own rate limit, wearing a false negative</h2>
+<p>Lab 283. The agent's own rate limiter made a working injection return <code>False</code>. It
+read as <em>the injection is dead</em>.</p>
+<p>Also lab 283: <code>urlencode</code> <strong>double-encoded</strong> a value that was already encoded, so
+its &quot;encoding bypass&quot; test was measuring its own encoder.</p>
+<p><strong>Rule.</strong> Your concurrency above the target's makes every negative false. And
+check your own encoder once before you attribute a failure to the target.</p>
+<h2 id="5-binary-search-over-a-non-monotonic-predicate">5. Binary search over a non-monotonic predicate</h2>
+<p>Lab 283. The predicate &quot;does this character match&quot; is not monotonic, so binary
+search returned <strong><code>~~~~</code> for every character</strong>. <code>~~~~</code> is the signature of a broken
+search, not a password — and the agent nearly filed it as the administrator's
+credential.</p>
+<p><strong>Rule.</strong> A search that returns the same value everywhere has failed, whatever that
+value is. A uniform answer is a result about the search.</p>
+<h2 id="6-oracles-that-cannot-fire">6. Oracles that cannot fire</h2>
+<p>Lab 90. A conditional oracle whose condition sat in a malformed <code>ON</code> clause, so it
+<strong>short-circuited to one side every time</strong> and only one derived table ever
+materialised. Four shards printed <code>NOTFOUND</code> having examined <strong>zero lines</strong>.</p>
+<p>Lab 36. The yescrypt scanner read field <code>[1]</code> of the <strong>first</strong> line of
+<code>/etc/shadow</code> — which is <code>root</code>, whose field is <code>*</code> — so <code>crypt()</code> returned <code>*0</code>
+<strong>without ever executing the KDF</strong>. The tell was the rate: <code>10705.7 candidates/s</code>.</p>
+<p><strong>Rule.</strong> An oracle that always resolves the same way is a bias wearing the shape
+of an answer. The positive control runs <strong>first</strong>, not after. And when a
+cryptographic step finishes implausibly fast, the step did not run.</p>
+<h2 id="7-a-tool-that-summarises-giving-you-the-wrong-reading">7. A tool that summarises, giving you the wrong reading</h2>
+<p>Lab 238. The environment's <code>docker logs</code> wrapper <strong>truncated and summarised</strong> the
+application's request log, and the agent drew a conclusion from the summary. Reading
+the raw stream with <code>PATH=/usr/bin:/bin</code> gave a different account.</p>
+<p>A container-management wrapper is a filter, and a filter is an instrument. Read
+raw output before you reason about it.</p>
+<h2 id="8-control-flow-and-what-actually-executes">8. Control flow, and what actually executes</h2>
+<p>Lab 148, Spain. A self-test asserted the payload was free of <code>0x00</code> bytes. <strong>It
+passed</strong>, and the payload still mis-executed — <code>0x40</code> is <code>inc eax</code> in 32-bit mode,
+not <code>inc ecx</code>, so the shellcode called <code>getppid</code> where a <code>dup2</code> belonged.</p>
+<p><strong>Rule.</strong> Assert what the consumer <em>does with</em> the bytes, not what the bytes <em>are</em>.
+The self-test must decode and assert the syscall arguments, and emulate the stack
+string.</p>
+<h2 id="9-truncated-and-complete-look-identical">9. Truncated and complete look identical</h2>
+<p>Lab 163. An arbitrary cap cut a wordlist sorted punctuation-first, where the real
+words sit at index ~105,000. The sweep reported 2 of 7 present files. <strong>A truncated
+sweep and a complete sweep print identically.</strong></p>
+<p><strong>Rule.</strong> Cross-check the sweep against an artefact you already fetched. Output
+shape is not evidence of coverage.</p>
+<h2 id="10-the-filter-that-was-correct-and-the-host-that-was-not">10. The filter that was correct, and the host that was not</h2>
+<p>Lab 146. The upload handler allowlisted one extension, forced <code>uniqid().&quot;.jpg&quot;</code>, and
+trusted <code>originalname</code> not at all. It was <strong>correct</strong>. The RCE came from a global
+<code>AddType application/x-httpd-php .jpg</code> in the main server config, outside every
+<code>&lt;Directory&gt;</code>.</p>
+<p>The lab shipped three directives that &quot;explained&quot; the behaviour. <strong>Two were inert</strong>
+— and the one that named the exact behaviour, a root-owned <code>.htaccess</code>, was the
+dead one. Proven with three states: original file → executes; replaced with
+<code>Require all denied</code> → executes; <strong>deleted</strong> → executes.</p>
+<p><strong>Rule.</strong> Patching the handler ships nothing. Read the server's content-type →
+handler map, and check whether the directory's <code>AllowOverride</code> even lets a
+per-directory file speak.</p>
+<hr />
+<h2 id="the-pattern-underneath">The pattern underneath</h2>
+<p>Six of the ten above are a single sentence: <strong>the instrument, not the target,
+produced the answer.</strong> Two more are the instrument producing a <em>confident
+negative</em>. The remaining two are the instrument reporting faithfully about
+something other than what was asked.</p>
+<p>The unifying discipline is already written into
+<code>decision-making.md</code> as <em>a self-test validates the tool, not the trace</em> — and
+these are the instances that made it concrete. The corpus is the receipt for that
+rule; this file is why the rule exists.</p>
+<h2 id="11-a-tool-that-does-nothing-and-exits-0">11. A tool that does nothing, and exits 0</h2>
+<p>Measured in lab <strong>249</strong>.</p>
+<p><code>find -writable</code> does not exist in busybox. It printed its usage text, returned
+nothing, and <strong>exited 0</strong> — so a &quot;no writable critical files&quot; negative looked
+clean, and the entire privilege-escalation finding was one <code>test -w</code> away from
+being deleted. <code>test -w</code> disagreed at the same instant.</p>
+<p>This is worse than &quot;command not found&quot;. A missing command is visible; a command
+that succeeds while doing nothing manufactures a negative that <em>confirms what
+you hoped</em>. <strong>Rule.</strong> Any negative that comes from a bulk enumeration gets one
+independent confirmation from a different tool, in the same shell, before it is
+recorded. Compare the tools' answers; do not average them.</p>
+<p><strong>Related: an alias for a real thing.</strong> <code>ls -l</code> prints a size column that looks
+exactly like a mode. <code>777</code> read as &quot;world-writable&quot; when the mode was <code>664</code> and
+the file was <code>root:pinguinos</code>. The finding survived; the stated mechanism was
+wrong. A wrong mechanism in a report is a wrong report.</p>
+<h2 id="12-a-second-tool-that-reads-nothing-and-exits-0">12. A second tool that reads nothing, and exits 0</h2>
+<p><code>strings -a</code> on a binary <code>AndroidManifest.xml</code> returns <strong>nothing</strong> — the string
+pool is UTF-16, and the default scan is ASCII. An analyst running only the
+obvious command concludes the manifest is clean: no components, no permissions,
+nothing to find. <code>strings -a -e l</code> finds them all.</p>
+<p>Same failure as #11, different surface: the tool is not broken, it is being asked
+the wrong question, and it reports the empty answer with a zero exit status. A
+tool that returns &quot;I found nothing&quot; has made a claim about the world, not about
+itself. <strong>Rule.</strong> Before recording an absence, confirm the tool can <em>find the
+thing you expect to exist</em>. Point it at a string you know is present. If it does
+not come back, the tool is the problem.</p>
+<h2 id="13-a-client-that-follows-redirects-turning-every-auth-test-into-a-200">13. A client that follows redirects, turning every auth test into a 200</h2>
+<p>Python <code>urllib</code> follows redirects by default. A test that meant to read
+<code>GET /dashboard</code> without cookies returned <strong>200</strong> — because the unauthenticated
+request was redirected to the login page and the login page returns 200. Every
+such test agreed, which is exactly why it was dangerous: the detector was
+always-true.</p>
+<p>The result was the <strong>inverse of the truth</strong>. The finding being tested was
+&quot;<code>[wordpress-session-cookie]</code> alone authenticates&quot; (it does not — it alone gives 302,
+and <code>pluggable.php:889</code> requires a live session token). With redirects followed,
+the test reported 200 and the cookie looked sufficient.</p>
+<p><strong>Rule.</strong> Any authorisation test must (a) disable redirect following, and
+(b) assert on something the error page cannot fake — a final URL, a status you
+expect to <em>fail</em>, or a body marker. And a negative control that returns the same
+status as the positive is not a control; it is a coincidence you have not checked.</p>
+<h2 id="14-a-negative-that-did-zero-work">14. A negative that did zero work</h2>
+<p><code>file('/dev/stdin')</code> inside PHP returns <strong>0 lines</strong> when stdin is empty. The
+harness then reported <code>candidates=0 matches=0</code> — a clean, quiet, completely
+uninformative negative that would have been filed as &quot;this key does not crack&quot;.</p>
+<p>The same shape: <code>find -writable</code> (§11), <code>strings -a</code> on UTF-16 (§12), PHP over
+/dev/stdin. <strong>A tool that did nothing and a tool that found nothing produce
+identical output.</strong> The difference is only knowable from outside the tool.</p>
+<p><strong>Rule.</strong> Every negative carries its work count: bytes read, candidates tested,
+rows returned, files matched. A negative with no count is not evidence, it is
+the absence of evidence wearing evidence's clothes. If the count is zero, the
+answer is <strong>untested</strong>, and it belongs in the NOT-tested list with the reason.</p>
+<h2 id="15-a-sanitiser-that-rewrites-the-language-it-never-validated">15. A sanitiser that rewrites the language it never validated</h2>
+<p><code>htmlspecialchars</code> escapes <code>&amp;</code> into <code>&amp;amp;</code>. <code>&amp;</code> is the shell background
+operator. The payload therefore returned a <strong>full 200 page, appended zero
+bytes, and still cost the full request time</strong> — because PHP's <code>system()</code> blocks
+on the pipe the backgrounded child holds. It reads exactly like a filter
+blocking the input, and the control and the negative differed by <strong>one
+character</strong>.</p>
+<p><strong>Rule.</strong> A sanitiser changes the parse of every language it did not validate.
+Before trusting an escape, name the second grammar that reads the same bytes. An
+output encoder defends an HTML context and is silent about a shell, a SQL, an
+LDAP filter and a path. Here the encoding was not a weakness in the app's
+<em>output</em> handling — it was a bypass of the <em>input</em> handling, and nothing in the
+response said so.</p>
+<h2 id="16-403-is-not-a-verdict-and-test-has-no-oracle">16. <code>403</code> is not a verdict, and <code>test</code> has no oracle</h2>
+<p>Two more instruments that answer with silence:</p>
+<ul>
+<li><strong>Two layers of one WAF returned two different 403 bodies</strong> (hashes
+<code>a93f0c50cc63</code> and <code>c2eb23c5660c</code>). A status code cannot attribute a block to
+a rule. <strong>The discriminator is the body</strong>, and the positive control — three of
+three blocked operators — has to run <em>before</em> any belief about a bypass.</li>
+<li><strong><code>[ -r path ]</code> is silent in both branches.</strong> False, silent; true, silent
+through <code>printf</code>. Both collapse to an empty substitution, so the outer <code>ls</code>
+listed <strong>its own cwd</strong> and the result looked like a successful listing of the
+directory that was actually being denied. The same shape as <code>fail2ban-client</code>
+reporting <code>Total failed: 0</code> beside sixteen real failures, and as <code>git</code>
+refusing on <code>safe.directory</code> — empty stdout, <strong>exit 0</strong>, which a <code>| od -c</code>
+pipeline hides completely.</li>
+<li><strong>Common root.</strong> These are all §11–§14 wearing different costumes. A tool that
+reports nothing and a tool that has not looked are indistinguishable from the
+output alone. The only reliable discriminator is external: a work count, or a
+second tool that disagrees.</li>
+</ul>
+<h2 id="17-the-harness-redirect-is-parsed-on-the-wrong-side">17. The harness redirect is parsed on the wrong side</h2>
+<p><code>docker exec &lt;c&gt; wc -l &lt; file</code> — the <code>&lt; file</code> is redirected by the <strong>host</strong> shell,
+not inside the container. It printed an error to stderr and returned empty, so a
+log-slicing harness reported <code>loglines=0</code> for <strong>every</strong> probe.</p>
+<p>Believing it would have inverted the headline finding into &quot;the CRS detects
+nothing&quot;, because the CRS was in fact blocking correctly. The tell was structural,
+not numerical: a 403 alone cannot tell you which half of the pipeline lied.</p>
+<p><strong>Rule.</strong> In any two-process pipeline — host into container, client into proxy —
+count the work on <strong>each</strong> side independently, and prove both sides carried
+something before believing a zero from either. A redirect in a compound command
+belongs to the shell that reads it, not the one it is aimed at.</p>
+<h2 id="18-a-control-must-come-from-a-payload-that-already-worked">18. A control must come from a payload that already worked</h2>
+<p>&quot;My liveness control&quot; added one character to a working payload and produced zero
+log lines, because the one-character variant is not itself a detectable pattern.
+The control was not weak; it was <strong>designed from nothing</strong>, so its silence proved
+nothing about the thing it was meant to prove.</p>
+<p><strong>Rule.</strong> A control is valid only if it comes from a payload you have <em>already
+seen succeed</em>. The stronger form used here instead: add a probe parameter and
+read the log's per-variable attribution, which shows a <strong>true zero</strong> for the
+variables under test and distinguishes it from an untested one — a distinction no
+single before/after comparison can make.</p>
+<h2 id="19-a-blank-count-is-not-a-zero">19. A blank count is not a zero</h2>
+<p>A shared <code>/tmp</code> scratch directory was <strong>deleted by a concurrent worker</strong>, so every
+byte count in a batch came back blank. Blank and zero look identical in a
+report, and &quot;lab 1 returns an empty body&quot; would have been filed as a measured
+property of the application. The real figures were 42 and 60 bytes.</p>
+<p><strong>Rule.</strong> A missing or blank count is <strong>untested</strong>, never zero. Confirm the
+scratch path exists before trusting a batch, and write the count next to the
+result it belongs to. This is the same root as §11 through §14 and §17: the
+output cannot distinguish <em>found nothing</em> from <em>looked nowhere</em>.</p>
+<hr />
+<h2 id="reading-this-catalogue">Reading this catalogue</h2>
+<p>Sections 11 through 26 are not that many separate warnings. They are one failure
+with nineteen faces, and the corpus keeps producing new ones:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Instrument</th>
+<th>What it reported</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>11</td>
+<td><code>find -writable</code> (busybox)</td>
+<td>success, empty result</td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>strings -a</code> on UTF-16</td>
+<td>success, empty result</td>
+</tr>
+<tr>
+<td>14</td>
+<td>PHP <code>file('/dev/stdin')</code> empty</td>
+<td><code>candidates=0 matches=0</code></td>
+</tr>
+<tr>
+<td>15</td>
+<td><code>htmlspecialchars</code> escaping <code>&amp;</code></td>
+<td>200, zero bytes written</td>
+</tr>
+<tr>
+<td>16</td>
+<td><code>[ -r ]</code> silent in both branches</td>
+<td>a successful listing of the denied path</td>
+</tr>
+<tr>
+<td>16</td>
+<td><code>fail2ban-client status</code></td>
+<td>&quot;in operation&quot;, zero of 16 failures</td>
+</tr>
+<tr>
+<td>16</td>
+<td><code>git</code> <code>safe.directory</code> refusal</td>
+<td>empty stdout, exit 0</td>
+</tr>
+<tr>
+<td>17</td>
+<td><code>docker exec … wc -l &lt; file</code></td>
+<td><code>loglines=0</code> for every probe</td>
+</tr>
+<tr>
+<td>19</td>
+<td><code>/tmp</code> deleted by a concurrent worker</td>
+<td>blank where a count belonged</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The single rule that covers all of them:</strong> a tool that found nothing and a tool
+that has not looked produce identical output. Only an external work count, or a
+second tool that disagrees, tells them apart — and a count of zero is itself
+evidence that nothing was tried.</p>
+<p>Six of the nine would have deleted a finding, three would have invented one. None
+of them looked like an error. That is the whole argument for the catalogue.</p>
+<h2 id="20-a-self-referential-ordinal-is-not-a-measurement">20. A self-referential ordinal is not a measurement</h2>
+<p>Three separate writeups each asserted they were <strong>&quot;the seventeenth lab in this
+series without a <code>FLAG{}</code>&quot;</strong> — labs 189, 61 and 87. At most one can be right, and
+a fourth said &quot;fifteenth&quot; <em>after</em> one of them said &quot;seventeenth&quot;, so the sequence
+is not even monotonic. The corpus had nine such orderings and no enumeration to
+resolve them.</p>
+<p><strong>Rule.</strong> A count is a fact; a <em>position in a sequence you are inside</em> is a claim
+about the corpus's history, and it rots the moment anything is added. State the
+count, or state the property, and point at the index — here, the <code>FLAG{}</code> column
+of <code>corpus/INDEX.md</code>, which is the single source. The same applies to &quot;the first
+time we saw X&quot; and &quot;the Nth lab to do Y&quot;.</p>
+<p>This is the same defect class as §14 and §19 one level up. A tool that returned a
+confident answer it did not earn is the recurring failure; a document asserting a
+position it cannot compute is the same mistake written down.</p>
+<h2 id="21-defined-x--is-not-the-framework-uses-x">21. <code>defined( 'X' )</code> is not &quot;the framework uses X&quot;</h2>
+<p>Lab 117 filed a security finding that WordPress' auth cookie key &quot;derives from a
+public constant&quot; because <code>wp-config.php</code> ships all eight keys as the install
+placeholder. It quoted three runtime lines as proof — including
+<code>wp_salt('auth') strlen=128</code>. <strong>A 27-character placeholder cannot produce a
+128-character salt, so the quoted output was already refuting the sentence next to
+it.</strong> The two real errors:</p>
+<ul>
+<li><code>defined( 'AUTH_KEY' )</code> is trivially true of any constant. It says nothing about
+which value the framework <em>consumes</em>.</li>
+<li>Two values printed next to each other — the constant, then the <code>wp_options</code>
+value — were read as a <strong>precedence</strong> relationship. Adjacency is not precedence.</li>
+</ul>
+<p><code>wp_salt()</code> (<code>pluggable.php:2424</code> in that lab's 6.6.1) pre-seeds a duplicate list
+with the literal installer string and <strong>skips</strong> any constant whose value is in it,
+so the config value is <em>ignored</em>, not overriding. Asking the framework returns the
+generated value; asking PHP whether a constant exists returns <code>true</code> regardless.</p>
+<p><strong>Rule.</strong> A framework that validates, defaults, or overrides configuration will
+routinely ignore a value that is present and well-formed. <strong>Measure the value the
+framework consumes, not the value the file contains</strong> — call <code>wp_salt()</code>, call
+<code>app.config()</code>, read the parsed tree. And when a measurement contradicts the
+sentence it is placed under, resolve the contradiction in favour of the
+measurement before writing the sentence.</p>
+<p>Worth noting how it was caught: lab 108 had already tested the opposite and
+recorded that its forgery was <strong>rejected</strong>. The contradiction was visible across
+two writeups and nobody cross-read them. A rule that survives one lab and is
+reversed by another has not been tested — it has been sampled once.</p>
+<h2 id="22-a-control-that-runs-a-different-code-path-than-the-target">22. A control that runs a different code path than the target</h2>
+<p>Lab 102's positive control called <code>wp_hash_password()</code>, which produces <strong>bcrypt</strong>
+<code>$wp$</code> hashes. The hash actually under test was <strong>phpass</strong> <code>$P$</code>. The control
+therefore proved the wrong algorithm, and a 34-candidate negative sat unbacked
+until <code>class-phpass.php</code> was driven directly.</p>
+<p><strong>Rule.</strong> A control must exercise <strong>the same code path as the target</strong>, not a
+neighbouring one that happens to look similar. When the control is a wrapper, a
+convenience API or a &quot;standard&quot; helper, the first thing to verify is that it
+produces output in the target's format — a <code>$wp$</code> prefix where the target has
+<code>$P$</code> is not a detail, it is the whole test being wrong.</p>
+<h2 id="23-the-targets-death-is-not-a-negative-result">23. The target's death is not a negative result</h2>
+<p>Lab 12's container exits about 35 seconds after start: MongoDB 7.0.9 needs AVX, the
+host has none, and <code>mongod</code> dies with <code>Illegal instruction</code>. Read carelessly, that
+produces <strong>&quot;no MongoDB attack surface&quot;</strong> — which is a claim about the <strong>class</strong>
+wearing the clothes of a claim about the <strong>instance</strong>. The site was up the whole
+time; the worker proved it by overriding the container command.</p>
+<p><strong>Rule.</strong> Before recording an absent surface, establish that the process that
+should be serving it was <strong>running</strong>. A component that failed to start and a
+component that is not installed are different findings, and only the second is a
+property of the target. If a service is unreachable, say <em>why</em> it is unreachable,
+and put an unattempted path under NOT tested rather than under negatives.</p>
+<p>Related and cheaper to check: a target that changes under you — an auto-updater, a
+re-login invalidating a nonce, a plugin reloading — also produces a confident
+negative that is really a statement about time. The same lab catalogued both.</p>
+<h2 id="24-a-pipe-inside-a-code-span-silently-becomes-a-column">24. A pipe inside a code span silently becomes a column</h2>
+<p>Two delegated workers produced index rows that do not render. The corpus index has
+<strong>six</strong> columns, and a row carrying an unescaped <code>|</code> splits into extra cells — so
+<code>| echo &quot;joshua:1983@1983&quot; | chpasswd |</code>, quoted verbatim inside a code span, became
+a column boundary. One row rendered with <strong>8</strong> cells and another with <strong>7</strong>. Nothing
+errored: the markdown simply draws a wider, wrong table, and the class text is
+sliced in half mid-sentence.</p>
+<p><strong>Rule.</strong> Inside a table cell, a literal <code>|</code> must be written <code>\|</code> — <strong>even inside a
+code span</strong>, because a code span does not protect it in GitHub-flavoured markdown.
+A row whose cell count does not equal the header's is a defect, and the check is
+one line of arithmetic:</p>
+<pre><code class="language-python">len(re.split(r'(?&lt;!\\)\|', row.strip())) - 2 == len(header_cells)
+</code></pre>
+<p>Run it over <strong>every</strong> row, not the ones that look wrong. Neither worker noticed,
+and both reported their row as verified.</p>
+<h3 id="the-same-check-has-a-second-half-and-its-absence-is-how-three-labs-got-counted-twice">The same check has a second half, and its absence is how three labs got counted twice</h3>
+<p>The cell-count check <strong>passes on a duplicated row</strong>. A byte-identical copy has exactly
+as many cells as its original, so §24 as written above is blind to the failure it
+was most needed for.</p>
+<p>It happened here. <code>corpus/INDEX.md</code> carried <strong>64 data rows for 61 unique labs</strong>: labs
+<strong>162</strong>, <strong>166</strong> and <strong>245</strong> each appeared <strong>twice</strong>, the second copy <strong>byte-identical</strong>
+to the first — same six cells, same order, same text. Every row passed the cell-count
+check. Nothing rendered wrong. The index simply claimed three engagements twice, and
+<strong>any rollup over it double-counts them</strong>: reward tallies, class frequencies, per-class
+counts, &quot;labs that refute rule N&quot;. Those are the numbers this repo exists to produce,
+and they were silently inflated by three.</p>
+<p><strong>Rule.</strong> The cell-count check and the <strong>id-uniqueness</strong> check are one gate, run
+together, over the same rows:</p>
+<pre><code class="language-python">import re, collections
+def cells(line):                      # unescaped pipes only — see above
+    return [c.strip() for c in re.split(r'(?&lt;!\\)\|', line.strip()[1:-1])]
+rows = [cells(l) for l in open('corpus/INDEX.md', encoding='utf-8')
+        if l.startswith('| ') and not l.startswith('|---') and not l.startswith('| # ')]
+assert all(len(r) == 6 for r in rows), 'cell count'          # §24
+ids = [r[0] for r in rows]
+dups = [i for i, n in collections.Counter(ids).items() if n &gt; 1]
+assert not dups, f'duplicate lab ids: {dups}'                # this half
+</code></pre>
+<p>Two things worth stating, because the check is cheap and neither is visible from the
+file: <strong>duplicate ids are always a transcription defect</strong>, never a legitimate second
+row (a lab has one engagement and one writeup — <code>corpus/&lt;id&gt;/</code> is unique on disk, and
+that is the authority, not the table); and the row count must equal the unique-id count
+<strong>before</strong> any figure derived from this table is published anywhere.</p>
+<h2 id="25-a-clone-of-the-target-is-not-the-target">25. A clone of the target is not the target</h2>
+<p>Lab 167's <code>uid=0</code> leg was proved on a container built from the <strong>same image</strong>, with
+root's password supplied, and the writeup labelled it clearly. The question was
+only what the summary column should say, and the answer is <strong>not resolved</strong>.</p>
+<p>The reasoning is §21 one level up. §21 is <em>measure the value the framework
+consumes, not the value the file contains</em>. This is <em>measure the target, not a copy
+of the target</em>. A clone is a legitimate way to run a <strong>control</strong> — proving your
+exploit works before you spend it on the one instance you get — and it is
+<strong>not</strong> a legitimate way to earn a reward. The reward column answers <em>what did the
+target give you</em>, and this target gave nothing at <code>uid=0</code>.</p>
+<p><strong>Rule.</strong> A control on a clone is evidence. A result on a clone is not a result.
+State which one you have, and let the summary column reflect the weaker of the two
+claims. The evidence for the clone result stays in the writeup — it is real and
+useful — but it does not move the reward from <code>—</code>.</p>
+<p>The same shape, easier to get wrong, is <em>the artefact and the deployed instance are
+the same image, therefore the result transfers</em>. It nearly transfers, which is why
+it is tempting. It does not transfer when the missing step is a credential, a race,
+or anything that did not happen on the target.</p>
+<h2 id="26-the-searchers-own-pattern-is-a-match">26. The searcher's own pattern is a match</h2>
+<p>Lab 168's first reward sweep reported <code>grep -rIl 'FLAG{' /</code> → <strong>one file</strong>. The
+file was the worker's own probe script, which contains the literal string inside
+its own search pattern. After cleaning, the real answer across 15,132 files was
+zero.</p>
+<p><strong>Rule.</strong> Before reporting a hit from a pattern search, <strong>read the hit</strong>. A search
+whose corpus includes your own tooling will find your own tooling, and the
+probability rises with how distinctive the pattern is — <code>FLAG{</code> is not a string
+anyone writes by accident. Two of this corpus's workers made the same shape of
+error in the same engagement: lab 82 read a <code>.ui-icon-flag{</code> CSS rule as a reward
+hit and lab <strong>168</strong> found a LaTeX formatter template — the index recorded it under 83,
+so the index and this entry contradicted each other.</p>
+<p>Related, and the same instinct: a <strong>verifier's absence is not the property's
+absence</strong>. <code>dpkg -V</code> reported lab 82's tree pristine while <code>find</code> was mode 4755,
+because <code>dpkg -V</code> checks <code>md5sums</code> and not modes. The tool answered the question it
+was asked, not the question that mattered.</p>
+<h2 id="27-a-destructive-oracle-eats-its-own-control-space">27. A destructive oracle eats its own control space</h2>
+<p>Lab 242's sweep submitted 26,000 candidate identifiers against an endpoint that
+<strong>inserts on hit</strong>. Run 1's manual probe created a record; run 2's negative control —
+<code>99999999X</code>, chosen because it could not exist — answered <strong>PRESENT</strong>, because run 1
+had made it exist. The harness refused to sweep once it noticed, which is the only
+reason this is a defect and not a finding.</p>
+<p><strong>Rule.</strong> An oracle that mutates the namespace is not idempotent, so a control drawn
+from that namespace is consumed by the first use. Either draw the control from
+outside the namespace you are enumerating, or <strong>snapshot and restore between
+repetitions</strong> — and treat a control that changes answer between runs as evidence
+that your earlier runs changed the world, not that the control was wrong.</p>
+<p>The same shape appears with no mutation at all: lab 242's image ships
+<code>dnis_encontrados.txt</code> with 10 names of which <strong>4 are real</strong>, a phantom sweep
+preloaded into the artefact before a single request. <strong>Lab 87's phantom paths and
+lab 188's phantom <code>.htaccess</code> files are the target's fault; this one is the
+platform's.</strong> Check what the image already tells you before believing what you
+found.</p>
+<h2 id="28-an-acronym-in-a-queue-entry-is-a-claim-nobody-verified">28. An acronym in a queue entry is a claim nobody verified</h2>
+<p>Lab 242's catalogue entry says <em>&quot;enumerar los <strong>DNIs</strong>&quot;</em> — Spanish national identity
+numbers. The queue's own gap column re-expanded the acronym to <em>&quot;enumerating platform
+<strong>DNS</strong> records&quot;</em>. <strong>DNI is not DNS</strong>, and the engagement is a structured-identifier
+existence oracle with zero DNS anywhere in it: <code>grep -rIo -i &quot;dns&quot;</code> over the
+application tree returns <strong>0</strong>.</p>
+<p>This is a different failure from the one the corpus already knew. Labs 32, 220 and
+82 were a <strong>filename</strong> mistaken for a fingerprint, and a version check catches every
+one of them. Here the identifiers are plainly visible at <code>main.py:32-35</code>, so no
+filename or version check sees it, and the two fields look consistent.</p>
+<p><strong>Rule.</strong> When a queue entry abbreviates something, <strong>grep the artefact for the
+expansion, not for the acronym.</strong> The writer of the queue entry is not the writer of
+the source and may have expanded an abbreviation from memory. A protocol name in a
+description is an assertion about a <em>component</em>, and a component is either present
+and countable or it is not.</p>
+<h2 id="29-the-same-is-true-of-a-format-constraint">29. The same is true of a format constraint</h2>
+<p>The DNI carries a public check character, so a sweep can be cut from 26,000
+candidates to 1,000. Measured both ways: <strong>0 of the 4 real accounts satisfy it</strong>, and
+the sweep itself created 25 of the 26 letters during testing. A check-character
+filter therefore reports <strong>0 of 4</strong> and concludes the namespace is empty.</p>
+<p><strong>Rule.</strong> <em>A format constraint you did not measure is not a filter you may apply.</em> This
+is the <code>ANY</code>-versus-<code>TXT</code> rule with the polarity flipped: a refusal tells you about
+the component that refused, and an unverified assumption about the data tells you
+nothing about either. The cheap check is to run the constraint against the records
+you already hold — four rows, and it excludes all four.</p>
+<h2 id="30-a-carriage-return-inside-a-table-row-from-a-python-escape">30. A carriage return inside a table row, from a Python escape</h2>
+<p>Lab 245's worker reported the cause of a defect I had hit myself twice without
+naming it: writing <code>\refuta</code> inside a <strong>non-raw</strong> Python string literal is not the
+six characters <code>\</code>, <code>r</code>, <code>e</code>… — <code>\r</code> is a <strong>carriage return</strong>. The row was written
+with one, which split it across two physical lines, and the §24 cell-count check
+then read <strong>4 instead of 6</strong>. The orphaned continuation line looked like prose.</p>
+<p>It is the same failure as the orphan fragment I repaired twice: a row that renders
+as a short row, with no error anywhere.</p>
+<p><strong>Rule.</strong> Use raw literals for anything containing a backslash escape you meant
+literally — <code>r&quot;...&quot;</code> — and run the cell-count check <strong>after every INDEX edit, not
+only on the row you touched</strong>. Two independent workers converged on this within the
+same batch, and neither noticed until the count disagreed.</p>
+<h2 id="31-a-paraphrased-catalogue-is-a-changed-class">31. A paraphrased catalogue is a changed class</h2>
+<p>Lab 166's catalogue says <em>&quot;fuerza bruta en formulario web de apache y después <strong>otra
+forma de fuerza bruta en formulario de login web</strong>&quot;</em>. The queue's gap column wrote
+<em>&quot;then a second <strong>escalation route</strong>&quot;</em>. The host has <strong>no escalation primitive at
+all</strong>: no <code>sudo</code>, no cron, 10 stock setuid with no writable parent, no capabilities,
+<code>CapEff 0xa80425fb</code> — the Docker default, not privileged.</p>
+<p>This is the neighbour of §28 and it is worse, because both fields now look
+reasonable in isolation. §28 expanded an acronym into a <em>different protocol</em>; this
+replaced a <em>method</em> with a <em>different class of attack</em>.</p>
+<p><strong>Rule.</strong> Do not paraphrase a catalogue entry into a queue field. Copy it, or write
+your own words from the artefact. The gap column's job is to name the class you
+intend to add, and a paraphrase silently changes what you are queueing — and the
+class table is then wrong about a lab nobody has solved yet.</p>
+<h2 id="32-content-length-can-describe-the-proxys-own-cut">32. Content-Length can describe the proxy's own cut</h2>
+<p>Lab 254 settled as <strong>unobtainable</strong>, and the reason is worth more than the lab
+would have been. The platform served <strong>107,479,040 bytes — exactly 102.5 MiB</strong>, a
+round proxy boundary — and reported <em>that truncated length</em> as the
+<code>Content-Length</code>. The archive's own last entry declares 107,573,106 compressed
+bytes starting at offset 2773, so the file should be <strong>107,575,879</strong> and is
+<strong>96,839 short</strong>.</p>
+<p>My fetcher had been reading <code>size == expected</code> as &quot;not truncated&quot;, which is
+correct when the server describes the real file and <strong>wrong whenever the server is
+describing its own cut</strong>. Six attempts across two policy versions produced the
+identical size and the identical failure, which is what ruled transit damage out
+and pointed at a boundary rather than a fault.</p>
+<p><strong>Rule.</strong> When an archive fails verification at its full advertised length, <strong>ask the
+archive, not the server.</strong> Walk the local headers, sum the declared data extents,
+and compare that with the bytes on disk:</p>
+<pre><code>file shorter than its own declared extent  → truncated, whatever the headers said
+file longer                                → the excess is the central directory
+</code></pre>
+<p>It needs a zip without data descriptors (no flag <code>0x0008</code>) and unencrypted, and
+returns 0 when either is present, so it is a test you skip rather than one that
+guesses. The control matters: on a healthy 386 MB archive the declared extent came
+out 187 bytes <em>below</em> the file, which is exactly the central directory.</p>
+<p>The general shape is §26 again. <code>Content-Length</code> is a <strong>claim by the component that
+produced the bytes</strong> about how many bytes it produced. It is not evidence about the
+artefact. So is <code>exit 0</code>, so is a 403, and so is a header that says a thing is
+absent.</p>
+<h2 id="33-the-queue-label-is-not-the-labs-scope--and-i-shipped-that-one-myself">33. The queue label is not the lab's scope — and I shipped that one myself</h2>
+<p>Three instances now, and the third was mine. Labs 242 and 32 had queue labels that
+misdescribed what the platform catalogue advertises. This time I wrote a worker brief
+for lab 73 quoting the manifest line — <em>&quot;WAF bypass class&quot;</em> — as the lab's scope,
+in a brief that simultaneously instructed the worker to cite the catalogue verbatim.</p>
+<p>The real entry (<code>catalog.txt:61</code>) advertises <strong>four</strong> elements: remote command
+execution with WAF bypass, zip cracking, sudoers, and pcap analysis. The worker read
+the catalogue, found three more elements I had not mentioned, chased all of them,
+and reported the discrepancy instead of inheriting my framing. Had it trusted the
+brief it would have filed a false negative on three of four advertised elements.</p>
+<p><strong>The manifest is the work queue and the catalogue is the authority.</strong> They are
+different files with different jobs, and the manifest's one-line description is
+written for a fetcher to read, not for an operator to scope by. Before briefing any
+work, read the catalogue row. Before trusting any single-line description — in a
+manifest, a queue, a ticket, or your own memory — read the source it summarises.</p>
+<h2 id="34-an-empty-success-is-an-absence-of-observation-not-a-negative">34. An empty success is an absence of observation, not a negative</h2>
+<p>Three privilege-escalation probes through <code>shell_exec</code> came back with a completely
+empty response body and <code>http=200</code>. Each one was a <em>refusal</em> — the command ran and
+wrote nothing — but the status code said success and the body said nothing at all,
+which is the shape an instrument produces when it has lost stderr.</p>
+<p>The trap is that the conclusion was right by accident. &quot;This vector produces no
+output&quot; is defensible when you know the sink returns output. When the sink swallows
+the error stream, an empty body is compatible with <em>refused</em>, <em>executed and silent</em>,
+and <em>never executed</em>, and the response cannot separate them.</p>
+<p>The same run recorded the mirror case: <code>curl -L</code> made a <strong>deleted</strong> webshell answer
+<code>200</code>, because curl follows the redirect and reports the last hop. So one of those
+three probes was reading its own cleanup as a live shell.</p>
+<p><strong>An empty 200 is not a negative and not a positive.</strong> Before trusting either, prove
+the channel carries the distinction you are about to read it for — force a known
+error through the same sink and confirm it is visible, or read the evidence out of
+band where the sink cannot reach it. And never verify a deletion with a URL fetch.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

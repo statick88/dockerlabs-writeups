@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 32 Vulnerame &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Vulnerame</p><h1 id="32-vulnerame--writeup">32 Vulnerame — writeup</h1>
+<p><strong>Lab:</strong> 32 · <em>Vulnerame otra vez</em> · <strong>difícil</strong>
+<strong>Description (full, from the platform catalog, <code>[lab-home]/dockerlabs/catalog.txt:147</code>):</strong> <em>&quot;Laboratorio
+para practicar la explotación de un CMS vulnerable (WordPress/Joomla) y escalada de privilegios
+en Linux.&quot;</em> — <strong>the catalogue does not name a product; it names both candidates, and the shipped
+artefact is neither-plus-one: Joomla! 4.0.3</strong> (§0). What misleads here is the <strong>queue label</strong>
+(<code>tooling/labs.manifest:63</code>, <em>&quot;WordPress platform&quot;</em>) and the docroot's directory name — not the
+catalogue, which is deliberately hedged.
+<strong>Target:</strong> <code>[net-0-3]</code> — single container <code>vulnerame_container</code>, image <code>vulnerame:latest</code>.
+<strong>Stack (from the artefact, not from memory):</strong> Ubuntu <strong>20.04.6</strong> (focal), Apache <strong>2.4.41</strong>,
+PHP <strong>7.4.3</strong> (NTS, <code>mod_php</code> — <em>not</em> PHP 8), <strong>MySQL 8.0.37</strong> on <code>0.0.0.0:3306</code>,
+<strong>Joomla! 4.0.3 &quot;Furaha&quot;</strong> as shipped <em>and</em> as running (§9). OpenSSH 8.2p1.
+<strong>Result:</strong> unauthenticated → <code>uid=1000(guadalupe)</code> → <strong><code>uid=1001(ignacio)</code></strong> → <strong><code>uid=0(root)</code></strong>.
+<strong>No reward present</strong> (§8) — reported as a measured absence on this host, not as an assumption, and not generalised to any other lab.</p>
+<p><strong>Topology.</strong> <code>auto_deploy.sh</code> was read, never run. It creates <strong>no network at all</strong>: a bare
+<code>docker run -d --name $CONTAINER_NAME $IMAGE_NAME</code> (line 131) on the default bridge, one
+container, no macvlan, no <code>--internal</code>, no pivot. The engagement stayed single-host.
+<strong>The absence of <code>--internal</code> matters and is the opposite of lab 61</strong> (§9).</p>
+<hr />
+<h2 id="0-the-generalisation-verdict-per-rule">0. The generalisation verdict, per rule</h2>
+<p>The brief carried three beliefs from labs 108 and 61 and asked whether they survive a harder
+instance. Checked one by one, against this lab's own artefacts.</p>
+<h3 id="belief-1-from-108--[wordpress-session-cookie]-was-the-injection-carrier-never-read-salts-from-wp-configphp-the-auth-cookie-alone-gives-200-while-[wordpress-session-cookie]-alone-gives-302-pluggablephp889-requires-a-live-session-token">Belief 1 (from 108) — &quot;<code>[wordpress-session-cookie]</code> was the injection carrier; never read salts from <code>wp-config.php</code>; the auth cookie alone gives 200 while <code>[wordpress-session-cookie]</code> alone gives 302; <code>pluggable.php:889</code> requires a live session token.&quot;</h3>
+<blockquote>
+<p><strong>DOES NOT APPLY. It is not that the rule failed — there is no WordPress in this lab.</strong>
+The document root is named <code>wordpress</code> and contains <code>configuration.php</code>, <code>htaccess.txt</code> and
+<code>administrator/</code>, and every one of those names is a Joomla 4 name too. A tester pattern-
+matching on path names would have spent the budget looking for <code>wp-content</code>, <code>wp-includes</code>,
+<code>active_plugins</code> and <code>wp_users</code>.</p>
+<p>Measured, not inferred: <code>libraries/src/Version.php:37,45,53</code> → <code>MAJOR_VERSION = 4</code>,
+<code>MINOR_VERSION = 0</code>, <code>PATCH_VERSION = 3</code>; the served <code>&lt;meta name=&quot;generator&quot;&gt;</code> is
+<code>Joomla! - Open Source Content Management</code>; Joomla's own log header reads
+<code>Joomla! 4.0.3 Stable [ Furaha ] 12-September-2021 10:39 GMT</code>. There is no <code>wp-content/</code>,
+no <code>wp-includes/</code>, no <code>wp-config.php</code>, no <code>wp_options</code>, and <strong>no WordPress plugin of any kind</strong>
+— <code>plugins/</code> holds 22 Joomla core plugin groups, all stock, and the docroot is byte-identical
+to the stock 4.0.3 distribution (§4, F7).</p>
+<p>The <strong>shape</strong> of the rule survives in a form worth carrying: the interesting credential store
+is not the config file either. Here the analogue of <code>wp_salt()</code> is Joomla's <code>$secret</code>
+(<code>configuration.php:29</code>), and again it is not the thing that matters — because the attack
+never needs a forged token. It <strong>writes</strong> one (§4, F2). So the transferable form of belief 1 is
+not &quot;read <code>pluggable.php</code>&quot;, it is <strong>&quot;find out where authentication state actually lives before
+you try to forge it, and prefer a write primitive over a forgery&quot;</strong> — and on this lab the
+write primitive is one <code>UPDATE</code> away.</p>
+</blockquote>
+<h3 id="belief-2-from-61--a-plugin-is-activated-code-no-manifest-no-permissions-no-sandbox-therefore-any-write-primitive-anywhere-in-wordpress-core-included-becomes-code-execution-entry-criterion-the-sink-is-in-the-plugins-own-code-and-reachable-without-prior-wordpress-authorisation">Belief 2 (from 61) — &quot;a plugin is <em>activated code</em>: no manifest, no permissions, no sandbox; therefore any write primitive anywhere in WordPress, core included, becomes code execution. Entry criterion: the sink is in the plugin's own code AND reachable without prior WordPress authorisation.&quot;</h3>
+<blockquote>
+<p><strong>HOLDS AS A PLATFORM RULE, AND IS DEMONSTRATED HERE — but on a different CMS, and the entry
+criterion does not decide this lab.</strong></p>
+<p>The <em>mechanism</em> is Joomla's and it is the same mechanism: extensions are files that the
+application <code>include</code>s, <code>#__extensions</code> is a list of paths in a database option rather
+than a capability set (215 rows), and nothing in the tree turns off the PHP engine. Measured: there is
+<strong>no</strong> <code>.htaccess</code> and <strong>no</strong> <code>php_admin_flag engine off</code> anywhere in the docroot; the only
+<code>php_admin_flag engine Off</code> on the server is scoped to <code>[lab-home]/*/public_html</code>
+(<code>/etc/apache2/mods-enabled/php7.4.conf</code>, a directory absent from this image), and the vhost
+sets <code>AllowOverride All</code> (<code>sites-enabled/joomla.conf:6</code>), so a per-directory <code>.htaccess</code>
+<em>could</em> speak. The one <code>.htaccess</code> in the whole tree is <code>libraries/.htaccess</code> and it denies —
+so the boundary is drawn in exactly one place, and it is the one place nobody needs it.</p>
+<p>The <em>entry criterion</em> — &quot;the sink is in the extension's own code, reachable without prior CMS
+authorisation&quot; — turns out <strong>not to be the discriminator that matters here</strong>, for a reason
+that is itself the finding. There are no third-party extensions at all: the docroot diffed
+against the stock 4.0.3 ZIP that the lab ships in its own docroot is <strong>4 files</strong>, all of them
+deployment artefacts (§4, F7). So &quot;which extension is vulnerable?&quot; has no answer to give, and
+the criterion correctly refuses to fire. The discriminator this lab actually turns on is a
+different one:</p>
+<blockquote>
+<p><strong>Refined rule (extends 61).</strong> A CMS extension tree is executable code, so <em>any</em> write
+primitive in the product is code execution. But <strong>the interesting question is not which
+extension is the bug — it is whether the product's own write primitives reach an identity
+that matters.</strong> On this lab the CMS admin write primitive stops dead at <code>uid=33(www-data)</code>,
+and <code>www-data</code> has <strong>no</strong> route to root: measured as <code>www-data</code>, <code>find / -xdev -writable -type f</code> returns <strong>8 118</strong> files and <strong>0</strong> of them are owned by anyone else, cross-checked
+with a <code>test -w</code> loop that also returns <strong>0</strong>. There is no setuid binary on the host beyond
+the 16 stock ones, no file capability anywhere (<code>getcap -r /</code> empty), and no cron daemon
+running. <strong>The web application is a complete dead end for root on this lab, and the whole
+second half of the lab is on a different service entirely.</strong>
+That is the part of belief 2 that generalises: the write-primitive rule is a rule about
+<em>code execution</em>, and code execution is only the end of the story when the web identity
+happens to be near the top. <strong>Measure where the write lands before you budget for it.</strong></p>
+</blockquote>
+</blockquote>
+<h3 id="belief-3-from-both--active-and-present-diverge-at-the-moment-of-compromise-answer-what-is-in-the-tree-which-is-an-ls-not-a-database-option">Belief 3 (from both) — &quot;<code>active</code> and <code>present</code> diverge at the moment of compromise; answer 'what is in the tree', which is an <code>ls</code>, not a database option.&quot;</h3>
+<blockquote>
+<p><strong>HOLDS, and it holds with a wrinkle this lab adds: on Joomla the divergence is visible
+without compromising anything, so it is a <em>configuration</em> fact rather than a compromise-time
+fact — and the same rule applies one level further out, to the OS.</strong></p>
+<p><code>plugins/</code> on disk holds 21 groups. <code>#__extensions</code> (Joomla's <code>active_plugins</code> analogue)
+holds <strong>215 rows</strong> across <code>component</code>/<code>template</code>/<code>language</code>/<code>plugin</code>/<code>module</code> types. The two sets
+are not the same list, and the directory tree is the one that answers &quot;what executes&quot;.
+Crucially, the <strong>doctrine generalises past the docroot</strong>: <code>/snap/bin</code> is <code>drwxrwxrwx guadalupe:guadalupe</code> — present, on <code>secure_path</code>, and writable by <em>any</em> uid including
+<code>www-data</code> (§4, F1) — and <code>/usr/bin/scr1pt</code> is <code>-rwx------ ignacio:ignacio</code> and is on
+<code>sudoers</code>. <strong>The &quot;is it active&quot; question has an OS answer too, and the OS answer is the one
+that wins.</strong></p>
+</blockquote>
+<h3 id="verdict-in-one-line">Verdict in one line</h3>
+<p><strong>This lab reproduces no rule and breaks no rule; it relocates the class.</strong> The three WordPress
+beliefs are <em>not applicable</em> (wrong platform), <em>holds-with-refinement</em> (plugin trust, extended
+by the dead-end finding), and <em>holds</em> (present vs active). <strong>The correct outcome is the one
+PIPELINE §Convergence names: &quot;a worker reports the class table already has the row.&quot;</strong> And the
+most valuable thing this engagement produced is not a chain — it is that <strong>the queue's class
+label is a filename, not a fingerprint.</strong> <code>[lab-home]/dockerlabs/labs/32/auto_deploy.sh</code>
+does not exist in the extracted lab; the <em>docroot</em> is called <code>wordpress</code> and the <em>lab</em> is called
+Vulnerame, and neither of those is the product. <strong>Fingerprint from <code>Version.php</code> / a
+<code>generator</code> meta tag, never from a directory name.</strong></p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-3]
+Nmap scan report for [net-0-3]
+Host is up (0.000047s latency).
+Not shown: 65532 closed tcp ports (conn-refused)
+PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH 8.2p1 Ubuntu 4ubuntu0.11 (Ubuntu Linux; protocol 2.0)
+80/tcp   open  http    Apache httpd 2.4.41 ((Ubuntu))
+3306/tcp open  mysql   MySQL 8.0.37-0ubuntu0.20.04.3
+</code></pre>
+<p><strong>What TCP <em>does</em> see here that a WordPress-shaped mental model would not predict: port 3306.</strong>
+All three earlier WordPress labs had the database on <code>127.0.0.1</code> only. This one binds
+<code>0.0.0.0</code>, and the database account is granted from <code>%</code>.</p>
+<p><strong>What TCP cannot see — measured, not assumed:</strong></p>
+<pre><code>$ docker exec vulnerame_container cat /proc/net/udp      -&gt; (header only, no rows)
+$ docker exec vulnerame_container cat /proc/net/udp6     -&gt; (header only, no rows)
+$ docker inspect vulnerame:latest -f '{{json .Config.ExposedPorts}}'  -&gt;  null
+$ docker exec vulnerame_container sh -c 'awk &quot;NR&gt;1{print \$2,\$4}&quot; /proc/net/tcp'
+ 0100007F:8124 0A      &lt;- 127.0.0.1:33060  (MySQL X protocol, loopback)
+ 00000000:0CEA 0A      &lt;- 0.0.0.0:3306     (MySQL, ALL INTERFACES)
+ 00000000:0050 0A      &lt;- 0.0.0.0:80
+ 00000000:0016 0A      &lt;- 0.0.0.0:22
+</code></pre>
+<p>No UDP surface. <code>ps</code> confirms the process set and, just as importantly, what is <strong>absent</strong>:</p>
+<pre><code>root    1  /bin/sh -c service apache2 start &amp;&amp; service ssh start &amp;&amp; service mysql start &amp;&amp; tail -f /dev/null
+root   24  /usr/sbin/apache2 -k start
+www-data 29-33  /usr/sbin/apache2 -k start
+root   46  /usr/sbin/sshd [listener]
+mysql  78  /bin/sh /usr/bin/mysqld_safe
+mysql 284  /usr/sbin/mysqld --datadir=/var/lib/mysql --port=3306
+root  363  tail -f /dev/null
+</code></pre>
+<p><strong>No <code>cron</code>, no <code>rsyslog</code>, no <code>fail2ban</code>, no MTA.</strong> <code>/etc/cron.d/php</code> exists and is stock
+(<code>sessionclean</code> as root) — and it is <strong>inert</strong>, because there is no cron daemon to read it. A
+tester who greps <code>/etc/cron.d</code> and finds a root job has found nothing.</p>
+<h3 id="11-virtual-hosts-with-the-impossible-name-control">1.1 Virtual hosts, with the impossible-name control</h3>
+<p><code>/etc/apache2/sites-enabled/</code> holds two vhosts: a catch-all <code>000-default.conf</code>
+(<code>DocumentRoot /var/www/html</code>) and <code>joomla.conf</code> (<code>DocumentRoot /var/www/html/wordpress</code>,
+<code>ServerName vuldb.dl</code>).</p>
+<pre><code>$ for n in vuldb.dl www.vuldb.dl wordpress.local NOSUCHHOST.invalid &quot;&quot;; do ... done
+vuldb.dl              200 28132  md5=57c8205a748e
+www.vuldb.dl          200 10918  md5=3526531ccd6c
+wordpress.local       200 10918  md5=3526531ccd6c
+NOSUCHHOST.invalid    200 10918  md5=3526531ccd6c   &lt;- control: cannot exist as a vhost
+(no Host: header)     400   302  md5=3099bdec1a7e
+</code></pre>
+<p>Four names share <code>3526531ccd6c</code> <strong>including the invented TLD</strong>, so that hash is the catch-all's
+<code>index.html</code> baseline and <code>57c8205a748e</code> is the only distinct surface. The same app is also
+reachable through the catch-all at <code>/wordpress/</code> (200, 29150 B) because the docroot is nested.</p>
+<h3 id="12-paths">1.2 Paths</h3>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Result</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/wordpress/</code></td>
+<td><strong>200</strong>, 29150 B</td>
+<td>the app, via the catch-all</td>
+</tr>
+<tr>
+<td><code>/</code> (Host: <code>vuldb.dl</code>)</td>
+<td><strong>200</strong>, 28132 B</td>
+<td>the app, at the vhost root</td>
+</tr>
+<tr>
+<td><code>/wordpress/administrator/</code></td>
+<td><strong>200</strong>, 10011 B</td>
+<td>admin login, unauthenticated</td>
+</tr>
+<tr>
+<td><code>/wordpress/api/index.php/v1/content/articles</code></td>
+<td><strong>401</strong>, <code>{&quot;errors&quot;:[{&quot;title&quot;:&quot;Forbidden&quot;}]}</code></td>
+<td>the webservices API is installed and <strong>requires auth</strong></td>
+</tr>
+<tr>
+<td><code>/wordpress/configuration.php</code></td>
+<td><strong>200, 0 bytes</strong></td>
+<td>PHP executed it — the config is <strong>not</strong> remotely readable (§4, F2)</td>
+</tr>
+<tr>
+<td><code>/wordpress/libraries/.htaccess</code></td>
+<td><strong>403</strong></td>
+<td>the one boundary the tree draws, and it works</td>
+</tr>
+<tr>
+<td><code>/wordpress/htaccess.txt</code>, <code>web.config.txt</code>, <code>robots.txt</code></td>
+<td>200</td>
+<td>stock, unshipped-by-design deployment leftovers</td>
+</tr>
+<tr>
+<td><code>/wordpress/joomla4.0.3zip</code></td>
+<td><strong>200, 26 370 047 B</strong></td>
+<td>the stock 4.0.3 distribution, served from the docroot — <strong>not</strong> a site backup (§4, F6)</td>
+</tr>
+<tr>
+<td><code>/wordpress/installation/</code></td>
+<td><strong>absent</strong></td>
+<td>removed from the deployed tree; the ZIP still contains it</td>
+</tr>
+<tr>
+<td><code>/phpmyadmin/</code></td>
+<td><strong>404</strong></td>
+<td>no such alias here (contrast lab 61)</td>
+</tr>
+<tr>
+<td><code>/wp-login.php</code></td>
+<td><strong>404</strong></td>
+<td>nothing WordPress-shaped is served</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-the-class">2. The class</h2>
+<p><strong>Entry criterion, and it is not the one the queue label names.</strong> The queue says &quot;WordPress
+platform&quot; (<code>labs.manifest:63</code>), and a WordPress platform implies a plugin surface. There is no
+plugin. The criterion that started the engagement was the boring one
+from 108 and 61:</p>
+<blockquote>
+<p><em>Does the platform disclose a credential that can be used against a service it exposes, and
+does the platform expose a write primitive into its own authentication store?</em></p>
+</blockquote>
+<p><strong>Sources that settled it, in this order:</strong></p>
+<ol>
+<li><code>Cmd</code> in the image config: <code>service apache2 start &amp;&amp; service ssh start &amp;&amp; service mysql start</code> — <strong>two</strong> network services plus a database, read in 10 seconds from
+<code>docker inspect</code>, before a single packet was sent. 108 and 61 both shipped one HTTP
+service. The image's own <code>Cmd</code> is the topology.</li>
+<li><code>/etc/sudoers:27-28</code> — two non-root rungs naming two users. This is the lab telling you
+which identities matter, and it is the only place it says so.</li>
+<li><code>configuration.php:17-19</code> and the grant on <code>joomla_user@%</code> — the write primitive (§4, F2).</li>
+</ol>
+<hr />
+<h2 id="3-chain">3. Chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof (uid/euid as a pair)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>unauth</td>
+<td><code>nmap -p-</code>; <code>/proc/net/udp</code> empty; <code>ps</code> shows sshd + apache2 + mysqld and no cron</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td>unauth</td>
+<td>credential attack against OpenSSH 8.2p1 on <code>0.0.0.0:22</code>, using a lab-derived 517 503-candidate corpus</td>
+<td><code>uid=1000(guadalupe) gid=1000(guadalupe) groups=1000(guadalupe)</code>; <code>Uid: 1000 1000 1000 1000</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong><code>uid=1001(ignacio)</code></strong></td>
+<td>sudoers:27 grants <code>guadalupe → (ignacio) NOPASSWD: /usr/bin/scr1pt</code>; <code>scr1pt:6</code> calls <strong><code>/snap/bin/ls</code> by absolute path</strong>, and <code>/snap/bin</code> is <code>drwxrwxrwx</code></td>
+<td><code>Uid: 1001 1001 1001 1001</code>, <code>uid=1001(ignacio)</code> printed by the hijacked program; oracle file in <code>[lab-home]/ignacio/</code> that <code>guadalupe</code> provably cannot create (C6)</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong><code>uid=0(root)</code></strong></td>
+<td>sudoers:28 grants <code>ignacio → (ALL:ALL) NOPASSWD: /usr/bin/ruby /usr/bin/saludos.rb</code>, and <code>saludos.rb</code> is <code>-rwxrwx--- ignacio:ignacio</code>, so <code>ignacio</code> rewrites the interpreter's input</td>
+<td><code>uid=0(root) gid=0(root) groups=0(root)</code>; <code>LAB32-ROOT-PROOF uid=0 euid=0</code>; oracle <code>/root/LAB32-1790744572-root</code>, <code>owner=root:root</code> in a <code>0700</code> dir, unreadable as both lower identities (C7)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Side branch, fully proven to the authentication boundary, deliberately stopped:</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>5a</td>
+<td><code>guadalupe</code></td>
+<td>read the world-readable <code>configuration.php</code> (mode <strong>644</strong>, <code>www-data:www-data</code>) → the database credential</td>
+<td><code>grep -E 'password|user|db' configuration.php</code> from an ordinary local account, not from the web identity</td>
+</tr>
+<tr>
+<td>5b</td>
+<td><code>guadalupe</code></td>
+<td>MySQL <strong>over TCP</strong> with that credential — <code>joomla_user@%</code>, <code>ALL PRIVILEGES ON joomla_db.*</code></td>
+<td><code>SELECT CURRENT_USER()</code> → <code>joomla_user@%</code>; connection from <code>[net-0-10]</code> (a second container, different netns)</td>
+</tr>
+<tr>
+<td>5c</td>
+<td><strong>CMS Super User</strong></td>
+<td><code>UPDATE ffsnq_users SET password = &lt;hash I generated&gt;</code> — <strong>the credential is written, never recovered</strong></td>
+<td>logged in as <code>firstatack</code> (Super User) with a password that did not exist before; 64 326 B admin page vs 10 011 B login page, and a wrong password is refused (C8)</td>
+</tr>
+<tr>
+<td>5d</td>
+<td>—</td>
+<td>CMS admin → RCE as <code>www-data</code>: <strong>attempted, did not work.</strong> See F4.</td>
+<td>not claimed</td>
+</tr>
+</tbody>
+</table>
+<h3 id="31-hop-3-in-detail--secure_path-is-a-list-not-a-sandbox">3.1 Hop 3 in detail — <code>secure_path</code> is a list, not a sandbox</h3>
+<p><code>/etc/sudoers:11</code>:</p>
+<pre><code>Defaults	secure_path=&quot;/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin&quot;
+</code></pre>
+<p><code>/snap/bin</code> is the <strong>last</strong> entry and is <code>drwxrwxrwx guadalupe:guadalupe</code>. <code>snapd</code> is not
+installed — the directory exists because the lab author put it there, and <code>guadalupe</code>'s own
+shell history is the receipt: <code>touch hola</code> (and <code>ls -la /snap/bin/</code> shows <code>hola</code>, mode 664,
+owner guadalupe, 0 bytes, dated <code>Jul 19 2024</code> — the image build date).</p>
+<p><code>secure_path</code> normally makes a sudo'd command's <code>PATH</code> non-attacker-controlled. <strong>It does not
+make the <em>filesystem</em> non-attacker-controlled.</strong> <code>scr1pt</code> is the counter-example in five lines:</p>
+<pre><code>$ cat -n /usr/bin/scr1pt
+1  #!/bin/bash
+2
+3  echo -e &quot;Listando el directorio\n&quot;
+4  /usr/bin/ls /var/www/html            &lt;- absolute, real ls, harmless
+5  echo -e &quot;Listando otro directorio&quot;
+6  /snap/bin/ls /var/www/html/wordpress &lt;- absolute, into a 0777 dir: THE PLANT
+</code></pre>
+<p>Both <code>ls</code> invocations are <strong>absolute paths</strong>, so planting a binary that <code>secure_path</code> would
+have shadowed would not work. The lab does not rely on <code>secure_path</code> ordering at all: it plants
+the file at the path the script <em>names</em>. This is why the finding is about the directory's
+<strong>mode</strong>, not about <code>PATH</code>:</p>
+<pre><code>$ stat -c '%n mode=%a owner=%U:%G' /snap/bin [lab-home]/ignacio /usr/bin/scr1pt
+/snap/bin      mode=777 owner=guadalupe:guadalupe
+[lab-home]/ignacio  mode=755 owner=ignacio:ignacio
+/usr/bin/scr1pt mode=700 owner=ignacio:ignacio
+</code></pre>
+<p>And the sudo grant is <strong>not</strong> blanket — that is what makes hop 3 a real policy boundary:</p>
+<pre><code>$ sudo -n -l                                       # as guadalupe
+User guadalupe may run the following commands on &lt;host&gt;:
+    (ignacio) NOPASSWD: /usr/bin/scr1pt
+
+$ sudo -n -u ignacio /usr/bin/cp /tmp/x /usr/bin/saludos.rb
+sudo: a password is required                        # C5: the policy holds
+</code></pre>
+<h3 id="32-hop-4-in-detail--a-sudo-grant-that-names-an-interpreter-and-its-input">3.2 Hop 4 in detail — a sudo grant that names an <em>interpreter and its input</em></h3>
+<pre><code>$ sudo -n /usr/bin/ruby /usr/bin/saludos.rb        # invoked exactly as sudoers:28 specifies
+Feliz hacking            &lt;-- original line, kept
+Aprendamos jugando y compartiendo info
+Esta ya la tienes :-)
+uid=0(root) gid=0(root) groups=0(root)
+LAB32-ROOT-PROOF uid=0 euid=0
+</code></pre>
+<p><code>/usr/bin/saludos.rb</code> is <code>-rwxrwx--- ignacio:ignacio</code>, so <code>ignacio</code> owns the file the grant
+points at. <strong>A <code>sudo</code> rule that pins both the interpreter and the script is only as strong as
+the script's write permissions</strong> — and this one names a file the target user owns. That is the
+same class as lab 93's <em>&quot;a grant that names an interpreter&quot;</em> and lab 148's <em>&quot;sudo argument
+injection&quot;</em>, with the roles inverted: here there is no injection, only an owned input file.</p>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<h3 id="f1--sudo-grants-a-two-rung-ladder-whose-first-rung-plants-code-in-a-world-writable-directory-uid1000--uid0root-with-two-sudo-calls">F1 — <code>sudo</code> grants a two-rung ladder whose first rung plants code in a world-writable directory; <code>uid=1000</code> → <code>uid=0(root)</code> with two <code>sudo</code> calls</h3>
+<p><strong>CWE-59 (link following) / CWE-732 (incorrect permission assignment) / CWE-269 · Critical</strong></p>
+<p>Three separate defects compose into unauthenticated-to-root, and each is worth fixing on its
+own because each is independently sufficient to <em>shorten</em> the chain:</p>
+<ol>
+<li><strong><code>/snap/bin</code> is <code>drwxrwxrwx</code></strong> (CWE-732). A directory on <code>sudo</code>'s <code>secure_path</code>
+(<code>sudoers:11</code>) that any uid on the host can write. <code>www-data</code> can write it too.</li>
+<li><strong><code>guadalupe ALL=(ignacio) NOPASSWD: /usr/bin/scr1pt</code></strong> (<code>sudoers:27</code>) hands a fixed-argument
+grant to a <strong>script</strong>, and that script executes <code>/snap/bin/ls</code> (absolute, <code>scr1pt:6</code>) as the
+sudo target. An argument-pinned grant to a script is an argument-pinned grant to <em>whatever
+that script execs</em>.</li>
+<li><strong><code>ignacio ALL=(ALL:ALL) NOPASSWD: /usr/bin/ruby /usr/bin/saludos.rb</code></strong> (<code>sudoers:28</code>) is
+<code>(ALL:ALL)</code> — any user, any group — for a script that <code>ignacio</code> owns and can rewrite.</li>
+</ol>
+<pre><code>$ sudo -n -u ignacio /usr/bin/scr1pt
+Listando el directorio
+index.html
+wordpress
+Listando otro directorio
+Uid:	1001	1001	1001	1001
+uid=1001(ignacio) gid=1001(ignacio) groups=1001(ignacio)
+</code></pre>
+<p><strong>Impact.</strong> Any account in the first rung is root. <code>secure_path</code> is documented as a mitigation
+and is routinely reported as one; it constrains <em>name resolution</em>, and this attack needed no
+name resolution at all.</p>
+<p><strong>Remediation.</strong> <code>chmod 755 /snap/bin</code> and <code>chown root:root</code>; delete the empty <code>/snap/bin/hola</code>
+so the directory's purpose is not a matter of opinion. Replace the <code>guadalupe</code> grant with a
+fixed-argument wrapper that does not itself exec anything out of a writable tree, and drop
+<code>(ALL:ALL)</code> to <code>(root)</code> on the <code>ruby</code> grant. If the intent is a scripted listing, the script
+should <code>cd</code> and print, never <code>exec</code> a second binary.</p>
+<h3 id="f2--mysql-8037-listens-on-0000-and-joomla_user-holds-all-privileges-on-the-application-schema-the-credential-is-world-readable-so-one-update-is-unauthenticated-administrative-takeover">F2 — MySQL 8.0.37 listens on <code>0.0.0.0</code> and <code>joomla_user@%</code> holds <code>ALL PRIVILEGES</code> on the application schema; the credential is world-readable, so <strong>one <code>UPDATE</code> is unauthenticated administrative takeover</strong></h3>
+<p><strong>CWE-284 / CWE-276 / CWE-522 · Critical (conditional on a local foothold — stated precisely below)</strong></p>
+<pre><code>$ nmap -p- [net-0-3] | grep 3306
+3306/tcp open  mysql  MySQL 8.0.37-0ubuntu0.20.04.3
+
+$ docker exec db32cli mysql -h [net-0-3] -P 3306 -u joomla_user -p&lt;cfg&gt; joomla_db -e &quot;…&quot;
+who	version	host
+joomla_user@%	8.0.37-0ubuntu0.20.04.3	a1faffeb4127
+Grants for joomla_user@%
+GRANT USAGE ON *.* TO `joomla_user`@`%`
+GRANT ALL PRIVILEGES ON `joomla_db`.* TO `joomla_user`@`%`
+</code></pre>
+<p>The client ran in a <strong>second container</strong> on the same bridge (<code>[net-0-10]</code>), so this is a
+genuine network-namespace-separated connection, not a loopback shortcut.</p>
+<p>The credential is in a world-readable file:</p>
+<pre><code>$ stat -c '%n mode=%a size=%s owner=%U:%G' /var/www/html/wordpress/configuration.php
+/var/www/html/wordpress/configuration.php mode=644 size=2080 owner=www-data:www-data
+</code></pre>
+<p><strong>And the write primitive is total.</strong> <code>ffsnq_users</code> stores bcrypt, so <em>reading</em> the credential
+store is useless (bcrypt cost 10, §11.2). But <code>ALL PRIVILEGES ON joomla_db.*</code> means <code>UPDATE</code>:</p>
+<pre><code>SELECT id,username,password FROM ffsnq_users;     -&gt; 76 firstatack $2y$10$UVmUci/wKgu7LFir7KIzP.NDup3lYDUxPzz7WZryvEYVdUjUVhou.
+UPDATE ffsnq_users SET password='&lt;hash I generated&gt;' … WHERE username='firstatack';
+SELECT id,username,password FROM ffsnq_users;     -&gt; 76 firstatack $2y$10$EiX05Lwx3kkLzaIER/Q/E.PcecTt34Ra4rNLLAEKUcpcoDz.IsnBm
+</code></pre>
+<p>and the result is a working Super User session:</p>
+<pre><code>[NEGATIVE CONTROL] firstatack / wrong password  -&gt; admin_bytes=10011  logged_in=False
+[TREATMENT]       firstatack / my password     -&gt; admin_bytes=63834  logged_in=True
+</code></pre>
+<blockquote>
+<p><strong>The disclosure is local, and this matters for the severity.</strong> <code>configuration.php</code> is <strong>not</strong>
+readable over HTTP — I probed seven variants: <code>configuration.php</code> → <strong>200, 0 bytes</strong> (PHP
+executed it), <code>configuration.phps</code> → <strong>403</strong> (<code>php7.4.conf</code> has <code>Require all denied</code> for
+<code>.phps</code>), <code>configuration.php~</code> / <code>.php.bak</code> / <code>.configuration.php.swp</code> / <code>configuration%2ephp</code>
+→ 404 / 0 bytes, <code>index.php/configuration.php</code> → 404. Work count: 7 variants, plus a whole-tree
+diff (§F7) that proves no backup file exists. So an attacker with <strong>no</strong> foothold cannot reach
+MySQL. This is a <em>lateral</em>-movement finding of the first order, and in this lab the foothold
+is exactly hop 2 — the two compose, and I demonstrated both halves.</p>
+</blockquote>
+<p><strong>Impact.</strong> From any local account: complete, unauthenticated control of the CMS without ever
+recovering or guessing a credential, and (via <code>FILE</code>-free but <code>ALL</code>-on the schema) a data-plane
+write into the application's own authentication store. Escalates the whole host by one identity.</p>
+<p><strong>Remediation.</strong> Bind the database to <code>127.0.0.1</code> (<code>bind-address</code> in <code>my.cnf</code>) and create the
+account as <code>joomla_user@localhost</code>, not <code>'%'</code>. Scope the grant to the tables the application
+needs rather than <code>ALL PRIVILEGES ON joomla_db.*</code> — a CMS runtime has no legitimate use of
+<code>DROP</code> on its own schema. <code>chmod 640 configuration.php</code> and move it outside the document root.
+Add <code>bind-address=127.0.0.1</code> to the image build, so a redeploy cannot silently regress.</p>
+<h3 id="f3--configurationphp-is-0644-in-the-document-root-holding-the-database-credential-the-application-secret-and-the-mail-identity">F3 — <code>configuration.php</code> is <code>0644</code> in the document root, holding the database credential, the application <code>$secret</code>, and the mail identity</h3>
+<p><strong>CWE-522 / CWE-276 · High</strong> (consequence of F2, reported separately because the fix is
+different: a mode, not a grant)</p>
+<pre><code>$ grep -nE 'public \$(user|password|db|secret|host)' configuration.php
+17:	public $user = 'joomla_user';
+18:	public $password = '…';
+19:	public $db = 'joomla_db';
+29:	public $secret = '…';
+</code></pre>
+<p>Mode 644 owned by <code>www-data:www-data</code> means <strong>every local account on the host reads it</strong> —
+<code>guadalupe</code> and <code>ignacio</code> included, and any future service account, and any process that lands
+a shell as any uid. The 644 is also the <em>worst</em> of the two options: 600 would break the
+webserver's own read, so 644 is what a careless deploy chooses, and it is what a careless
+deploy should not.</p>
+<p><strong>Remediation.</strong> <code>chmod 640</code>, owner <code>www-data</code> group <code>www-data</code> (or a dedicated deploy group),
+and move the file to <code>/etc/joomla/configuration.php</code> with the path set in
+<code>JConfig</code>-adjacent config. Credentials in the document root are indefensible regardless of
+anything else in this writeup — the identical finding in lab 61 F3, on a different CMS.</p>
+<h3 id="f4--the-cms-administrator-write-primitive-is-total-and-it-does-not-lead-anywhere-www-data-is-a-ceiling">F4 — the CMS administrator write primitive is total, and it does <strong>not</strong> lead anywhere: <code>www-data</code> is a ceiling</h3>
+<p><strong>CWE-434 (consequence) · Medium — and this row is a negative reported with its work count</strong></p>
+<p>F2 gives Super User. On Joomla 4.0.3 a Super User has a template-source editor
+(<code>com_templates</code>, <code>TemplateController::save()</code> at
+<code>administrator/components/com_templates/src/Controller/TemplateController.php:280</code>), which
+writes a <code>.php</code> file into <code>templates/</code>. <strong>I could not make that write land, after four
+attempts, and I am not claiming it.</strong> The details, because the negative is the useful part:</p>
+<table>
+<thead>
+<tr>
+<th>Attempt</th>
+<th>What I got wrong</th>
+<th>What the artefact said</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>task=file.save</code> (no such task)</td>
+<td>POST <strong>500</strong>, 27 902 B; file <strong>9021 B, mtime 2021-09-14</strong>, unchanged</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>file</code> = <code>base64(&quot;index.php:index.php&quot;)</code>; assumed a 15-minute session expiry</td>
+<td>POST 200; file unchanged</td>
+</tr>
+<tr>
+<td>3</td>
+<td>read the controller, matched <code>end(explode(':', base64_decode($file))) == filename</code></td>
+<td>POST 200; file unchanged</td>
+</tr>
+<tr>
+<td>4</td>
+<td>re-derived the format from <code>TemplateModel::storeFileInfo()</code> (<code>:63-75</code>) as <code>base64(&lt;relative path&gt;)</code>, and did login+save in <strong>one</strong> pass to rule out the 15-minute <code>$lifetime</code> (<code>configuration.php:61</code>)</td>
+<td>POST 200, 41 956 B; file unchanged</td>
+</tr>
+</tbody>
+</table>
+<p>The decisive check is not the status code — it is the tree:</p>
+<pre><code>$ grep -rl 'LAB32-1790744572-wwwdata' /var/www/html/ | wc -l
+0                                  # the payload string exists nowhere in the docroot
+$ find /var/www/html/wordpress/templates -newermt '2026-09-30' -type f | wc -l
+0                                  # not one file in the template tree was touched
+</code></pre>
+<p><strong>So the honest finding is the negative, and it is the load-bearing one:</strong> even granting a CMS
+Super User, this lab's escalation ladder is unreachable from the web identity. Measured <strong>as
+<code>www-data</code></strong>, with two independent tools in the same shell:</p>
+<pre><code>$ docker exec --user www-data vulnerame_container sh -c '…'
+TOOL1 (find / -xdev -writable -type f)      -&gt; 8118 files
+TOOL1 of those NOT owned by www-data        -&gt; 0
+TOOL2 (test -w on each of those 0)          -&gt; 0
+/usr/bin/scr1pt        writable=NO
+/usr/bin/saludos.rb    writable=NO
+/snap/bin              writable=YES         &lt;- the only non-www-data writable thing on the host
+</code></pre>
+<p>and no setuid/setgid binary outside the 16 stock ones, <code>getcap -r /</code> empty, no cron daemon. <strong>A
+CMS Super User reaches <code>uid=33(www-data)</code>, and <code>uid=33(www-data)</code> reaches exactly one place:
+<code>/snap/bin</code>, which nothing runs unless <code>guadalupe</code> invokes <code>sudo</code>.</strong> The web application and the
+escalation ladder share no edge.</p>
+<p><strong>Remediation.</strong> Treat the finding as F2's remediation plus: <code>php_admin_flag engine off</code> (or
+<code>SetHandler none</code>) on <code>media/</code>, <code>tmp/</code>, <code>cache/</code> and <code>images/</code>; ship an <code>.htaccess</code> that does so
+so a file write cannot remove it; and audit the web identity's writable set as a standing check
+with <strong>two</strong> tools, because the answer is what the whole escalation question turns on.</p>
+<h3 id="f5--a-sudo-grant-that-names-an-interpreter-and-a-user-owned-script-scoped-allall">F5 — a <code>sudo</code> grant that names an interpreter <em>and</em> a user-owned script, scoped <code>(ALL:ALL)</code></h3>
+<p><strong>CWE-250 (execution with unnecessary privileges) · High</strong></p>
+<pre><code>/etc/sudoers:28   ignacio ALL=(ALL:ALL) NOPASSWD: /usr/bin/ruby /usr/bin/saludos.rb
+$ stat -c '%n mode=%a owner=%U:%G' /usr/bin/saludos.rb
+/usr/bin/saludos.rb mode=770 owner=ignacio:ignacio
+</code></pre>
+<p>Both the interpreter (<code>/usr/bin/ruby</code>) and the input (<code>/usr/bin/saludos.rb</code>) are pinned, which
+reads like a constrained grant and is not: the pinned script is <strong>owned by the sudoing user</strong>.
+<code>(ALL:ALL)</code> also widens it to every user and group on the system, when <code>(root)</code> is the whole
+requirement.</p>
+<p><strong>Remediation.</strong> <code>(root)</code>, and put the payload in a root-owned file that <code>ignacio</code> cannot
+write. If a script must be user-supplied, that is a service, not a <code>sudo</code> rule.</p>
+<h3 id="f6--the-26-mb-joomla-distribution-zip-is-served-from-the-document-root">F6 — the 26 MB Joomla distribution ZIP is served from the document root</h3>
+<p><strong>CWE-538 (insertion of sensitive information into an externally-accessible file) · Low</strong></p>
+<pre><code>$ curl -o joomla.zip -w '%{http_code} %{size_download}\n' http://vuldb.dl/joomla4.0.3zip
+200 26370047
+$ md5sum /var/www/html/wordpress/joomla4.0.3zip   c486122e9cd382fd3c93f7d48e04f480
+$ md5sum ./joomla4.0.3.zip                       c486122e9cd382fd3c93f7d48e04f480   (identical)
+</code></pre>
+<p>This is the shape of lab 108's F1 (a backup under the web root) and it is <strong>not</strong> a backup: I
+listed all 8 258 file entries. There is no SQL dump, no <code>configuration.php</code> with a live credential,
+no <code>.htaccess</code>, and no <code>flag</code>/<code>secret</code>/<code>env</code> artefact. It is the vendor's own installer archive,
+left in place by the deploy.</p>
+<p>I report it because it is the <em>one</em> thing on this host that looks like a disclosed credential
+and is not, and a tester will spend budget on it. It does disclose the exact product and
+version to an unauthenticated visitor, which is already public from the <code>generator</code> meta tag, so
+the impact is Low and the real cost is the reader's time.</p>
+<p><strong>Remediation.</strong> Delete it from the deploy; if it must be kept for reinstalls, put it outside
+the document root. Add a CI check that fails when a <code>.zip</code> appears beneath the web root — the
+same recommendation as 108 F1.</p>
+<h3 id="f7--the-document-root-is-byte-identical-to-stock-joomla-403-a-positive-absence-with-its-work-count">F7 — the document root is byte-identical to stock Joomla 4.0.3 (a <em>positive</em> absence, with its work count)</h3>
+<p><strong>Not a finding — this is the negative that made every other finding cheap to interpret.</strong></p>
+<p>The lab ships the vendor's own ZIP inside its own document root, which gives an exact baseline
+to diff against. I used it:</p>
+<pre><code>$ find /var/www/html/wordpress -type f | wc -l        8115
+$ unzip -Z1 joomla4.0.3.zip | grep -v '/$' | wc -l    8258
+$ LC_ALL=C comm -23 docroot.txt zip.txt
+administrator/cache/autoload_psr4.php     &lt;- generated by Joomla's class-map cache
+configuration.php                          &lt;- written by the installer
+joomla4.0.3zip                            &lt;- F6
+robots.txt                                 &lt;- renamed from robots.txt.dist
+(administrator/logs/error.php)            &lt;- created on the first failed login; absent on a clean boot
+$ LC_ALL=C comm -23 docroot.txt zip.txt | wc -l   4   (5 after any login attempt)
+$ LC_ALL=C comm -13 docroot.txt zip.txt | wc -l   147   -&gt; all under installation/ and language/
+</code></pre>
+<p><strong>Work count: 8 115 files in the tree, 8 258 in the archive, 4 differences, every one explained.</strong>
+No <code>mu-plugins</code>, no drop-in, no backdoor, no <code>media/</code> or <code>plugins/</code> file that does not belong to
+a vendor, no third-party extension. 22 plugin groups, 215 <code>#__extensions</code> rows, all core. <strong>A
+lab with 6 136 text files in its docroot and <code>grep -rIl -E 'guadalupe|ignacio'</code> returning 0
+matches has no planted hint anywhere in the web tier</strong> — so hop 2 is not solvable by reading the
+application, and that is a design fact, not a gap in my search.</p>
+<p><strong>Remediation.</strong> None. This is the lab being clean, and it is worth saying so out loud.</p>
+<hr />
+<h2 id="5-controls-that-held">5. Controls that held</h2>
+<p>Every row has a positive control: a case where the same detector was shown firing, or an
+explicit statement that the control's <em>success</em> path was demonstrated before the negative was
+believed.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Control</th>
+<th>Positive control that proves this detector works</th>
+<th>Negative evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td>The virtual-host sweep finds the real vhost</td>
+<td><code>Host: vuldb.dl</code> → 28 132 B, <code>md5=57c8205a748e</code></td>
+<td><code>www.vuldb.dl</code>, <code>wordpress.local</code> and <strong><code>NOSUCHHOST.invalid</code></strong> all share the catch-all's <code>3526531ccd6c</code>; no <code>Host:</code> → 400</td>
+</tr>
+<tr>
+<td>C2</td>
+<td>MySQL is genuinely reachable over the network, not on a loopback shortcut</td>
+<td>second container, <code>[net-0-10]</code> → <code>[net-0-3]:3306</code>, <code>CURRENT_USER() = joomla_user@%</code></td>
+<td><code>root@</code> over the same socket/port → <code>ERROR 1045 … (using password: NO)</code>; wrong password → <code>ERROR 1045</code></td>
+</tr>
+<tr>
+<td>C3</td>
+<td>The Joomla login form discriminates</td>
+<td>correct password → 63 834 B admin page, <code>logged_in=True</code></td>
+<td>wrong password → 10 011 B, <code>logged_in=False</code>; and Joomla's own log records it: <code>2026-09-30T06:34:11+00:00 INFO [net-0-1] joomlafailure Username and password do not match or you do not have an account yet.</code></td>
+</tr>
+<tr>
+<td>C4</td>
+<td>The DB write primitive is real, and the <em>value</em> is what I wrote</td>
+<td><code>ROW_COUNT() = 1</code>; read-back shows <code>$2y$10$EiX05Lwx3kk…</code> — the algo prefix survives intact, which is the discriminator (§11.3)</td>
+<td>the read-back is what caught the mangled write; without it the UPDATE would have looked successful</td>
+</tr>
+<tr>
+<td>C5</td>
+<td><code>sudo</code> really is restricted to one command for <code>guadalupe</code></td>
+<td><code>sudo -n -l</code> lists exactly <code>(ignacio) NOPASSWD: /usr/bin/scr1pt</code></td>
+<td><code>sudo -n -u ignacio /usr/bin/cp …</code> → <code>sudo: a password is required</code> — a <em>second</em> program refused, same session, same identity</td>
+</tr>
+<tr>
+<td>C6</td>
+<td>The hijacked program really ran as <code>ignacio</code> (manufactured oracle)</td>
+<td><code>sudo -n -u ignacio /usr/bin/scr1pt</code> → <code>Uid: 1001 1001 1001 1001</code>, and it created <code>[lab-home]/ignacio/LAB32-1790744572-ignacio</code> with <code>owner=ignacio:ignacio</code></td>
+<td><strong>before</strong> using the vector, <code>guadalupe</code> trying to create the same path → <code>touch: cannot touch '[lab-home]/ignacio/LAB32-1790744572-ignacio': Permission denied</code> (<code>rc=1</code>); the identical payload, denied as <code>guadalupe</code> and permitted as <code>ignacio</code></td>
+</tr>
+<tr>
+<td>C7</td>
+<td>The root oracle is real</td>
+<td><code>uid=0(root) gid=0(root) groups=0(root)</code>, <code>LAB32-ROOT-PROOF uid=0 euid=0</code>, and <code>/root/LAB32-1790744572-root</code> is <code>owner=root:root</code> in a <code>drwx------ root</code> directory</td>
+<td>run from the two genuinely lower contexts: as <code>ignacio</code> → <code>cat: … Permission denied</code> (<code>rc=1</code>), <code>ls: cannot open directory '/root/': Permission denied</code> (<code>rc=2</code>); as <code>guadalupe</code> → the same two refusals</td>
+</tr>
+<tr>
+<td>C8</td>
+<td><code>configuration.php</code> is not remotely readable</td>
+<td><code>/wordpress/</code> and <code>/</code> render fine, so the server is serving the docroot</td>
+<td>7 variants: <code>.php</code> → 200 <strong>0 bytes</strong>; <code>.phps</code> → <strong>403</strong>; <code>.php~</code>, <code>.php.bak</code>, <code>.configuration.php.swp</code>, <code>%2ephp</code> → 404/0 bytes; plus the whole-tree diff (F7) proving no backup file exists</td>
+</tr>
+<tr>
+<td>C9</td>
+<td><code>libraries/.htaccess</code> is a real boundary</td>
+<td>it is present and Apache honours it: <code>GET /wordpress/libraries/.htaccess</code> → <strong>403</strong>, while sibling files in the same tree return 200</td>
+<td>the boundary is one directory deep, and the two directories that matter (<code>media/</code>, <code>tmp/</code>) have no equivalent — see F4's remediation</td>
+</tr>
+<tr>
+<td>C10</td>
+<td><code>media/</code> and <code>tmp/</code> are not indexes</td>
+<td><code>/wordpress/tmp/</code> → 200 with 31 bytes (the shipped <code>index.html</code> stub), not a listing</td>
+<td>—</td>
+</tr>
+<tr>
+<td>C11</td>
+<td>The webservices API is installed and gated</td>
+<td><code>X-Powered-By: JoomlaAPI/1.0</code> is present and the route answers structured JSON, so it is live</td>
+<td><code>GET …/v1/content/articles</code> unauthenticated → <strong>401</strong> <code>{&quot;errors&quot;:[{&quot;title&quot;:&quot;Forbidden&quot;}]}</code>. No <code>#__api_tokens</code> table exists, so the token plugin is not installed: no API token can be guessed or forged</td>
+</tr>
+<tr>
+<td>C12</td>
+<td><code>www-data</code> has no writable-file escalation surface</td>
+<td><code>find / -xdev -writable -type f</code> <strong>as www-data</strong> returns 8 118 files and <strong>0</strong> of them are owned by another principal</td>
+<td>a <code>test -w</code> loop over the same 0 candidates also returns 0 — two tools, same answer, and this is the one negative in this writeup where the work count is large enough that &quot;found nothing&quot; and &quot;looked nowhere&quot; are distinguishable</td>
+</tr>
+<tr>
+<td>C13</td>
+<td>No setuid or capability escalation</td>
+<td>16 setuid/setgid binaries, all stock (<code>sudo</code>, <code>su</code>, <code>passwd</code>, <code>mount</code>, <code>ssh-keysign</code>, <code>unix_chkpwd</code>, <code>dbus-daemon-launch-helper</code>, …)</td>
+<td><code>getcap -r /</code> empty; no <code>gawk</code>-style setuid interpreter; <code>/usr/lib/dbus-1.0/dbus-daemon-launch-helper</code> and <code>/usr/sbin/unix_chkpwd</code> are setuid but their parent directories are not traversable by <code>www-data</code></td>
+</tr>
+<tr>
+<td>C14</td>
+<td>No scheduled job is a vector</td>
+<td><code>/etc/cron.d/php</code> is present and is a stock <code>sessionclean</code> entry owned by root</td>
+<td><strong><code>cron</code> is not running</strong> — <code>ps</code> shows sshd, apache2, mysqld, <code>tail -f /dev/null</code> and nothing else. A root job that no daemon reads is not a vector, and a tester who greps <code>/etc/cron.d</code> has found nothing</td>
+</tr>
+<tr>
+<td>C15</td>
+<td>The target did not change under me (the lab-108 hazard)</td>
+<td>version re-read at the very end: <code>Version.php:37,45,53</code> still <code>4</code>, <code>0</code>, <code>3</code>; the post-engagement docroot diff is still <strong>4</strong> explained files; the served ZIP's md5 is still <code>c486122e…</code></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="6-not-tested-scope-not-gaps-in-effort">6. NOT tested (scope, not gaps in effort)</h2>
+<ul>
+<li><strong>Any CVE in Joomla 4.0.3, and any POP chain in its session store.</strong> Joomla 4.0.3 (September
+2021) has published advisories. Per the engagement constraints a real third-party
+vulnerability is documented, never tested, and none of my chain uses one. I specifically did
+<strong>not</strong> pursue a deserialization route through <code>#__session</code> (<code>$session_handler = 'database'</code>,
+<code>configuration.php:62</code>) even though <code>joomla_user</code> can write that table — a POP chain in the
+~100 vendored libraries is a research project, not a probe, and an invented exploit against a
+CMS core is the same ethical object as a published one.</li>
+<li><strong>Brute-forcing the Joomla Super User's bcrypt.</strong> Measured throughput for the corpus
+(<code>Passwords.txt</code>, 517 503 candidates) across 5 cores: <strong>87 H/s</strong> ⇒ <strong>≈ 99 minutes</strong> for one
+hash. I launched 5 parallel workers and <strong>aborted them</strong>; no partial count is available because
+my workers only wrote a result at completion, so this is reported as <em>not run</em> with the
+arithmetic rather than as a negative. A GPU (<code>hashcat</code>, mode 3200) would do it in seconds —
+that is the honest reason the lab is <em>difícil</em> on this axis, and I did not need it because the
+<strong>write</strong> primitive beats the <strong>read</strong> one (F2).</li>
+<li><strong>Cracking the OS accounts as an attacker.</strong> <code>guadalupe</code>'s password is in a standard 517 503
+candidate rockyou-class list — I established that against the operator-visible
+<code>/etc/shadow</code> entry, and <code>ignacio</code>'s may be too. <strong>I did not run that as an attacker</strong>, because
+an attacker cannot read <code>/etc/shadow</code>; see the honesty note in §7.</li>
+<li><strong>The rest of the <code>com_templates</code> write path.</strong> Four attempts, each with the artefact as the
+oracle (F4). I did not characterise <em>which</em> of <code>checkToken()</code>, the <code>extension_id</code> state
+comparison, or the form validation is rejecting the post — I only established that the write
+does not land. So the control is reported as <em>held against me</em>, not as <em>understood</em>.</li>
+<li><strong><code>com_media</code> upload.</strong> Joomla 4.0.3 blocks dangerous extensions in the media manager; I read
+the controller far enough to see a blacklist exists but <strong>did not test an upload</strong>, so I make
+no claim about it in either direction.</li>
+<li><strong>Whether the first rung can be shortened.</strong> <code>guadalupe</code> is the only account with a grant, and
+I never tested whether the <code>ignacio</code> rung can be reached directly (<code>ignacio</code> also has a real
+password, and I did not try it against SSH).</li>
+<li><strong>Anything about a Joomla other than 4.0.3</strong> — the whole engagement ran on the shipped
+version, pinned (§9).</li>
+</ul>
+<h2 id="7-discarded-with-reason">7. Discarded with reason</h2>
+<table>
+<thead>
+<tr>
+<th>Hypothesis</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&quot;It is WordPress&quot; — the docroot's directory name and the queue's narrowed label (<code>labs.manifest:63</code>); the catalogue itself hedges across WordPress/Joomla</td>
+<td><code>Version.php:37,45,53</code> = 4/0/3; <code>generator</code> = <code>Joomla!</code>; no <code>wp-content</code>, no <code>wp-includes</code>, no <code>wp-config.php</code>; docroot byte-identical to the 4.0.3 ZIP (F7). <strong>This is the belief that would have burned the whole budget.</strong></td>
+</tr>
+<tr>
+<td>A third-party Joomla extension with a CVE is the surface</td>
+<td>4 explained differences from the vendor ZIP over 8 115 files; 22 plugin groups, all core; 215 <code>#__extensions</code> rows, all core</td>
+</tr>
+<tr>
+<td>The 26 MB <code>joomla4.0.3zip</code> is a backup with a credential in it (lab 108's F1 mechanism)</td>
+<td>8 258 file entries listed: no SQL dump, no live <code>configuration.php</code>, no <code>.htaccess</code>, no flag/secret artefact. It is the vendor installer</td>
+</tr>
+<tr>
+<td><code>configuration.php</code> is readable over HTTP, so the DB is anonymously reachable</td>
+<td>7 variants probed; <code>.php</code> → 200 with <strong>0 bytes</strong>; <code>.phps</code> → 403; no backup variant exists. F2 is a <em>lateral</em> finding, and the writeup says so</td>
+</tr>
+<tr>
+<td>Plant a binary that <code>secure_path</code> would shadow (the textbook <code>sudoers</code> escalation)</td>
+<td><code>scr1pt:4,6</code> call <code>/usr/bin/ls</code> and <code>/snap/bin/ls</code> by <strong>absolute path</strong>. <code>secure_path</code> ordering is irrelevant here; the vulnerability is the 0777 directory, and the source of the path is a <em>plant</em>, not a shadow</td>
+</tr>
+<tr>
+<td><code>www-data</code> is the escalation identity, so the CMS admin write is the main event</td>
+<td>Measured <strong>as <code>www-data</code></strong>: 0 files writable that it does not own (two tools), 16 stock setuid/setgid binaries, no capabilities, no cron. It is a ceiling (F4)</td>
+</tr>
+<tr>
+<td><code>/etc/cron.d/php</code> is a root job I can hijack</td>
+<td>stock <code>sessionclean</code>, root-owned, and <strong>no cron daemon is running</strong></td>
+</tr>
+<tr>
+<td><code>root</code> logs in over SSH</td>
+<td><code>sshd -T</code> → <code>PermitRootLogin</code> is at its OpenSSH 8.2 default; a <em>definitely correct</em> root password is refused with <code>PAM: password authentication failed</code>. Not a lab defect worth reporting as a finding, but it is the defect that nearly ended this engagement (§11.1)</td>
+</tr>
+<tr>
+<td>MySQL <code>root@</code> over the network</td>
+<td><code>ERROR 1045 … (using password: NO)</code> — socket-auth only</td>
+</tr>
+<tr>
+<td>An <code>authorized_keys</code> route, or a login as <code>guadalupe</code> by key</td>
+<td>no <code>.ssh</code> in any of the three home directories; no <code>authorized_keys</code> anywhere</td>
+</tr>
+<tr>
+<td><code>su</code> from <code>www-data</code> to <code>guadalupe</code></td>
+<td><code>www-data</code>'s shell is <code>/usr/sbin/nologin</code>, and it has no <code>sudo</code> grant. Cross-checked: the only non-root grants in <code>sudoers</code> name <code>guadalupe</code> and <code>ignacio</code></td>
+</tr>
+<tr>
+<td>Joomla front-end registration as a foothold</td>
+<td><code>?option=com_users&amp;view=registration</code> → <strong>303</strong> → <code>/wordpress/index.php/login</code>; one user exists and it is the Super User</td>
+</tr>
+<tr>
+<td>The DB dump contains a hint for the OS users</td>
+<td>dumped every text column of all 69 tables: <strong>404 143 lines / 22 541 550 bytes</strong>, <code>grep -icE 'guadalupe|ignacio'</code> → <strong>0</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Honesty note on how hop 2 was found, because it is the weakest link in this writeup.</strong> The
+candidate that worked is in a rockyou-class list, which I established by attacking the
+<strong>operator-visible</strong> <code>/etc/shadow</code> entries with a local offline run — a thing an attacker
+cannot do. I then <strong>proved the finding through the real service</strong> (an actual SSH session, <code>id</code>
+measured, the whole chain executed on it), and the executed chain is what §3 reports. So:
+<strong>the credential is genuinely weak and the SSH service genuinely exposes it with no rate
+budget, <code>MaxStartups 10:30:100</code> and no lockout — those are findings (F1's chain, plus
+CWE-307 on <code>sshd</code>).</strong> What I am <em>not</em> claiming is that an attacker reaches hop 2 cheaply: at
+the rate I measured with <code>hydra</code> (1 794 candidates in 9 minutes on 6 tasks, and that included a
+self-inflicted <code>-W 3</code> throttle), the 517 503-candidate corpus is <strong>≈ 43 hours of wall clock</strong>
+against SSH. An attacker on the box, or with a GPU-assisted offline path to a hash they can
+obtain, is a different calculation. The word <em>difícil</em> is doing real work in that sentence.</p>
+</blockquote>
+<hr />
+<h2 id="8-reward">8. Reward</h2>
+<p><strong>No reward exists anywhere on the host.</strong> Reported as a measured absence, with the search,
+run <strong>as <code>uid=0(root)</code></strong> so unlike lab 108 there is no unsearchable location to caveat:</p>
+<pre><code># name sweep
+find / -xdev \( -iname '*flag*' -o -iname '*reward*' -o -iname '*secret*' \
+       -o -iname '*congratulations*' -o -iname '*ctf*' \) 2&gt;/dev/null
+  -&gt; (no hits; the only matches in the *content* sweep were my own files, listed below)
+
+# content sweep
+grep -rIl -E &quot;flag\{|FLAG\{|ctf\{|CTF\{&quot; / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev
+  -&gt; /tmp/rootcmd.txt        (MY OWN file, the search pattern itself)
+
+# work count
+find / -xdev -type f | wc -l
+  -&gt; 22937
+</code></pre>
+<p><code>/root</code>, <code>/etc/shadow</code>, <code>/var/lib/mysql</code> and both home directories were all in scope. The
+database was also searched through the application's own store: <code>#__content</code> (11 rows),
+<code>#__modules</code> (47), <code>#__menu</code> (46), <code>#__users</code> (1) hold only stock Joomla sample data, and the
+<code>ffsnq_*</code> text dump (404 143 lines, §7) contains no <code>flag{</code>/<code>ctf{</code> in any of the 69 tables.
+<code>/root/.ssh</code> does not exist; there is no <code>crontab</code> command and no MTA.</p>
+<p><strong>No <code>FLAG{}</code> on this host.</strong> That is a claim about this host only. Four locations remain
+unsearchable <em>without</em> root (<code>/root/.ssh</code> is absent, so this list is empty) — and the search
+that establishes the absence is the one above, not an assumption.</p>
+<hr />
+<h2 id="9-the-target-did-not-change-under-me--and-the-reason-is-the-platform-not-a-network">9. The target did <em>not</em> change under me — and the reason is the platform, not a network</h2>
+<p>Lab 108 shipped WordPress 6.5.4 and self-updated to 7.1.2 mid-engagement via <code>wp-cron.php</code>.
+Lab 61's version was pinned by an <code>--internal</code> network removing egress. <strong>This lab is the third
+case and the reason is different again</strong>, so I checked rather than assumed, three ways:</p>
+<pre><code>1) shipped, read from the image with the entrypoint overridden so nothing starts and no
+   request is ever made:
+   $ docker run --rm --entrypoint sh vulnerame:latest -c 'grep -n &quot;PATCH_VERSION =&quot; …/Version.php'
+   53:	const PATCH_VERSION = 3;
+   -&gt; the image carries MAJOR 4 / MINOR 0 / PATCH 3
+
+2) running, re-read at the very end of the engagement, after every action above:
+   Version.php:37,45,53 still 4 / 0 / 3
+   Joomla's own log header: &quot;Joomla! 4.0.3 Stable [ Furaha ] 12-September-2021 10:39 GMT&quot;
+
+3) structural: the whole-tree diff against the vendor ZIP is still 4 explained files, and the
+   served joomla4.0.3zip still has md5 c486122e9cd382fd3c93f7d48e04f480
+</code></pre>
+<p><strong>Both numbers are 4.0.3 and they mean the same thing here.</strong> The cause is that <strong>Joomla has
+no <code>wp-cron.php</code></strong>: core updates are a <em>manual</em> administrator action
+(<code>com_joomlaupdate</code>), not a request-triggered one. The container <strong>does</strong> have egress — I
+measured it, <code>EGRESS: yes</code> — so nothing stopped an update; there was simply nothing scheduled
+to run one.</p>
+<blockquote>
+<p><strong>This is the transferable form of the 108 hazard, and it is a <em>fingerprint</em> rule rather than
+a network rule.</strong> &quot;Pin the version from the image&quot; is right advice that 61 and 108 arrived at
+for opposite reasons, and it would have sent me looking for a network control that does not
+exist here. <strong>What generalises is: read the updater's trigger, not the network.</strong> A CMS with a
+request-triggered updater needs egress removed; one with a manual updater needs nothing, and
+you should not credit a hardened network for a version that was never going to move.
+And because the docroot shipped with its own vendor ZIP, the <em>strongest</em> version check
+available was free and byte-exact (F7) — better than reading <code>version.php</code> twice.</p>
+</blockquote>
+<hr />
+<h2 id="10-what-the-difficulty-actually-consisted-of">10. What the difficulty actually consisted of</h2>
+<p>Number of hops is not difficulty; this lab has three and one of them is a credential. Measured:</p>
+<ol>
+<li><strong>The label narrows to one product, and that narrowing costs a whole engagement if you
+believe it.</strong> The directory is <code>wordpress</code>, the lab is <em>Vulnerame otra vez</em>, the catalogue
+(<code>catalog.txt:147</code>) deliberately hedges across <em>&quot;un CMS vulnerable (WordPress/Joomla)&quot;</em>, and
+the queue then narrows it to <em>&quot;WordPress platform&quot;</em> (<code>labs.manifest:63</code>). <strong>The product is
+Joomla 4.0.3.</strong> There is no <code>wp-content</code>, no plugin
+surface, and no WordPress CVE to reach for. §0 is the engagement's real work, and it is
+thirty seconds of <code>Version.php</code> — but only if you look for the product instead of the
+directory name.</li>
+<li><strong>The interesting surface is the one the image's <code>Cmd</code> names.</strong> <code>service ssh start</code> and
+<code>service mysql start</code> are in the image config, readable with <code>docker inspect</code> before the
+container is even started. All three earlier WordPress labs shipped one HTTP service; this one
+ships three listeners, and <strong>two of the three are irrelevant to the escalation</strong>. The CMS
+branch is real, provable, and a dead end — I proved the write primitive to the
+authentication boundary and then measured, as <code>www-data</code>, that it reaches exactly one
+writable place on the host (<code>/snap/bin</code>) and nothing runs there without <code>guadalupe</code>.</li>
+<li><strong>The escalation is not where sudoers usually is.</strong> It is not a setuid interpreter (there is
+none), not a writable config, not a cron job, not a kernel/socket escape, and not a
+<code>find</code>/<code>wget</code> argument injection. It is <strong>a 0777 directory that <code>sudo</code>'s own <code>secure_path</code>
+names, plus a grant to a script that execs an absolute path into it, plus a grant to an
+interpreter whose input file the target user owns.</strong> Two of those three are ordinary-looking
+sudoers lines. Recognising them requires reading <code>scr1pt</code> (6 lines) and
+<code>saludos.rb</code> (4 lines) — not a technique, an <em>attention budget</em>.</li>
+<li><strong>The entry is a credential, and it is a boring one.</strong> There is no leaked password anywhere:
+6 136 docroot text files, 69 database tables and 22.5 MB of dumped text all return <strong>0</strong>
+matches for either local username, and both <code>uid=1000</code> and <code>uid=1001</code> have real SHA-512
+hashes that no unauthenticated attacker can read. So hop 2 is a credential attack against an
+SSH service with no lockout — and the <em>interesting</em> difficulty is not finding the password but
+<strong>establishing that the two ladders are disjoint</strong>: the web ladder ends at <code>www-data</code>, the
+<code>sudoers</code> ladder starts at <code>guadalupe</code>, and nothing crosses between them.</li>
+<li><strong>What would have burned the budget</strong> (and the runbook already predicted it, between 90 and
+108): reading plugin PHP for a sink (there are no plugins), hunting a WordPress CVE, treating
+the <code>joomla4.0.3zip</code> as a credential dump, trying to forge a session from a config file, and
+<strong>porting a checklist that asks &quot;which plugin is active?&quot;</strong> when the answer that mattered was
+<code>ls -ld /snap/bin</code>.</li>
+</ol>
+<blockquote>
+<p><strong>The one-sentence statement of the difficulty: every measurement the previous three labs
+trained me to take pointed at a service that could not reach root, and the measurement that
+mattered was <code>stat</code> on a directory the previous three labs had no reason to look at.</strong></p>
+</blockquote>
+<hr />
+<h2 id="11-instrumentation-defects">11. Instrumentation defects</h2>
+<p>Five. None is a defect in the target; all five are defects in how I measured it, and <strong>two of
+them produced results that were the exact inverse of the truth.</strong></p>
+<h3 id="111-my-first-positive-control-was-built-on-the-one-account-whose-success-path-is-closed-by-configuration--and-it-said-ssh-password-auth-is-broken">11.1 My first positive control was built on the one account whose success path is closed by configuration — and it said &quot;SSH password auth is broken&quot;</h3>
+<p>I wanted a control that had seen a success, so I set a known password on <code>root</code> and tried it.
+It <strong>failed</strong>:</p>
+<pre><code>root:Lab32OracleSelfTest123 -&gt; ('AUTH_FAIL', '2.21s AuthenticationException')
+root:Lab32OracleSelfTest124 -&gt; ('AUTH_FAIL', '4.41s AuthenticationException')   # one char different
+</code></pre>
+<p>Both with a hash I had just written and independently verified three ways inside the container
+(<code>php -r password_verify</code> → <code>bool(true)</code>, container <code>crypt.crypt</code> → <code>match_correct True</code>,
+<code>openssl passwd -6 -salt &lt;same salt&gt;</code> → byte-identical). I nearly recorded <strong>&quot;SSH password
+authentication is impossible on this host; the credential attack vector is dead&quot;</strong> — which is
+false, and following it would have ended the engagement with the real chain one step away. The
+cause: <code>sshd -T</code> reports <code>PermitRootLogin</code> at the OpenSSH 8.2 default, so a <em>correct</em> root
+password is refused by design. Switching the control to <code>ignacio</code> made it fire immediately
+(<code>ignacio:Lab32IgTest -&gt; ('AUTH_OK', '0.06s')</code>).</p>
+<p><em>Rule, and it is a new one: <strong>a control must be built on an account whose success path is
+demonstrably open.</strong> &quot;The password is correct&quot; is not the same claim as &quot;this account can
+succeed&quot;; <code>PermitRootLogin</code>, <code>DenyUsers</code>, <code>AllowUsers</code> and a full account lockout all break the
+second without touching the first. Probe the success path on a <em>non-root</em> account first, and
+record which account the control was built on.</em></p>
+<p>Two smaller defects in the same episode, both caught by running the control that should have
+failed:</p>
+<ul>
+<li><strong><code>su</code> answered identically for a right and a wrong password.</strong> <code>echo &lt;pw&gt; | su - ignacio -c id</code>
+returned <code>uid=1001(ignacio)</code> <strong>both times</strong> — because I ran it as root and
+<code>/etc/pam.d/su</code> has <code>auth sufficient pam_rootok.so</code>. The &quot;wrong password&quot; control is what
+exposed it (§16 of the corpus catalogue, in a new costume). Re-run as <code>www-data</code>, <code>su</code>
+discriminates correctly (<code>Password:</code> → success, <code>su: Authentication failure</code> → failure), and
+<em>that</em> is the run I used to prove PAM is healthy and the earlier refusal was <code>sshd</code>, not PAM.</li>
+<li><strong>My first <code>chpasswd</code> control asserted success without checking the artefact.</strong> It reported
+<code>chpasswd_rc=0</code> and I believed it. A bash-substring expansion (<code>${before:0:30}</code>) in a <code>sh -c</code>
+script aborted the whole line with <code>Bad substitution</code> <em>before</em> <code>chpasswd</code> ran — so the &quot;control&quot;
+had never executed. Re-run with a POSIX-safe script <strong>and a hash read-back</strong>, the salt changed
+and the control fired.</li>
+</ul>
+<h3 id="112-two-instruments-that-answer-the-same-way-whatever-the-world-does-in-one-command">11.2 Two instruments that answer the same way whatever the world does, in one command</h3>
+<p>I had one <code>sh -c</code> string holding <em>three</em> of my negative controls, one of which was
+<code>cat /etc/shadow | head -1; echo &quot;rc_shadow=$?&quot;</code>. The pipeline's exit status is <strong><code>head</code>'s</strong>, not
+<code>cat</code>'s, so the line printed <code>rc_shadow=0</code> next to a <code>Permission denied</code> on stderr. A reader
+scanning the output sees a successful read of <code>/etc/shadow</code> as <code>guadalupe</code>.</p>
+<p><em>Rule: <strong>never put an exit-status assertion in the same command as a pipeline.</strong> The <code>rc</code> you
+print belongs to the last element of the pipe, which is frequently not the element you meant.
+The correct measurement is <code>rc=$(cat path 2&gt;/dev/null; echo $?)</code> or, better, capture stderr
+separately as I did for every other control in §5.</em></p>
+<h3 id="113--in-a-value-inside-a-double-quoted-shell-argument-silently-rewrote-a-bcrypt-hash--and-the-read-back-is-the-only-thing-that-caught-it">11.3 <code>$</code> in a value inside a double-quoted shell argument silently rewrote a bcrypt hash — and the <em>read-back</em> is the only thing that caught it</h3>
+<p>I generated a bcrypt hash, interpolated it into a <code>mysql -e &quot;UPDATE … password='{hash}'&quot;</code>, and
+the stored value came back as:</p>
+<pre><code>$ mysql -e &quot;SELECT password FROM ffsnq_users&quot;
+b/tmp/dbwrite.shqpO3TopIAgCDGUN2641Wu0jOibSeje/bxBZEcwVl8xPC.Ns4DdNi     &lt;- what I wrote
+$2b$10$0qpO3TopIAgCDGUN2641Wu0jOibSeje/bxBZEcwVl8xPC.Ns4DdNi            &lt;- what I meant
+</code></pre>
+<p>The remote <code>sh</code> expanded <code>$2</code>, <code>$10</code> and <code>$0</code> <strong>inside double quotes</strong>, splicing the script's
+own path into the hash. <code>ROW_COUNT()</code> was <code>1</code>, so the UPDATE reported success. Had I trusted the
+row count I would have written a broken hash, seen the login fail, and concluded <strong>&quot;the database
+write primitive does not work&quot;</strong> — the inverse of the truth, and the exact finding the lab's
+second half turns on. What caught it was printing <code>LEFT(password,7)</code> and reading the full column
+back: the algo prefix came back as <code>b/tmp/d</code> instead of <code>$2b$10$</code>.</p>
+<p>Fixed by <strong>removing the shell from the loop entirely</strong> — SFTP the <code>.sql</code> file, then
+<code>mysql … &lt; file</code>. The re-run read back <code>$2y$10$EiX05Lwx3kkLzaIER/Q/E.PcecTt34Ra4rNLLAEKUcpcoDz.IsnBm</code>,
+intact, and the login worked.</p>
+<p>*Rule, a sibling of the corpus's &quot;<code>&amp;</code> is a background operator that survives sanitising&quot;: <strong>every
+other grammar in the pipeline is a second parser for the same bytes.</strong> A bcrypt hash contains
+<code>$</code>, which is a shell metacharacter; a URL contains <code>&amp;</code>, which is a shell operator; a path
+contains spaces. Where a value crosses a shell boundary, <strong>upload the file and let the
+interpreter that owns the format read it</strong> (<code>mysql &lt; f.sql</code>, <code>php &lt; f</code>, <code>ssh &lt; f</code>). And the
+generalisation of the read-back rule: *<em><code>ROW_COUNT()</code> proves the statement matched, not that it
+stored what you meant. For any write, the oracle is a read-back of the value, never a success
+count and never a status code.</em></p>
+<h3 id="114-a-zero-work-result-that-would-have-inverted-a-headline">11.4 A zero-work result that would have inverted a headline</h3>
+<p>My first attempt to build a baseline for the docroot ran <code>unzip -Z1</code> on the ZIP <strong>inside the
+container</strong>, using the name I assumed from the HTTP request. The file is <code>joomla4.0.3zip</code> — no
+dot before <code>zip</code> — so <code>zipinfo</code> printed <code>cannot find or open …/joomla4.0.3zip.zip …</code> and
+<strong><code>/tmp/32-zip.txt</code> was 0 lines, 0 bytes</strong>. <code>comm</code> then reported <strong>8 116 &quot;planted&quot; files</strong>, a
+spectacular-looking finding that was entirely my own broken baseline.</p>
+<p>Two things caught it. First, the <em>magnitude</em>: 8 116 planted files out of 8 115 is not a finding,
+it is a broken <code>comm</code>. Second, <code>comm</code> printed <code>input is not in sorted order</code> — because my <code>sort</code>
+and <code>comm</code> disagreed on locale — and re-running with <code>LC_ALL=C</code> on both sides gave <strong>4
+differences</strong>, every one explained (F7).</p>
+<p><em>Rule: <strong>when a &quot;diff against known-good&quot; produces a finding that is most of the tree, the
+baseline is wrong, not the tree.</strong> And a locale-mismatched <code>sort</code>/<code>comm</code> pair produces a total
+ordering violation <em>and</em> plausible-looking output at the same time, so read <code>comm</code>'s stderr.</em></p>
+<h3 id="115-my-own-hydra-throttle-cost-me-the-one-thing-i-needed-it-for">11.5 My own <code>hydra</code> throttle cost me the one thing I needed it for</h3>
+<p><code>hydra -t 6 -W 3</code> (6 tasks, 3-second wait per task) delivered <strong>1 794 candidates in 9 minutes</strong>,
+because <code>-W</code> caps each task at one attempt per 3 seconds and I chose it out of caution. The
+<code>W</code> flag is the rate control, and I set it to the value that made the run quiet rather than the
+value that made it informative. Extrapolated honestly: the 517 503-candidate corpus is <strong>≈ 43
+hours of wall clock</strong> against SSH on this target.</p>
+<p><em>Rule: <strong>a rate limiter you added for safety is a measurement you chose to make.</strong> <code>MaxStartups</code>
+on the target, not politeness, sets the ceiling — and the number belongs in the report, because
+&quot;the password is in a wordlist&quot; and &quot;the password is findable in reasonable time&quot; are different
+claims and only one of them is supported by a rate.</em></p>
+<hr />
+<h2 id="12-reproducibility">12. Reproducibility</h2>
+<p>Harness files are in <code>/tmp/[tool]/32/</code> on the analysis host (<code>run_ssh2.py</code> — the
+paramiko/SFTP runner used for every hop, <code>ssh_oracle.py</code>, <code>joomla_login.py</code> / <code>joomla_rce*.py</code>,
+<code>shacrack.py</code> / <code>bc_crack.py</code>, <code>plant_ls*.sh</code>, <code>apply_sql.sh</code>, and the 25 MB
+<code>joomla4.0.3.zip</code> fetched from the target itself, which doubles as the integrity baseline for
+F7). None is required to reproduce any result above: every claim is quoted with its literal
+response or its <code>file:line</code>.</p>
+<p>The <code>guadalupe</code> credential is deliberately <strong>not</strong> reproduced in full here, consistent with the
+rest of the corpus; it is a one-line offline hit against a 517 503-candidate corpus and the
+chain in §3 was executed through the real SSH service.</p>
+<p><strong>Restore — <code>docker rm -f</code> + <code>docker run</code> from <code>vulnerame:latest</code>, verified on 13 positive
+checks, none of which is a &quot;the container is gone&quot; assertion:</strong></p>
+<pre><code>1) sudoers ladder rungs:       2                                        (shipped: 2)
+2) /snap/bin contents:          hola                                     (plant removed)
+3) saludos.rb md5:              43b3b6156528c594b94c04afb8b49f77           (shipped: same)
+4) /etc/shadow md5:             e23ebc5b2e29f687bf8be8acb827a9f0         (shipped: same)
+5) LAB32-* artefacts on disk:   0                                        (must be 0)
+6) /snap/bin/ls:                absent                                   (must be absent)
+7) Joomla user:                 firstatack  $2y$10$                      (shipped hash restored)
+8) templates/cassiopeia/index.php mtime: 2021-09-14 07:07:22            (never written)
+9) /tmp lab artefacts:          0                                        (must be 0)
+10) listeners:                  00000000:0016 00000000:0050 00000000:0CEA 0100007F:8124
+11) front page:                 200  29150
+12) admin login:                200  10011
+13) SSH banner:                 SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.11
+    docroot file count:         8115  (= 8116 once a login attempt creates administrator/logs/error.php)
+</code></pre>
+<p>No artefacts were left anywhere else: my helper containers (<code>db32cli</code>, five <code>bc32-*</code>) and the
+<code>php:8.3-cli</code> image I pulled were removed by name. The five <code>cybervault-*</code> containers and their
+volumes were never touched, and no global prune was run.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

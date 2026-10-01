@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 167 WinFake &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; WinFake</p><h1 id="167-winfake--dockerlabs-writeup">167 WinFake — DockerLabs writeup</h1>
+<p><strong>Target:</strong> <code>http://[net-0-5]:80</code> (container <code>winfake_container</code>, image <code>winfake:latest</code>, digest <code>sha256:b00e81015992dd7130ec4ea80388fcd9ee4dbd07adac803b9b9abd0a8e27a692</code>)
+<strong>Catalogue text (verbatim, from <code>tooling/download-labs.sh list</code>):</strong> <code>Laboratorio sencillo donde debemos inspeccionar el código fuente para obtener información de cómo realizar la intrusión.</code>
+<strong>Date:</strong> 2026-09-30
+<strong>Outcome:</strong> User-level reward recovered as <code>uid=1000</code> from inside the restricted shell. The <code>uid=0</code> leg was <strong>proved as a working escalation on a clone of the same image, and not executed against the target</strong> — root's password resisted 560,608 distinct offline candidates. That non-result is reported below with its counts rather than papered over.</p>
+<hr />
+<h2 id="1-was-the-manifests-label-right-yes--and-it-is-worth-saying-so">1. Was the manifest's label right? Yes — and it is worth saying so</h2>
+<p><code>tooling/labs.manifest:75</code> reads <code>167|WinFake|facil|source-code inspection as the entry point; the only lab where reading the code IS the first step</code>.</p>
+<p>Labs 32 and 220 are queued as &quot;WordPress platform&quot; and are Joomla 4.0.3 and a six-file PHP app respectively. Rule 1 says the platform label is a filename, not a fingerprint. <strong>This one survives the check.</strong> The version-bearing file is the dpkg status database:</p>
+<pre><code>apache2=2.4.58-1ubuntu8.6
+openssh-server=1:9.6p1-3ubuntu13.12
+python3=3.12.3-0ubuntu2
+</code></pre>
+<p><code>/etc/os-release</code> → <code>NAME=&quot;Ubuntu&quot;</code>, <code>VERSION=&quot;24.04.2 LTS (Noble Numbat)&quot;</code>. The image's own labels are <code>org.opencontainers.image.ref.name=ubuntu</code>, <code>version=24.04</code>.</p>
+<p>So the artefact is what the catalogue says it is: a static single-page site plus a deliberately hostile login shell, with <strong>no web application vulnerability of any kind</strong>. Source inspection is not a shortcut here, it is the only entry. This is the first lab in the queue whose label I checked and did not have to overturn.</p>
+<h2 id="2-surface">2. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-5]
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.12 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+</code></pre>
+<p>Per §23, before recording any absent surface I established the processes meant to serve them were <strong>running</strong>, rather than inferring it from the scan:</p>
+<pre><code>$ docker exec winfake_container ps aux
+root  15 ... /usr/sbin/sshd: /usr/sbin/sshd [listener] 0 of 10-100 startups
+root  33 ... /usr/sbin/apache2 -k start
+www-data 37 ... /usr/sbin/apache2 -k start
+www-data 38 ... /usr/sbin/apache2 -k start
+
+$ cat /proc/net/tcp     → 2 rows: 00000000:0016 (22) and 00000000:0050 (80), uid 0, state 0A
+$ cat /proc/net/udp     → 0 rows
+</code></pre>
+<p>Both services up, both bound on all interfaces, <strong>no UDP surface</strong> (0 rows, a counted zero rather than an assumed one). The docroot contains exactly one file and no dotfiles:</p>
+<pre><code>$ ls -la /var/www/html/
+-rw-r--r-- 1 root root 5678 Jul 10  2025 index.html
+</code></pre>
+<p>A package-set diff against a vanilla <code>ubuntu:24.04</code> showed the delta is Apache2, OpenSSH, sudo, nano, wget and <code>python3-jwt</code> — <strong>no hidden service</strong>. (<code>python3-jwt</code> is installed and nothing on disk imports it; noted, not acted on.)</p>
+<p><strong>The target still serves what the source said.</strong> The live body and the artefact are the same bytes:</p>
+<pre><code>$ curl -s http://[net-0-5]/ | md5sum
+e65e9d427accef3a700760c064fc9470
+$ docker cp winfake_container:/var/www/html/index.html - | md5sum
+e65e9d427accef3a700760c064fc9470     (5678 bytes both sides)
+</code></pre>
+<h2 id="3-what-reading-the-source-gave-me-before-a-single-request">3. What reading the source gave me, before a single request</h2>
+<p>This is the section the lab exists for. Four artefacts in the image, all read offline with <code>docker run --rm --entrypoint sh</code> before touching the network.</p>
+<p><strong>(a) The username — <code>index.html:14</code>.</strong> Inside the CSS <code>body</code> rule, a declaration that is not valid CSS at all:</p>
+<pre><code class="language-css">        body {
+            font-family: &quot;Segoe UI&quot;, Arial, sans-serif;
+            background: #f4f4f9;
+            margin: 0;
+            padding: 0;
+            color: #333;
+		    top: pipe;
+        }
+</code></pre>
+<p><code>top: pipe</code> names the account. Confirmed in <code>/etc/passwd</code>:</p>
+<pre><code>pipe:x:1000:1000:pipe,,,:[lab-home]/pipe:/usr/local/bin/windows.py
+</code></pre>
+<p><strong>(b) The acrostic — <code>index.html:63</code>.</strong></p>
+<pre><code class="language-html">	    &lt;article hidden=&quot;acrostico inicial&quot;&gt;
+		    &lt;h2&gt;HIDDEN&lt;/h2&gt;
+	    &lt;/article&gt;
+</code></pre>
+<p>Computed, not eyeballed: 22 <code>&lt;h2&gt;</code> elements; the hidden one contributes <code>H</code>, the 21 visible ones give</p>
+<pre><code>WINSERVERROOTFAKENEWS
+</code></pre>
+<p>Robust across every variant the markup supports — initials of titles (22 and 21), first-word initials (identical), last letters (<code>Nssa?sdsds5aannlsds5as</code>, junk), paragraph initials (<code>LLELBDLELEOELLLLLLLRE</code>, junk). The title acrostic is the intended one.</p>
+<p><strong>(c) The sink — <code>/usr/local/bin/windows.py:215-220</code>.</strong> <code>pipe</code>'s login shell is a fake PowerShell. Its command filter, line 35:</p>
+<pre><code class="language-python">BLOCKED_LINUX_CMDS = [&quot;ls&quot;, &quot;pwd&quot;, &quot;cat&quot;, &quot;rm&quot;, &quot;touch&quot;, &quot;chmod&quot;, &quot;clear&quot;, &quot;nano&quot;, &quot;vim&quot;, &quot;gcc&quot;, &quot;python&quot;, &quot;bash&quot;, &quot;sh&quot;, &quot;sudo&quot;, &quot;zsh&quot;, &quot;apt&quot;, &quot;vi&quot;, &quot;python3&quot;]
+</code></pre>
+<p>and then, verbatim:</p>
+<pre><code class="language-python">            # Ejecutar su root real
+            if cmd == &quot;su&quot; and args == [&quot;root&quot;]:
+                try:
+                    subprocess.run([&quot;su&quot;, &quot;root&quot;])
+</code></pre>
+<p><strong><code>su</code> is absent from an 18-entry blocklist.</strong> The author special-cased the one command that escapes, and forgot to blacklist it. The filter is a first-token string match (<code>cmd_parts[0].lower()</code>), so <code>su root</code> reaches the real <code>su</code> by design.</p>
+<p><strong>(d) A decoy copy of the shell.</strong> There are <strong>two different <code>windows.py</code></strong> in the image:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Size</th>
+<th><code>su root</code> sink</th>
+<th><code>import subprocess</code></th>
+<th>Blocklist</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/usr/local/bin/windows.py</code></td>
+<td>10284 B</td>
+<td><strong>yes</strong> (215-220)</td>
+<td>yes</td>
+<td>18 entries, no <code>su</code></td>
+</tr>
+<tr>
+<td><code>/root/windows.py</code></td>
+<td>7654 B</td>
+<td><strong>no</strong></td>
+<td><strong>no</strong></td>
+<td>15 entries, <strong>has</strong> <code>whoami</code></td>
+</tr>
+</tbody>
+</table>
+<p>Only the first is reachable — it is what <code>/etc/passwd</code> names as <code>pipe</code>'s shell. Reading the wrong copy produces a clean, confident, completely wrong conclusion: &quot;the shell has no escape and <code>whoami</code> is blocked&quot;. I hit this myself: my first <code>diff</code> of the two copies is what revealed it.</p>
+<h3 id="what-reading-the-source-saved-concretely">What reading the source saved, concretely</h3>
+<ul>
+<li><strong>Username enumeration: not needed.</strong> The account is <code>pipe</code>. Without the CSS hint this is a username-enumeration problem against a yescrypt-protected SSH service.</li>
+<li><strong>Payload guessing: not needed.</strong> The escalation is the literal string <code>su root</code>, sitting in the source, permitted by the source's own blocklist. A black-box approach would have had to work through the 18-entry filter — trying encodings, <code>/bin//su</code>, aliases, absolute paths — and would plausibly have concluded the shell was hermetic and moved on. The bypass that took real work here was a <em>different</em> one (§4, finding 1).</li>
+<li><strong>No web testing at all.</strong> There is no web application. <code>index.html</code> is static; nothing in it processes input.</li>
+<li><strong>No CVE work, no fingerprinting needed.</strong></li>
+</ul>
+<h3 id="what-reading-the-source-did-not-save--the-honest-ledger">What reading the source did <strong>not</strong> save — the honest ledger</h3>
+<ul>
+<li><strong>It did not give the password.</strong> <code>pipe</code>'s password is <code>kisses</code>. That is a plain dictionary word, not present in the artefact's vocabulary; it fell out of an offline wordlist run. Every attempt to derive it from <code>WINSERVERROOTFAKENEWS</code> failed — 763 acrostic substrings, then 14,530 candidates drawn from the artefact's own 798-word vocabulary with case and digit decorations. <strong>The acrostic is not a credential.</strong></li>
+<li><strong>It did not give root's password</strong>, and I never found it. See §7.</li>
+</ul>
+<p>This is the one place where the catalogue's framing needs a qualifier: the source gives you <em>how</em> to intrude (the account, the shell, the sink) but <strong>not</strong> the credential. The credential was a dictionary word. A solver who trusted the acrostic as a password and, on failure, concluded the lab was broken would be wrong in the same way as the author of lab 117's <code>defined('AUTH_KEY')</code> finding — treating a decodable string as a consumed one.</p>
+<h2 id="4-findings">4. Findings</h2>
+<h3 id="finding-1--the-shells-content-filter-is-an-exact-string-comparison-and-is-trivially-bypassed">Finding 1 — The shell's content filter is an exact string comparison and is trivially bypassed</h3>
+<p><strong>CWE-20 Improper Input Validation</strong> (path normalisation), with CWE-22-adjacent reach. Severity: low on its own; it matters because this filter is the lab's only stated attempt to stop the operator from reading the shell that contains the escalation sink.</p>
+<p><code>/usr/local/bin/windows.py:59-62</code>:</p>
+<pre><code class="language-python">    # Bloquear la lectura específica de /usr/local/bin/windows.py
+    if args[0] == &quot;/usr/local/bin/windows.py&quot;:
+        print(f&quot;{RED}Acceso denegado al archivo especificado: {args[0]}{RED}&quot;)
+        return
+</code></pre>
+<p>The guard compares the <strong>raw argument string</strong>. The consumer, two lines later, is <code>os.path.isfile(path)</code> / <code>open(path)</code> — which normalises the path. Three states, measured live:</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>type /usr/local/bin/windows.py</code></td>
+<td><code>Acceso denegado al archivo especificado: /usr/local/bin/windows.py</code></td>
+</tr>
+<tr>
+<td><code>type //usr/local/bin/windows.py</code></td>
+<td><strong>full file dumped</strong>, from <code>#!/usr/bin/env python3</code> onward</td>
+</tr>
+<tr>
+<td><code>type /usr/./local/bin/windows.py</code></td>
+<td><strong>full file dumped</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The positive control is the first row: the same verb, the same session, the same file, denied — so the difference is the path spelling and nothing else.</p>
+<p><strong>Root cause:</strong> a denylist of literal strings where the consumer accepts any path that resolves to the same inode. <strong>Fix:</strong> resolve the path (<code>os.path.realpath</code>) and compare the resolved value, or simply drop the special case — a shell that runs as <code>pipe</code> can read every file <code>pipe</code> can read, and pretending otherwise is what created the bypass.</p>
+<h3 id="finding-2--the-blocklists-refusal-is-byte-identical-to-command-not-implemented">Finding 2 — The blocklist's refusal is byte-identical to &quot;command not implemented&quot;</h3>
+<p><strong>CWE-209 Generation of Error Message Containing Sensitive Information</strong> is not the right fit; this is a <strong>diagnosability / control-attribution defect</strong>. Severity: informational for the target, high for the tester.</p>
+<p>Two different code paths emit the same string:</p>
+<ul>
+<li>line 224, for a <strong>blocked</strong> command: <code>El término '{cmd}' no se reconoce como el nombre de un cmdlet, función, archivo de script o programa ejecutable.</code></li>
+<li>line 266, the <strong><code>else</code> fallback</strong> for anything unhandled: the same sentence, character for character.</li>
+</ul>
+<p>Measured in one session:</p>
+<pre><code>$== ls          → El término 'ls' no se reconnue ...      (blocked: 'ls' IS in line 35)
+$== id          → El término 'id' no se reconnue ...      (not blocked: 'id' is NOT in line 35)
+</code></pre>
+<p><code>ls</code> and <code>id</code> are on <strong>opposite sides</strong> of the filter and produce indistinguishable output. Any attempt to prove &quot;the blocklist held&quot; using the response alone is therefore impossible: a filter that was never applied and a filter that was applied look identical. §16's shape, planted inside the lab rather than inside my tooling.</p>
+<p>This is also why I could not use the filter as a control anywhere in this engagement, and why &quot;18 commands blocked&quot; is not a measurable property of the target.</p>
+<h3 id="finding-3--the-only-identity-verb-in-the-shell-fabricates-its-answer">Finding 3 — The only identity verb in the shell fabricates its answer</h3>
+<p><strong>CWE-451 User Interface (UI) Misrepresentation of Critical Information.</strong> Severity: informational (no security impact) but it is the sharpest thing in the lab.</p>
+<pre><code>$== whoami
+DESKTOP-KVHRNUK\pipe
+</code></pre>
+<p><code>fake_whoami()</code> at <code>windows.py:172-195</code> prints <code>f&quot;{FAKE_HOSTNAME}\\{FAKE_USER}&quot;</code>, where <code>FAKE_HOSTNAME</code> is regenerated at random on every process start (<code>windows.py:19</code>) and <code>FAKE_USER</code> is the literal <code>&quot;pipe&quot;</code> (<code>windows.py:20</code>). It reports a Windows identity, a random one, and never the real one.</p>
+<p>Meanwhile <code>whoami</code> <strong>is</strong> in the decoy copy's blocklist and is <strong>not</strong> in the live copy's — so the live shell both removes the real identity command and replaces it with a confident lie. The only trustworthy identity read inside that shell is <code>/proc/self/status</code>, which is what I used:</p>
+<pre><code>Name:	python3
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	100 1000
+</code></pre>
+<p>This is §21 in costume: <strong>ask what the component actually consumes, not what the name promises.</strong> A tester who believed <code>whoami</code> here would have reported <code>pid 1</code> / <code>root</code> for a container whose shell runs as uid 1000.</p>
+<h3 id="finding-4--the-decoy-copy-of-the-shell-rootwindowspy">Finding 4 — The decoy copy of the shell (<code>/root/windows.py</code>)</h3>
+<p>Not a vulnerability. A <strong>lab-design defect</strong> worth recording because it is a trap aimed at exactly the methodology this corpus uses. Two copies of the same filename, different contents, one reachable. Reading the decoy yields a false negative on the sink and a false positive on the blocklist (<code>whoami</code> &quot;blocked&quot;). Reported as the lab's problem, not the tester's — the same category as lab 112's unrunnable chain.</p>
+<h2 id="5-chain">5. Chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof (verbatim)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>unauthenticated</td>
+<td>HTTP 200, 5678 B static page; SSH banner</td>
+<td><code>Apache/2.4.58 (Ubuntu)</code>, <code>OpenSSH 9.6p1 Ubuntu 3ubuntu13.12</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td><strong><code>pipe</code> / uid 1000</strong></td>
+<td>SSH password auth, credential from a 99,583-entry offline wordlist (<code>pipe:kisses</code>)</td>
+<td><code>Uid:	1000	1000	1000	1000</code> / <code>Groups:	100 1000</code> read from <code>/proc/self/status</code> <strong>inside</strong> the restricted shell</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>uid=1000, unprivileged read</strong></td>
+<td><code>type [lab-home]/pipe/user.txt</code> — <code>user.txt</code> is mode 644 despite being root-owned in a <code>pipe</code>-owned home</td>
+<td><code>d970977b69a543ce746095e2b660d107</code> (same uid, no transition)</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong><code>uid=0</code> — sink reached, NOT completed on target</strong></td>
+<td><code>su root</code> special-cased at <code>windows.py:215</code>; real <code>su</code> prompts for a password not recovered</td>
+<td>on the target: <code>Password:</code> prompt, then no further hop available</td>
+</tr>
+<tr>
+<td>3′</td>
+<td><strong><code>uid=0</code> — proved on a clone of the same image</strong></td>
+<td>identical chain, root's password supplied</td>
+<td><code>Uid:	0	0	0	0</code>, <code>Groups:	0</code>, and <code>uid=0(root) gid=0(root) groups=0(root)</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>No setuid transition occurs anywhere in this chain.</strong> Every <code>Uid:</code> field — real, effective, saved and filesystem — is the same value at each hop (<code>1000 1000 1000 1000</code> before, <code>0 0 0 0</code> after). There is no <code>euid</code> to report separately because nothing sets one.</p>
+<h3 id="proof-that-hop-3-is-the-same-code-path-not-a-neighbouring-one">Proof that hop 3′ is the same code path, not a neighbouring one</h3>
+<p>§22 requires the control to exercise the target's code path. The positive control for the sink was run on a <strong>clone</strong> (<code>winfake_ctl</code>, same image digest <code>sha256:b00e810…</code>), never on the target:</p>
+<ol>
+<li>Set a known password for <code>pipe</code> and for <code>root</code> on the clone only.</li>
+<li>Ran the <em>unmodified</em> attacker script against the clone.</li>
+<li>Observed the full chain end to end, identity measured at both ends.</li>
+</ol>
+<p>Two independent facts establish the <code>Password:</code> prompt is a real <code>su</code> and not part of the fake shell:</p>
+<ul>
+<li><code>grep -ci password /usr/local/bin/windows.py</code> → <strong>0</strong>. The string does not occur in the shell at all, so it cannot have produced the prompt.</li>
+<li>The prompt's children are a different process: before the sink <code>/proc/self/status</code> reports <code>Name: python3</code> (the shell itself); after it, the session is <code>root@7530593512e9:[lab-home]/pipe#</code>.</li>
+</ul>
+<h2 id="6-controls-that-held--and-the-positive-control-for-each">6. Controls that held — and the positive control for each</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves the detector works</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/etc/shadow</code> is unreadable by <code>pipe</code></td>
+<td><code>type /etc/issue.net</code> in the same session <strong>succeeded</strong> — so the <code>type</code> verb works and the refusal is about permissions, not a broken command</td>
+<td><strong>held</strong>: <code>Error al leer el archivo: [Errno 13] Permission denied: '/etc/shadow'</code></td>
+</tr>
+<tr>
+<td><code>su root</code> from <code>pipe</code> is gated by root's password</td>
+<td>stock <code>/etc/pam.d/su</code> (<code>auth sufficient pam_rootok.so</code>, no <code>pam_wheel.so trust</code>, no <code>pam_permit</code>); and the same <code>su root</code> on the clone <strong>did</strong> succeed once the password was supplied</td>
+<td><strong>held</strong> — the gate is real, and it is the only thing blocking the last hop</td>
+</tr>
+<tr>
+<td>root cannot log in over SSH with a password</td>
+<td><code>sshd -T</code> → <code>permitrootlogin without-password</code>; <strong>positive control</strong>: password authentication is genuinely enabled (<code>passwordauthentication yes</code>) and <code>pipe:kisses</code> authenticates over it in the same session — so root's rejection is about root, not about password auth being off</td>
+<td><strong>held</strong></td>
+</tr>
+<tr>
+<td>SSH key auth is offered but there are no keys to offer</td>
+<td><code>[lab-home]/pipe/.ssh</code> absent; <code>/root/.ssh</code> exists but is <strong>empty</strong> (0 files) — a counted zero, not an assumed one</td>
+<td>held (nothing to find)</td>
+</tr>
+<tr>
+<td><code>whoami</code> inside the shell</td>
+<td>—</td>
+<td><strong>did not hold</strong> — fabricated identity (Finding 3)</td>
+</tr>
+<tr>
+<td>The <code>type</code> denylist</td>
+<td>see Finding 1</td>
+<td><strong>did not hold</strong> — bypassed twice</td>
+</tr>
+<tr>
+<td>The 18-entry command blocklist</td>
+<td>—</td>
+<td><strong>unmeasurable</strong> — identical output on both sides (Finding 2)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="7-every-negative-with-its-work-count">7. Every negative, with its work count</h2>
+<p>Per rule 6: a count of zero means UNTESTED and belongs in §8.</p>
+<table>
+<thead>
+<tr>
+<th>Negative</th>
+<th>Work count</th>
+<th>Instrument</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pipe</code>'s password is not derivable from the acrostic</td>
+<td>763 candidates (all contiguous substrings of <code>winserverrootfakenews</code> and <code>hwinserverrootfakenews</code>, ×3 case forms)</td>
+<td>offline yescrypt</td>
+</tr>
+<tr>
+<td><code>pipe</code>/<code>root</code> password is not in the artefact's vocabulary</td>
+<td>14,530 candidates over a 798-word vocabulary drawn from <code>index.html</code> + both <code>windows.py</code> copies, with case and 10 digit/suffix decorations</td>
+<td>offline yescrypt</td>
+</tr>
+<tr>
+<td>live SSH spray</td>
+<td>8 users × 47 passwords = <strong>376 attempts</strong>, 1127.6 s, all <code>AuthenticationException</code></td>
+<td>paramiko</td>
+</tr>
+<tr>
+<td><strong>root's password not recovered</strong></td>
+<td><strong>560,608 distinct candidates</strong> verified offline against the yescrypt hash</td>
+<td>offline yescrypt</td>
+</tr>
+<tr>
+<td>no literal <code>FLAG{}</code> anywhere in the image</td>
+<td><strong>11,993 files</strong> scanned, <strong>0</strong> matches</td>
+<td><code>grep -rIl &quot;FLAG{&quot;</code></td>
+</tr>
+<tr>
+<td>no UDP surface</td>
+<td><code>/proc/net/udp</code> → <strong>0 rows</strong></td>
+<td>kernel</td>
+</tr>
+<tr>
+<td>no second service</td>
+<td><code>/proc/net/tcp</code> → <strong>2 rows</strong>; package delta vs vanilla <code>ubuntu:24.04</code> → Apache2/OpenSSH/sudo/nano/wget/<code>python3-jwt</code> only</td>
+<td>dpkg</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Arithmetic, computed rather than read.</strong> The 560,608 is the <strong>distinct union</strong> of five candidate sets, not their sum. Per-set distinct counts, each reproduced and asserted equal to the count its own script printed (14,530 / 99,583 / 421,445 / 131,887):</p>
+<pre><code>naive sum                     = 14,530 + 99,583 + 421,445 + 131,887 = 667,445
+overlap removed               = 106,837
+DISTINCT UNION actually tested = 560,608
+</code></pre>
+<p>The wordlists are local (<code>PenTestMethodology/wordlists/</code>); no third-party service was contacted and nothing was downloaded.</p>
+<p><strong>The oracle was proven green before any of those negatives was believed.</strong> A clone container's <code>pipe</code> hash was checked with a password I set myself:</p>
+<pre><code>oracle green (known-good verifies=True, known-bad verifies=False)
+</code></pre>
+<p>and the same gate ran at the top of every subsequent search, aborting the run if it failed. The SSH detector was green the same way: <code>pipe:CtlPass-9182</code> <strong>authenticated</strong> and <code>pipe:win</code> was rejected, by the identical client code.</p>
+<p><strong>The <code>FLAG{}</code> zero has its own positive control</strong> (§12 — a tool that finds nothing has made a claim about the world, not about itself):</p>
+<pre><code>acrostico              files_matched=1
+BLOCKED_LINUX_CMDS     files_matched=2
+Microsoft Windows      files_matched=9
+TechWorld              files_matched=1
+</code></pre>
+<p>The same <code>grep</code>, the same tree, four strings known to be present. So zero matches for <code>FLAG{</code> is a measured zero.</p>
+<h2 id="8-not-tested-vs-discarded-with-a-reason">8. NOT tested (vs discarded with a reason)</h2>
+<p><strong>NOT tested:</strong></p>
+<ul>
+<li>Root's password beyond 560,608 candidates. No rockyou-equivalent list exists on this host; I did not download one, and I did not attempt to derive it from anything other than the artefact and three local lists. Root's hash is <code>$y$j9T$</code> — yescrypt at <code>N=9</code>, which is weak enough to be practical with a real cracking rig and a full list. <strong>This is the one open leg.</strong></li>
+<li>Whether <code>root.txt</code>'s value changes at runtime (it is baked into the image; §9).</li>
+<li>Whether the <code>python3-jwt</code> package is a hint to something unbuilt. Nothing imports it; I did not go looking for a JWT surface that no listener serves.</li>
+<li>SFTP/SCP as <code>pipe</code> — <code>subsystem sftp</code> is configured and <code>pipe</code> authenticates, so an SFTP channel is available. Not exercised.</li>
+</ul>
+<p><strong>Discarded with a reason:</strong></p>
+<ul>
+<li><strong>Escalation as <code>pipe</code> by any route other than <code>su root</code>.</strong> Not an assumption — the shell has exactly four verbs with side effects: <code>type</code> (read), <code>del</code> (unlink), <code>mkdir</code>/<code>rmdir</code> (<strong>directories only</strong>, <code>os.mkdir</code> at line 108). There is no verb that creates a file, so no crontab, no <code>authorized_keys</code>, no PAM write, no module drop. <code>/etc/pam.d/su</code> grants nothing to group <code>users</code>. <code>sudo</code> is on the blocklist <em>and</em> <code>pipe</code> is in no privileged group (<code>pipe:x:1000:1000:pipe,,,</code> — empty supplementary group list).</li>
+<li><strong>Root SSH by password.</strong> <code>sshd -T</code> says <code>permitrootlogin without-password</code>, and the positive control above shows that is a root-specific policy rather than password auth being disabled.</li>
+<li><strong>HTTP attack surface.</strong> One static 5678-byte file, no dotfiles, no parameters, nothing that reflects input. There is nothing to test.</li>
+</ul>
+<h2 id="9-reward">9. Reward</h2>
+<p><strong>No literal <code>FLAG{}</code>.</strong> The search and its count are in §7: 11,993 files, 0 matches, with a green positive control on the same tool.</p>
+<p>Two functional rewards, both bare 32-character hex strings, as <code>user.txt</code> and <code>root.txt</code>:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Value</th>
+<th>How obtained</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[lab-home]/pipe/user.txt</code></td>
+<td><code>d970977b69a543ce746095e2b660d107</code></td>
+<td><strong>recovered on the target</strong>, as <code>uid=1000</code>, inside the restricted shell: <code>type [lab-home]/pipe/user.txt</code></td>
+</tr>
+<tr>
+<td><code>/root/root.txt</code></td>
+<td><code>fa209fcfb40c4276bd2ceb9f08bf5f7b</code></td>
+<td><strong>established as an image property, not obtained by escalating on the target</strong></td>
+</tr>
+</tbody>
+</table>
+<p>On the second row I want to be exact about the distinction, because it is the difference between a result and a claim:</p>
+<ul>
+<li>I <strong>did not</strong> reach <code>uid=0</code> on the target. <code>su root</code> prompted and I had no password.</li>
+<li>I <strong>did</strong> prove the sink works, on a clone of the same image, reaching <code>Uid: 0 0 0 0</code> and reading <code>/root/root.txt</code> there.</li>
+<li>The value above is therefore justified by image identity, not by the target: all three containers (<code>winfake_container</code>, <code>winfake_ctl</code>, <code>winfake_fresh</code>) run digest <code>sha256:b00e810…</code> and all three carry byte-identical reward files:</li>
+</ul>
+<pre><code>winfake_container    root.txt=0fa706de3333cf3c7145aa3b6a36b993 user.txt=38dff55252f79fe424e6dee1c194ed97
+winfake_ctl          root.txt=0fa706de3333cf3c7145aa3b6a36b993 user.txt=38dff55252f79fe424e6dee1c194ed97
+winfake_fresh        root.txt=0fa706de3333cf3c7145aa3b6a36b993 user.txt=38dff55252f79fe424e6dee1c194ed97
+</code></pre>
+<p>I altered only <code>/etc/shadow</code> on the clone (two passwords), never a reward file. A reader who wants to check this should re-fetch the archive; this corpus is a transcript, not a reproduction.</p>
+<h2 id="10-instrumentation-defects--mine-and-what-caught-them">10. Instrumentation defects — mine, and what caught them</h2>
+<p>Six. Every one of them produced well-formed output.</p>
+<ol>
+<li>
+<p><strong>My own host wrapper executed inside the container.</strong> I ran <code>docker exec … sh -c 'rtk ls -la [lab-home]/pipe; …'</code>. <code>rtk</code> is my host-side tool wrapper; inside the container it does not exist, so three enumerations — <code>[lab-home]/pipe</code>, <code>/root/</code>, <code>/etc/sudoers.d/</code> — printed <code>sh: rtk: not found</code> and <strong>returned nothing</strong>. A clean, empty listing of a directory I had not actually looked at. §11/§14 exactly: a command that fails while doing nothing, whose output looks like an absence. Caught by noticing the empty result had no accompanying error on the line where success should have been. Re-run with <code>ls</code>: <code>[lab-home]/pipe</code> has 8 entries and <code>/root</code> has 8.</p>
+</li>
+<li>
+<p><strong>A format string eaten by the wrong shell.</strong> <code>dpkg-query -W -f=&quot;\${Package}=\${Version}\n&quot;</code> inside single quotes was right; inside double quotes the <strong>host</strong> shell expanded <code>${Package}</code> to empty and the command printed three bare <code>=</code>. Three empty results, exit 0, and it read as &quot;the query returned three rows&quot;. §17. Fixed by quoting for the shell that actually reads it.</p>
+</li>
+<li>
+<p><strong>A library silently falling back to the wrong algorithm.</strong> The container's Python <code>crypt.crypt('test', '$y$j9T$abcdefghijklmnopqrs')</code> returned a hash that did <strong>not</strong> start with <code>$y$</code>, and I initially read that as &quot;this host cannot do yescrypt&quot;. It can: my fabricated salt was invalid and libxcrypt fell back to a legacy format. Passing the <em>real</em> hash string from <code>/etc/shadow</code> produced <code>$y$j9T$pvvGn…</code> immediately, and <code>crypt.crypt('test', h) == h</code> held. I also went via <code>passlib.hash.yescrypt</code>, which does not exist as an importable name. §12 in reverse: the tool reported an empty answer and I nearly believed it.</p>
+</li>
+<li>
+<p><strong>My own wrapper truncating a count — which would have become a wrong work count.</strong> <code>rtk sort -u sorted-passwords.txt | wc -l</code> → <strong>55,385</strong>. The true figure, from <code>LC_ALL=C sort -u</code> and independently from Python, is <strong>99,584</strong> (99,583 non-empty). I was one command away from reporting &quot;55,385 candidates tested&quot; in a document whose entire credibility rests on work counts. Rule 6 makes the count load-bearing; the count itself needed a second tool.</p>
+</li>
+<li>
+<p><strong>I overstated my own coverage by 6,311 candidates.</strong> Computing the union of the five candidate sets, I added a case variant (<code>w.upper()+suffix</code>) that no script had actually verified. That produced 566,919 — a number no run had earned. Fixed by reconstructing each script's candidate construction exactly and <strong>asserting the reproductions matched the counts those scripts printed</strong> (14,530 / 99,583 / 421,445 / 131,887) before summing. The honest figure is 560,608.</p>
+</li>
+<li>
+<p><strong>A positive control that ran six times instead of once.</strong> <code>multiprocessing.Pool</code> re-executed the module-level oracle gate in every worker, so <code>oracle green</code> printed once per worker and on the parent. Harmless here — the gate is idempotent and it passed everywhere — but a gate that runs N times is not a single gate, and had it been a destructive setup step I would have run it six times without realising.</p>
+</li>
+</ol>
+<p>A seventh is the lab's, not mine, and it is listed above because it is the most instructive thing in the engagement: <strong>the target ships an instrument that reports a confident answer it did not earn.</strong> <code>whoami</code> inside <code>pipe</code>'s shell returns <code>DESKTOP-KVHRNUK\pipe</code>, a fabricated Windows identity generated at random per process. A tester reaching for the obvious identity command would have recorded <code>root</code> or <code>pid 1</code>. The real identity was only available from <code>/proc/self/status</code>, and only because I had already read the source and knew the command did not exist.</p>
+<h2 id="11-restore">11. Restore</h2>
+<p>Recreated from the image, not by undoing edits, and verified with <strong>positive</strong> checks:</p>
+<pre><code>$ docker rm -f winfake_container &amp;&amp; docker run -d --name winfake_container winfake:latest
+$ docker exec winfake_container id                              → uid=0(root) gid=0(root) groups=0(root)
+$ ps aux | grep -c '[s]shd: /usr/sbin/sshd [listener]'           → 1
+$ curl -s http://[net-0-5]/ | wc -c                             → 5678
+$ curl -s http://[net-0-5]/ | md5sum                            → e65e9d427accef3a700760c064fc9470
+$ grep '^pipe:' /etc/shadow | cut -c1-24                         → $y$j9T$pvvGnLoWnkTXD5RsI
+</code></pre>
+<p>The page is back to the shipped bytes, sshd is listening, and <code>pipe</code>'s hash still carries the <strong>shipped</strong> salt <code>$y$j9T$pvvGnLoWnkTXD5RsI</code> — the target's credentials were never modified. (<code>/etc/shadow-</code> holds a <em>different</em> salt, <code>$y$j9T$187HGjxrXR8aD94Ga</code>; that is the build-time pre-<code>chpasswd</code> state, not evidence of tampering.)</p>
+<p>Post-restore the shipped credential still authenticates and the user reward is still reachable:</p>
+<pre><code>$== whoami              → DESKTOP-KVHRNUK\pipe
+$== type [lab-home]/pipe/user.txt → d970977b69a543ce746095e2b660d107
+</code></pre>
+<p><strong>Artefacts.</strong> Auxiliary containers <code>winfake_ctl</code> and <code>winfake_fresh</code> removed. Only <code>winfake_container</code> remains. The seven <code>cybervault-*</code> containers belonging to another project are untouched and still running (verified: 7). No <code>docker system prune</code>, no <code>image prune</code>, no <code>volume prune</code> was run at any point.</p>
+<h2 id="12-what-this-lab-adds-to-the-methodology">12. What this lab adds to the methodology</h2>
+<p>The class is <strong>not new</strong> — credential-guessing-to-restricted-shell and the string-match-filter-bypass are already covered — but this case is a clean instance of a rule the corpus states and has not yet had a lab exercise end to end:</p>
+<blockquote>
+<p><strong>A source read is worth exactly what it hands you.</strong> Here it handed over an account name, a login shell, and an escalation sink, and it handed over <strong>no credential at all</strong>. Reporting &quot;the source revealed the password&quot; would have been false — the password was <code>kisses</code>, a dictionary word, and the acrostic <code>WINSERVERROOTFAKENEWS</code> was never a password in any of 763 forms I tested. Reading the source moved the work from <em>enumeration</em> to <em>one dictionary lookup</em>, which is a large win, and it did not move the work from <em>credential recovery</em> to <em>nothing</em>.</p>
+</blockquote>
+<p>The second-order rule is the decoy: <strong>the artefact contained two files with the same name and different contents, and only one of them was reachable.</strong> Every conclusion drawn from the unread one — no sink, <code>whoami</code> blocked — was wrong, and each was wrong in a direction that would have <em>ended</em> the engagement. Check which copy a configuration or source reference actually points at.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

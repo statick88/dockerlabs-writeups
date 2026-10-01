@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Retrieval hazards &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="index.html">DockerLabs corpus</a><nav><a href="index.html">Root cause</a><a href="evidence.html">Evidence</a><a href="corrections.html">Corrections</a><a href="hazards.html" class="on">Hazards</a><a href="labs.html">Labs</a><a href="resolved.html">Resolutions</a></nav></header>
+<main>
+<h1 id="retrieval-hazards--how-a-scanner-confidently-reports-nothing">Retrieval hazards — how a scanner confidently reports nothing</h1>
+<p>Distinct from <code>self-corrections.md</code>. Those are broken instruments. These are
+<strong>correct instruments pointed at the wrong question</strong>, returning a clean negative
+that reads as a result. Each one was hit, measured, and written down because the
+negative looked exactly like the positive.</p>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>What the tool reports</th>
+<th>What is true</th>
+<th>How to separate them</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TCP-only scan vs a UDP service</strong></td>
+<td><code>closed</code> or absent</td>
+<td>IPMI/BMC on <code>623/udp</code>, bound to <code>0.0.0.0</code>, granting <code>ADMINISTRATOR</code> with no credential</td>
+<td><code>nmap -p-</code> is TCP by definition. Confirm with <code>/proc/net/udp</code>, the image's <code>ExposedPorts</code>, or a live protocol exchange. A blind spot is not an absent service.</td>
+</tr>
+<tr>
+<td><strong>A catch-all vhost</strong></td>
+<td>Every name answers <code>200</code></td>
+<td>One host answers, and it is the baseline</td>
+<td>Normalise the body, hash it, and include a name that <strong>cannot exist</strong> as the control. In lab 65 sixteen names shared one hash, including an invented TLD — and the real admin lived two levels deeper than the <code>admin</code> name a flat wordlist finds.</td>
+</tr>
+<tr>
+<td><strong>A port closed by a knock</strong></td>
+<td><code>filtered</code></td>
+<td>The service exists and wants three packets</td>
+<td><code>closed</code> conflates <em>no service</em> with <em>service awaiting a sequence</em>. Only the knock-as-positive-control separates them.</td>
+</tr>
+<tr>
+<td><strong>An HTTP scanner vs a WebSocket</strong></td>
+<td>Zero endpoints</td>
+<td>A live channel answering <code>101</code></td>
+<td>The handshake is a <code>GET</code>, the channel is not HTTP. The same <code>nmap --script=http-*</code> run that reports a title on port 8080 produces <strong>no output at all</strong> on 9229.</td>
+</tr>
+<tr>
+<td><strong>A tunnel-only target</strong></td>
+<td>Ports on the operator's own workstation</td>
+<td>Nothing on the target</td>
+<td><code>nmap -p-</code> through a misconfigured SOCKS silently scans you. In lab 113 it reported <code>587/tcp open smtp-proxy</code> from the agent's own machine.</td>
+</tr>
+<tr>
+<td><strong>A blind XXE with in-band reflection</strong></td>
+<td>No OOB channel, so no finding</td>
+<td>The HTTP response <strong>is</strong> the exfiltration</td>
+<td>&quot;No OOB, no XXE&quot; is true only for <em>blind</em> XXE. When the expanded value is rendered, the response carries it and no collaborator is needed.</td>
+</tr>
+<tr>
+<td><strong>A password in a front-end bundle</strong></td>
+<td>A secret exposed</td>
+<td>A public build variable</td>
+<td><code>VITE_*</code>, <code>NEXT_PUBLIC_*</code> and <code>REACT_APP_*</code> are inlined <strong>by design</strong>. Read them and you have read the documentation. The finding is a token with write scope, or a service credential — not a value that happens to look like one.</td>
+</tr>
+<tr>
+<td><strong>A memory dump vs a config dump</strong></td>
+<td>Secrets exposed</td>
+<td>Six secret classes in the heap, none in any <code>.properties</code></td>
+<td>A heap dump carries runtime state a config file never had — a plaintext admin password that is bcrypt-hashed on every boot. Conversely <code>/actuator/env</code> returned 96 values and 96 <code>******</code>, and reporting the <strong>name</strong> <code>app.jwt.secret</code> as a leak is a fabricated finding.</td>
+</tr>
+<tr>
+<td><strong>A <code>403</code> from a WAF</strong></td>
+<td>Blocked</td>
+<td>A working control, and the scan user-agent is what triggered it</td>
+<td><code>403</code> and <code>429</code> are expected working conditions, not verdicts. Work under an open circuit needs explicit authorisation and a declared window; only an account- or team-level block is terminal.</td>
+</tr>
+<tr>
+<td><strong>A backtick that concatenates</strong></td>
+<td>An empty <code>&lt;pre&gt;&lt;/pre&gt;</code>, or a refusal body</td>
+<td>The command ran anyway</td>
+<td>The three metachars are not interchangeable. <code>;</code> and <code>|</code> separate, but a backtick inside an already-quoted word <strong>concatenates</strong>, so the shell produces nothing, the body comes back empty, and an empty body is byte-identical to the app's own refusal. Measured: the marker file the payload touched existed, while the response read as a block. <strong>A refusal body and a malformed-payload body are the same bytes</strong> — only a witness read back out of band separates them.</td>
+</tr>
+<tr>
+<td><strong>A vulnerability in the build artefact</strong></td>
+<td>Nothing — it is not served</td>
+<td>The decisive one, on disk in the image</td>
+<td>A WordPress lab whose entrypoint runs <code>wp core install --admin_user=… --admin_password=…</code> is won by reading the image, not by attacking the web. A CVE-driven approach cannot find it because <strong>no request ever reaches it</strong>. The entrypoint, Dockerfile, compose file and seed scripts are surface: they are not HTTP-reachable and they are still what determines the credentials you will use. Read them before the port scan finishes</td>
+</tr>
+<tr>
+<td><strong><code>curl -L</code> after a delete</strong></td>
+<td><code>200</code> on your own removed file</td>
+<td><code>301</code> to nothing, followed by a final <code>200</code></td>
+<td><code>curl -L</code> follows the redirect and reports the <strong>last</strong> hop. After you delete a webshell, a chained restore check still gets <code>200</code> and reads as <em>the restore failed</em> — or, worse, as <em>the shell is still there</em>. Verified: the restore had in fact succeeded. Re-check with <code>test -e</code> and <code>stat -c</code>, never with a URL fetch</td>
+</tr>
+<tr>
+<td><strong>A renamed admin path</strong></td>
+<td>No <code>/admin</code></td>
+<td>The admin panel</td>
+<td>A security plugin rewrote <code>/wp-admin/</code> to <code>/ghost-admin/</code>. Read the rewrite rules. The path is not the control; the authorisation decision is.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="the-one-that-generalises">The one that generalises</h2>
+<p>Every row is the same question asked three ways:</p>
+<blockquote>
+<p><strong>Reachable / what the body carries / decisive.</strong></p>
+</blockquote>
+<p>A scanner answers the first. A report needs all three. The gap between them is
+where findings are invented and findings are missed, and it is the cheapest thing
+in this corpus to get right — a hash of a normalised body, a byte count, a
+<code>LENGTH()</code>, a mode read back as the identity that owns it.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

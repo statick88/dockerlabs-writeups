@@ -1,0 +1,1019 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 26 404-not-found &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; 404-not-found</p><h1 id="404-not-found--dockerlabs-lab-26-fácil">404-NOT-FOUND — DockerLabs lab 26 (Fácil)</h1>
+<p>Ubuntu 24.04, Apache 2.4.58, PHP, OpenSSH 9.6p1, shipped as a DockerLabs image
+(<code>404-not-found.tar</code>, 336 MB). The catalogue describes it as <em>&quot;Laboratorio para
+practicar la enumeración de subdominios e inyección LDAP, con escalada de
+privilegios en Linux.&quot;</em></p>
+<p><strong>Two of those three claims are false, and the third is one rung short of its own
+promise.</strong> Measured, not inferred:</p>
+<ul>
+<li><strong>There is no LDAP anywhere in this lab.</strong> No <code>slapd</code>, no <code>php-ldap</code> module, no
+LDAP port, no LDAP client call. The authentication code builds a filter string
+into a local variable and then never sends it to anything. The &quot;LDAP injection&quot;
+is a <code>strpos()</code> substring test on a string that is never dispatched. This is
+<strong>not</strong> an LDAP injection; it is an authentication bypass by substring
+comparison, and the two have different root causes and different fixes.</li>
+<li><strong>There are no subdomains to enumerate.</strong> Exactly two virtual hosts are
+configured, and every other hostname — including a fully invented TLD — returns
+the identical catch-all <code>301</code>. The image additionally ships <strong>20 997</strong> <code>Wfuzz</code>
+vhost requests to that same catch-all, left over from the author's own build-time
+scan, in a 2.4 MB log file. The lab ships its enumeration noise as scenery.</li>
+<li><strong>The escalation reaches <code>uid=1000(200-ok)</code> and stops.</strong> The second rung the
+catalogue implies does not exist: no SUID beyond the stock Ubuntu set, no
+capabilities, no writable cron, no writable config directory, no Docker socket.
+<code>/root/root.txt</code> is unreachable, and the previous user's own <code>.bash_history</code>
+points at a SUID script that is <strong>not in the image</strong>. The author's own
+<code>boss.txt</code> reads <em>&quot;What is rooteable&quot;</em> — the lab asks the question its own
+escalation path cannot answer.</li>
+</ul>
+<p>The lesson is therefore not &quot;LDAP filters need escaping&quot;. It is a <strong>sink
+criterion</strong>: <em>a filter that is built is not a filter that is executed.</em> Concatenation
+into a variable is not a sink, and a comment that says <code>// Vulnerable to LDAP injection</code> is a statement about intent that costs you the derivation.</p>
+<p>All commands below were run against the lab as shipped. <code>auto_deploy.sh</code> was <strong>not</strong>
+executed; the container was created with
+<code>docker run -d --name lab404_container 404-not-found:latest</code>. Nothing was written to
+the host filesystem outside <code>/tmp/[tool]/</code>.</p>
+<hr />
+<h2 id="1-autocorrection-read-this-first">1. Autocorrection (read this first)</h2>
+<p>Three things I got wrong, or would have got wrong, before the lab was solved. All
+three are measurements I substituted for measurements I could have made.</p>
+<h3 id="11-i-was-about-to-write-ldap-injection-cwe-90-and-the-sink-did-not-exist">1.1 I was about to write &quot;LDAP injection (CWE-90)&quot;, and the sink did not exist</h3>
+<p>The catalogue said LDAP injection. The page source said it too, in a comment:</p>
+<pre><code class="language-php">// Vulnerable to LDAP injection (simulación)
+$ldap_query = &quot;(&amp;(uid=$username)(password=$password))&quot;;
+</code></pre>
+<p>I had everything I needed to write the finding at that moment: an unsanitised filter
+template, both fields interpolated, a comment naming the class. It is the exact
+shape of the PinguPenguin <code>// TODO: validate</code> case in <code>decision-making.md</code> §7.</p>
+<p>What stopped it was not scepticism about the comment — it was that the port table
+had no LDAP in it. <code>nmap -p-</code> showed 22/tcp and 80/tcp and nothing else, and a
+second measurement settled it:</p>
+<pre><code>$ ps aux | grep -i ldap            # (nothing)
+$ which slapd ldapsearch ldapadd   # (nothing)
+$ dpkg -l | grep -iE &quot;slapd|ldap&quot;
+ii  libaprutil1-ldap:amd64  1.6.3-1.1ubuntu7
+ii  libldap-common           2.6.7+dfsg-1~exp1ubuntu8
+ii  libldap2:amd64           2.6.7+dfsg-1~exp1ubuntu8
+$ php -m | grep -i ldap          # (nothing)
+</code></pre>
+<p>Three OpenLDAP <strong>libraries</strong> are present because Apache's <code>apr-util</code> links them.
+There is no <strong>server</strong> and, more decisively for this finding, no <strong>client</strong> — no
+<code>php-ldap</code> means the process holding <code>$ldap_query</code> has no function capable of
+dispatching it. The variable is written and dropped.</p>
+<p>The finding I would have written was wrong in class, wrong in CWE, and wrong in
+remediation. &quot;Escape the filter with <code>ldap_escape()</code>&quot; is the correct fix for a bug
+that does not exist here, and applying it would have closed a finding while leaving
+the real one — a <code>strpos()</code> comparison standing in for an authenticator — untouched
+and undocumented. The actual fix is to bind against a real directory, or to compare
+a password hash; the string comparison is not a control at all.</p>
+<h3 id="12-the-3-byte-payload-is-not-an-injection-and-the-textbook-payload-is-rejected">1.2 The 3-byte payload is not an injection, and the textbook payload is <em>rejected</em></h3>
+<p>Once I had the source I could see the bypass condition was a substring test. I still
+ran the canonical LDAP injection payloads first, out of habit, and <strong>one of them
+failed</strong>:</p>
+<pre><code>username=*)(|(uid=*     password=x   -&gt;  302 fail.html
+</code></pre>
+<p>That failure is the most informative result in the engagement, and I nearly filed it
+as &quot;wrong syntax, retry&quot;. It is not wrong syntax — it is <em>rejected on purpose</em>. The
+bypass branch requires the literal 3-character sequence <code>)(|</code> to appear
+<strong>anywhere</strong> in the assembled string:</p>
+<pre><code class="language-php">else if (strpos($ldap_query, &quot;(&amp;&quot;) !== false &amp;&amp; strpos($ldap_query, &quot;)(|&quot;) !== false) {
+</code></pre>
+<p>So the shortest winning input carries no LDAP semantics whatsoever:</p>
+<pre><code>username=x   password=)(|    -&gt;  302 admin_panel_very_secret_impossibol.html
+</code></pre>
+<p>and the control that decides it is a substring, not a filter evaluation:</p>
+<pre><code>username=x   password=*      -&gt;  302 fail.html     &lt;- the actual LDAP wildcard: inert
+username=x   password=y)(    -&gt;  302 fail.html     &lt;- partial marker: inert
+username=x   password=)(|    -&gt;  302 fail.html     &lt;- reordered: inert
+</code></pre>
+<p><code>*</code> — the character that carries the entire meaning of LDAP injection — does
+nothing. <code>)(|</code> — three characters with no meaning outside this one <code>if</code> — is the
+whole vulnerability. I would have reported &quot;LDAP injection&quot; from the winning 3-byte
+payload alone, and every attacker who tried the real thing would have found the lab
+appears to be patched.</p>
+<h3 id="13-half-the-bypass-condition-can-never-fail">1.3 Half the bypass condition can never fail</h3>
+<p>I reported the bypass as a two-part condition because the code reads as one. Then I
+tested the second half in isolation and it is a <strong>tautology</strong>:</p>
+<pre><code>username=zzz   password=)(|   -&gt;  302 admin_panel_very_secret_impossibol.html
+</code></pre>
+<p><code>zzz</code> contains no <code>(&amp;</code>. The check still passed, because <code>$ldap_query</code> is <em>always</em>
+prefixed with the literal <code>(&amp;(</code> by the template, so <code>strpos($ldap_query, &quot;(&amp;&quot;)</code> is
+<strong>never false for any input whatsoever</strong>. The first conjunct of the bypass condition
+is dead code with a security-sounding name on it.</p>
+<p>This is the &quot;control that could not fail&quot; shape from <code>decision-making.md</code>, and it is
+the most dangerous form: a reviewer reading the <code>if</code> sees two conditions and
+concludes the author validated something. Half of the check validates the author's
+own string literal. The honest description of this bug is one condition wide, and
+one of the two is not a control.</p>
+<p><strong>Autocorrection applied:</strong> I stopped trusting the condition count in the source
+and re-derived the discriminator from the <em>response</em>, using a positive control per
+branch. The evidence table in §4 is built that way, and the tautology is a finding
+in its own right rather than a footnote.</p>
+<hr />
+<h2 id="2-real-surface">2. Real surface</h2>
+<h3 id="21-host-and-container">2.1 Host and container</h3>
+<pre><code>$ docker run -d --name lab404_container 404-not-found:latest
+$ docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' lab404_container
+[net-0-13]
+$ docker ps --format '{{.Names}}\t{{.Status}\t{{.Ports}}'
+lab404_container	Up 51 seconds
+</code></pre>
+<pre><code>$ nmap -sV -Pn -p- [net-0-13]
+
+Nmap scan report for [net-0-13]
+Host is up (0.000046s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.4 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58
+Service Info: Host: default; OS: Linux; CPE: cpe:/o:linux:linux_kernel
+</code></pre>
+<p><strong>Two ports. No LDAP, no Kerberos, no SMB, no database, no management plane.</strong> Per
+<code>decision-making.md</code> §7, the port table is evidence and the catalogue is marketing:
+one <code>nmap -p-</code> retires two of the three headline claims in under a minute.</p>
+<p>Container entrypoint, from the image config:</p>
+<pre><code class="language-json">&quot;Cmd&quot;: [&quot;/bin/sh&quot;, &quot;-c&quot;, &quot;service ssh start &amp;&amp; service apache2 start &amp;&amp; tail -f /dev/null&quot;]
+</code></pre>
+<p>Process list: <code>sshd</code>, five <code>apache2</code> workers, <code>tail -f /dev/null</code>. Nothing else.
+<code>slapd</code> is not started, because <code>slapd</code> is not installed.</p>
+<h3 id="22-http-surface--three-vhosts-two-real">2.2 HTTP surface — three vhosts, two real</h3>
+<p><code>/etc/apache2/sites-enabled/</code> holds exactly three files:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th><code>ServerName</code></th>
+<th>DocumentRoot</th>
+<th>Real?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>000-default-ip.conf</code></td>
+<td><code>default</code></td>
+<td><code>/var/www/html</code> (empty)</td>
+<td>catch-all</td>
+</tr>
+<tr>
+<td><code>404-not-found.conf</code></td>
+<td><code>404-not-found.hl</code></td>
+<td><code>/var/www/404-not-found</code></td>
+<td><strong>yes</strong></td>
+</tr>
+<tr>
+<td><code>info.404-not-found.conf</code></td>
+<td><code>info.404-not-found.hl</code></td>
+<td><code>/var/www/info</code></td>
+<td><strong>yes</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The default vhost redirects everything else:</p>
+<pre><code class="language-apache">Redirect permanent / http://404-not-found.hl/
+</code></pre>
+<p>Six files exist in total across the two real roots:</p>
+<pre><code>/var/www/404-not-found/index.html
+/var/www/404-not-found/participar.html
+/var/www/info/index.html
+/var/www/info/fail.html
+/var/www/info/login.php
+/var/www/info/admin_panel_very_secret_impossibol.html
+</code></pre>
+<p><code>/var/www/html</code> — the DocumentRoot of the <em>first</em> vhost, and therefore the root a
+scanner hits on the bare IP — <strong>is empty</strong>. The only files on the box are the six
+above.</p>
+<p>A static decoy page, <code>participar.html</code>, carries a base64 blob labelled <em>&quot;Clave
+secreta (no la compartas)&quot;</em>. It decodes to:</p>
+<pre><code>$ echo &quot;UXVlIGhhY2VzPywgbWlyYSBlbiBsYSBVUwwu&quot; | base64 -d
+Que haces?, mira en la URL.
+</code></pre>
+<p>A pointer to the URL, not a secret. Per the PinguPenguin trichotomy this is (a)
+reachable, (b) discloses <strong>a value</strong> — and (c) it is <strong>not decisive</strong>: it names the
+next place to look and nothing else. Same shape as a real hint, which is worth
+recording because it is the one place in this lab where the bait is honest.</p>
+<h3 id="23-the-subdomain-question-answered-by-the-data">2.3 The subdomain question, answered by the data</h3>
+<p>The catalogue promises subdomain enumeration. I enumerated, and then tested whether
+the enumeration was real:</p>
+<pre><code>host                                  code  size   md5 of body
+404-not-found.hl                      200   2784   944fb12c6ed2
+info.404-not-found.hl                 200   2023   9658474c1ee2
+admin.404-not-found.hl                301    320   da039b6cccac
+ldap.404-not-found.hl                 301    319   1f84c1435e69
+secret.404-not-found.hl               301    321   d245da029a7e
+zzzzzz-not-a-thing.404-not-found.hl   301    333   38a752a36cfa
+</code></pre>
+<p>Six names, and <code>admin.</code>, <code>ldap.</code> and <code>secret.</code> all answer. <strong>This is exactly the
+trap the brief warns about</strong>, so I normalised the echoed hostname out of each body
+and re-hashed, because the byte-size differences above are only the hostname being
+reflected:</p>
+<pre><code>admin.404-not-found.hl                 normalized-md5=54fc1e878742
+ldap.404-not-found.hl                  normalized-md5=54fc1e878742
+secret.404-not-found.hl                normalized-md5=54fc1e878742
+zzzzzz-not-a-thing.404-not-found.hl    normalized-md5=54fc1e878742
+totally.invented.tld                   normalized-md5=54fc1e878742
+</code></pre>
+<p><strong>Identical, including a TLD that does not exist.</strong> Every name hits the
+<code>000-default-ip.conf</code> catch-all and gets the same redirect. Two real subdomains
+exist, both of them in the config file I had already read. <code>ldap.404-not-found.hl</code>
+&quot;resolving&quot; is the most seductive false positive in this lab: the name is the
+catalogue's own promise, and it is an artifact of a <code>ServerName default</code> vhost.</p>
+<p>Applying the trichotomy: <strong>reachable</strong> — yes, everything is reachable. <strong>What the
+body carries</strong> — a placeholder, not content: the default vhost's 301. <strong>Decisive</strong> —
+no. Zero subdomains were found, and that is a <em>negative result with a reason</em>, not
+a failure to enumerate.</p>
+<p><strong>And the image ships the enumeration as noise.</strong> <code>other_vhosts_access.log</code> is
+2.4 MB, and its entire contents are the author's own build-time <code>Wfuzz</code> run:</p>
+<pre><code>$ grep -aoE '&quot;(GET|POST) [^ ]+' /var/log/apache2/other_vhosts_access.log | sort | uniq -c | sort -rn
+  20997 &quot;GET /
+      1 &quot;POST /sdk
+      1 &quot;GET /nmaplowercheck1790570596
+      1 &quot;GET /evox/about
+      1 &quot;GET /HNAP1
+
+$ awk '{print $1}' /var/log/apache2/other_vhosts_access.log | sort | uniq -c
+  21001 default:80
+</code></pre>
+<p><strong>All 21 001 lines name the same vhost, <code>default:80</code>.</strong> 20 997 of them are identical
+<code>GET /</code> requests. An analyst who tails this log during the engagement sees 21 000
+requests, a 2024 date range, and a scanner user-agent, and concludes there is
+history here worth mining. Every one of those lines is the catch-all answering a
+wordlist. This is the &quot;a responding subdomain is not a real subdomain&quot; rule at a
+scale that makes it impossible to miss if you check, and invisible if you do not.</p>
+<h3 id="24-application-source--the-whole-of-it">2.4 Application source — the whole of it</h3>
+<p><code>/var/www/info/login.php</code>, verbatim and in full:</p>
+<pre><code class="language-php">&lt;?php
+if ($_SERVER[&quot;REQUEST_METHOD&quot;] == &quot;POST&quot;) {
+    $username = $_POST['username'];
+    $password = $_POST['password'];
+
+    // Vulnerable to LDAP injection (simulación)
+    $ldap_query = &quot;(&amp;(uid=$username)(password=$password))&quot;;
+
+    // Simulación de una autenticación LDAP correcta
+    if ($username == &quot;admin&quot; &amp;&amp; $password == &quot;supersecurepassword&quot;) {
+        header(&quot;Location: admin_panel_very_secret_impossibol.html&quot;);
+        exit();
+    } 
+    // Simulación de bypass LDAP exitoso
+    else if (strpos($ldap_query, &quot;(&amp;&quot;) !== false &amp;&amp; strpos($ldap_query, &quot;)(|&quot;) !== false) {
+        header(&quot;Location: admin_panel_very_secret_impossibol.html&quot;);
+        exit();
+    } 
+    // Credenciales incorrectas
+    else {
+        header(&quot;Location: fail.html&quot;);
+        exit();
+    }
+} else {
+    echo &quot;&lt;h2&gt;Acceso no permitido.&lt;/h2&gt;&quot;;
+}
+?&gt;
+</code></pre>
+<p>Thirty-two lines. There is <strong>no <code>ldap_connect</code>, no <code>ldap_search</code>, no <code>ldap_bind</code>, no
+socket, no include, no framework</strong>. <code>$ldap_query</code> is a local string with three
+read sites, all of them <code>strpos</code> or string comparison. The variable is constructed
+and abandoned.</p>
+<p>The <code>(&amp;</code> conjunct is unsatisfiable-to-false by construction, because the template on
+the preceding line always begins with <code>(&amp;(uid=</code>. The <code>)(|</code> conjunct is the only live
+condition, and it is satisfied by the substring <code>)(|</code> appearing <strong>anywhere</strong> in
+either field — including in a position that is not a filter at all.</p>
+<p><code>admin_panel_very_secret_impossibol.html</code> is static and discloses the next hop:</p>
+<pre><code class="language-html">&lt;div class=&quot;admin-credentials&quot;&gt;
+    &lt;h2&gt;Credenciales de Admin&lt;/h2&gt;
+    &lt;p&gt;Nombre de usuario: &lt;code&gt;404-page&lt;/code&gt;&lt;/p&gt;
+    &lt;p&gt;Contraseña: &lt;code&gt;not-found-page-secret&lt;/code&gt;&lt;/p&gt;
+&lt;/div&gt;
+</code></pre>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<h3 id="31-authentication-bypass-by-substring-comparison-on-a-filter-that-is-never-executed--cwe-287--cwe-20-critical-path">3.1 Authentication bypass by substring comparison on a filter that is never executed — CWE-287 / CWE-20 (critical path)</h3>
+<p><strong>Evidence, literal:</strong></p>
+<pre><code>$ curl -s -i -X POST -H 'Host: info.404-not-found.hl' \
+    --data-urlencode 'username=x' --data-urlencode 'password=)(|' \
+    http://[net-0-13]/login.php
+HTTP/1.1 302 Found
+Location: admin_panel_very_secret_impossibol.html
+</code></pre>
+<p><strong>Impact.</strong> Unauthenticated access to the admin panel and, through it, the
+<code>404-page</code> SSH credential, which is the first rung of the whole escalation. The
+attacker supplies no credential of any kind: the username is <code>x</code> and the password is
+three characters. Anyone who can reach port 80 on any hostname that hits this vhost
+is an administrator of this application.</p>
+<p><strong>Root cause — and this is where the finding is usually misdiagnosed.</strong> The defect
+is <strong>not</strong> CWE-90 (LDAP injection). There is no LDAP. The defect is that the
+authentication decision is a <code>strpos()</code> substring test over a locally-built string,
+standing in place of an authenticator:</p>
+<pre><code class="language-php">strpos($ldap_query, &quot;)(|&quot;) !== false
+</code></pre>
+<p>An authentication control that tests for a substring of its own input template is a
+control that any three characters defeat. Note the compounding factor that makes
+this worse than a weak password check: <strong>the bypass is not a weakness in a real
+check, it is the whole check.</strong> There is no working authenticator behind it to
+report separately — per <code>decision-making.md</code> §5, the unauthenticated panel is not a
+footnote in the chain narrative, it is the chain.</p>
+<p><strong>Remediation.</strong> The comment says <code>simulación</code>, and it is right: the correct fix is
+not to escape the filter but to <strong>implement the thing the filter was standing in
+for</strong>. Bind to a real directory (or a password hash store) and decide on the bind
+result. If a directory is the target, escape with <code>ldap_escape($value, '', LDAP_ESCAPE_FILTER)</code>
+on every interpolated value <em>and</em> compare the bind outcome — the escape is the fix
+for CWE-90, the bind is the fix for what is actually here, and doing only the first
+leaves the panel open. Separately: stop deciding authentication from a string you
+constructed yourself.</p>
+<h3 id="32-half-the-authentication-condition-is-a-tautology--cwe-570--cwe-1025-medium-reported-because-it-hides-31">3.2 Half the authentication condition is a tautology — CWE-570 / CWE-1025 (medium, reported because it hides 3.1)</h3>
+<p><code>strpos($ldap_query, &quot;(&amp;&quot;) !== false</code> is true for <strong>every possible input</strong>, because
+the template <code>&quot;(&amp;(uid=$username)(password=$password))&quot;</code> begins with <code>(&amp;(</code>
+unconditionally. Proven by supplying an input that contains no <code>(&amp;</code> and reaching the
+admin panel anyway (<code>username=zzz</code>, §4).</p>
+<p><strong>Impact.</strong> Not directly exploitable — it contributes nothing to §3.1, since the
+<code>)(|</code> half is the live half. It matters for two reasons. First, it is the
+difference between describing this bug as two conditions and one, and the count is
+what an assessor uses to scope the fix. Second, and more seriously, it is a control
+that <strong>cannot fail</strong>: it reads like validation of the developer's input and it
+validates the developer's own string literal. A reviewer who trusts it is trusting
+nothing. This is <code>decision-making.md</code> &quot;a control that could not fail&quot;, and the
+general form is worth carrying: <strong>an assertion over a value the code itself
+constructed is not a check on the input</strong> — grep for the check's subject, and if the
+subject is a constant, the check is decoration.</p>
+<p><strong>Remediation.</strong> Delete the conjunct. If a real filter is later added, keep the
+check on the <em>result</em> of the directory, never on the filter text.</p>
+<h3 id="33-the-protected-resource-has-no-authorization-at-all--cwe-306--cwe-862-high">3.3 The protected resource has no authorization at all — CWE-306 / CWE-862 (high)</h3>
+<p><code>login.php</code> sets <strong>no cookie and no session</strong> on any path, successful or not:</p>
+<pre><code>$ curl -s -i -X POST -H 'Host: info.404-not-found.hl' \
+    -d 'username=zzz&amp;password=)(|' http://[net-0-13]/login.php | grep -iE '[response-cookie-header]|HTTP/|Location'
+HTTP/1.1 302 Found
+Location: admin_panel_very_secret_impossibol.html
+
+(no [response-cookie-header] header)
+</code></pre>
+<p>And the &quot;protected&quot; page is a static file in the DocumentRoot:</p>
+<pre><code>$ curl -s -o /dev/null -w '%{http_code} size=%{size_download}\n' \
+    -H 'Host: info.404-not-found.hl' \
+    http://[net-0-13]/admin_panel_very_secret_impossibol.html
+200 size=3007
+</code></pre>
+<p><strong>200, with no credential, no cookie, and no session — ever.</strong> The login form is a
+decorated redirect. The credential disclosure in §3.4 is therefore reachable by one
+<code>GET</code> and does not require §3.1 at all.</p>
+<p><strong>Impact.</strong> The bypass in §3.1 is not the shortest path to the credentials, and a
+report that presents it as the entry point is wrong about its own chain. The honest
+statement: <strong>the admin panel is public; the login is theatre.</strong> §3.1 is still a real
+finding — a substring standing in for an authenticator is a defect whether or not
+the resource behind it is protected — but it is not load-bearing, and saying it is
+would be the <code>decision-making.md</code> §5 error of promoting a chain step to the finding.</p>
+<p><strong>Remediation.</strong> The panel must be served by a handler that makes an authorization
+decision, with the credential store behind it. Serving secrets as a static file in a
+DocumentRoot means the DocumentRoot <em>is</em> the access control, and it is <code>644</code>.</p>
+<h3 id="34-cleartext-credentials-served-by-a-static-file-in-the-documentroot--cwe-312--cwe-798-high">3.4 Cleartext credentials served by a static file in the DocumentRoot — CWE-312 / CWE-798 (high)</h3>
+<p><code>admin_panel_very_secret_impossibol.html</code> ships a live SSH credential as static
+markup. Combined with §3.3, no request beyond a single unauthenticated <code>GET</code> is
+required. These credentials are rung 1 of the escalation in §5 and are the reason
+this lab is solvable at all.</p>
+<p><strong>Impact.</strong> Credential disclosure to any unauthenticated requester, for an account
+that owns a sudoers entry (§3.5). The remediation is to remove them from the page
+<strong>and</strong> to treat them as compromised and rotate them — removing them from the
+markup does not un-disclose them, because a static file in a DocumentRoot is in every
+web cache, proxy log and browser cache that ever fetched it.</p>
+<h3 id="35-sudoers-delegation-into-an-execute-only-interpreter--cwe-250--cwe-269-high-by-design-the-real-escalation">3.5 Sudoers delegation into an execute-only interpreter — CWE-250 / CWE-269 (high, by design; the real escalation)</h3>
+<pre><code>$ sudo -l
+User 404-page may run the following commands on f266a776fcaa:
+    (200-ok : 200-ok) [lab-home]/404-page/calculator.py
+</code></pre>
+<p><code>[lab-home]/404-page/calculator.py</code> is <code>-rwx--x--x 1 200-ok 200-ok</code> — <strong>execute-only, no
+read permission</strong>, owned by <code>200-ok</code>, in a directory owned by <code>404-page</code>. So
+<code>404-page</code> cannot read the file it is authorised to run, but <em>owns the directory
+containing it</em>, which means it can unlink and replace it. Both facts matter, and
+the second is the more direct route: the sudoers rule pins a <strong>path</strong>, and the path
+is writable by the invoking user, so the rule delegates to a program the delegating
+user controls. This is the Elevator lesson — the control is the <strong>filesystem</strong>, not
+<code>argv</code>.</p>
+<p>The control genuinely held where it was tested, which is worth recording. Wrapping
+the target to bound its runtime was refused:</p>
+<pre><code>$ sudo -n -u 200-ok timeout -s KILL 6 [lab-home]/404-page/calculator.py &lt; input
+Sorry, user 404-page is not allowed to execute '/usr/bin/timeout -s KILL 6 [lab-home]/404-page/calculator.py' as 200-ok on f266a776fcaa.
+</code></pre>
+<p>The path restriction is enforced, not decorative. It is simply pointed at a
+user-writable file.</p>
+<p><strong>The target</strong>, read after escalation (execute-only as <code>404-page</code>; §6 records how it
+was recovered):</p>
+<pre><code class="language-python">#!/usr/bin/python3
+import os
+
+def calculator():
+    while True:
+        try:
+            user_input = input(&quot;calculator&gt; &quot;)
+            if user_input.lower() in ['exit', 'quit']:
+                break
+            if user_input.startswith('!'):
+                os.system(user_input[1:])        # sink 1 - intended
+            else:
+                result = eval(user_input)          # sink 2 - not in the comments
+                print(result)
+        except Exception as e:
+            print(f&quot;Error: {e}&quot;)
+</code></pre>
+<p><strong>Two sinks, one of them undocumented.</strong> <code>!</code> → <code>os.system()</code> is the author's
+intended primitive and is documented in a comment. <code>eval(user_input)</code> on the
+<code>else</code> branch is a <strong>second, independent CWE-95 path the author did not intend and
+did not annotate</strong> — the same §7 shape as PinguPenguin's uncommented
+<code>requireAdmin</code> siblings, and the reason the annotations are a strict subset.</p>
+<p><strong>Remediation.</strong> Do not delegate sudo to a file in a directory the invoking user
+owns; put the target in a root-owned directory and make it root-owned, or drop the
+rule. Inside the program, <code>eval</code> on interactive input is a shell by another name —
+replace it with <code>ast.literal_eval</code> (or an actual expression parser) and delete the
+<code>!</code> passthrough entirely, since a calculator has no need of a shell.</p>
+<h3 id="36-unbounded-loop-and-unbounded-error-output-on-eof--cwe-835--cwe-400-low-found-by-accident">3.6 Unbounded loop and unbounded error output on EOF — CWE-835 / CWE-400 (low, found by accident)</h3>
+<p><code>except Exception</code> catches <code>EOFError</code> and the <code>while True</code> continues, so closing
+stdin produces an infinite stream of <code>Error: EOF when reading a line</code>. I hit this
+unintentionally: my redirected output file reached <strong>430 427 520 bytes</strong> in about
+four seconds.</p>
+<p>I did not weaponise this and did not attempt to exhaust the disk; the number above
+is an accident of instrumentation, reported as a rate, not an impact claim. The
+defect is that the error path has no exit and no bound, so any caller that closes
+its input — which is what every wrapper, pipeline and <code>sudo</code> invocation does —
+converts the program into an unbounded writer. A <code>break</code> on <code>EOFError</code> fixes it.</p>
+<h3 id="37-findings-present-but-not-used">3.7 Findings present but not used</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Finding</th>
+<th>CWE</th>
+<th>Why not used</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a</td>
+<td>Hardcoded <code>admin</code> / <code>supersecurepassword</code> in source</td>
+<td>CWE-798</td>
+<td>Reachable, but §3.1 bypasses it entirely and it grants nothing beyond the same panel. Reported as a control that is not a control.</td>
+</tr>
+<tr>
+<td>b</td>
+<td><code>participar.html</code> labelled &quot;Clave secreta&quot;</td>
+<td>CWE-200</td>
+<td>The base64 decodes to <code>Que haces?, mira en la URL.</code> — a pointer, not a secret. Reachable + a value, but <strong>not decisive</strong>: it names the next step and nothing else.</td>
+</tr>
+<tr>
+<td>c</td>
+<td><code>.htaccess</code> enabled via <code>AllowOverride All</code> in two vhosts</td>
+<td>CWE-16</td>
+<td>No <code>.htaccess</code> file exists. A live configuration capability with nothing behind it.</td>
+</tr>
+<tr>
+<td>d</td>
+<td>The lab ships 21 001 lines of its own <code>Wfuzz</code> noise in <code>other_vhosts_access.log</code></td>
+<td>—</td>
+<td>Not a vulnerability. A <strong>design observation</strong>, §7, and the single most useful artifact in the image for anyone who reads logs.</td>
+</tr>
+<tr>
+<td>e</td>
+<td>The static decoy page's <code>xyz123</code> &quot;Protocolo de acceso&quot;</td>
+<td>CWE-798</td>
+<td>Dead string. It authenticates nothing; no path consumes it.</td>
+</tr>
+<tr>
+<td>f</td>
+<td>No CSRF token on the login form</td>
+<td>CWE-352</td>
+<td>Login CSRF has no meaningful impact against a three-byte bypass, and this lab is not a real application.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="38-controls-that-held">3.8 Controls that held</h3>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Test</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default-vhost isolation</td>
+<td>5 hostnames + 1 invented TLD, hostname normalised out, re-hashed</td>
+<td>All 6 identical → catch-all, no phantom subdomain</td>
+</tr>
+<tr>
+<td>Sudoers path restriction</td>
+<td><code>sudo -u 200-ok timeout ... calculator.py</code></td>
+<td><strong>Refused.</strong> Path pinning is enforced</td>
+</tr>
+<tr>
+<td>Sudoers target identity</td>
+<td><code>id</code> as the first command in the new primitive</td>
+<td><code>uid=1000(200-ok)</code>, exactly as the rule specifies — never root</td>
+</tr>
+<tr>
+<td><code>user.txt</code> filesystem boundary</td>
+<td><code>cat</code> as <code>root</code> (password required) and as <code>404-page</code></td>
+<td><strong>Both denied.</strong> Only <code>200-ok</code> can read it</td>
+</tr>
+<tr>
+<td>No LDAP</td>
+<td><code>ps</code>, <code>which</code>, <code>dpkg -l</code>, <code>php -m</code></td>
+<td>No server, no client, no port</td>
+</tr>
+<tr>
+<td>No second escalation rung</td>
+<td>SUID, SGID, capabilities, world-writable, cron, config dirs, socket</td>
+<td>Nothing. See §5.3</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-control-tests-with-positive-controls">4. Control tests, with positive controls</h2>
+<p>Every probe below carries a positive control, because the whole point of §1.3 is that
+a check which cannot fail is worse than no check. <code>P</code> = positive control, <code>N</code> =
+negative.</p>
+<p><strong>Positive control for the detector itself</strong> — force the branch to fire through the
+real credentials, and through the marker alone, so I know the detector is connected
+before I trust any negative:</p>
+<pre><code>[P1] username=admin  password=supersecurepassword -&gt; admin_panel_very_secret_impossibol.html
+[P2] username=zzz    password=)(|                -&gt; admin_panel_very_secret_impossibol.html
+</code></pre>
+<p><code>P1</code> proves the redirect target is the success path and the detector reads it; <code>P2</code>
+proves the detector fires on the marker with <strong>no</strong> valid credential anywhere in the
+request. Both necessary; neither alone is evidence.</p>
+<p><strong>Negative controls — and these are the substance of the finding:</strong></p>
+<pre><code>[N1]  username=zzz                              password=zzz                    -&gt; fail.html
+[N2]  username=x   password=*                                          -&gt; fail.html   &lt;- the real LDAP wildcard: INERT
+[N3]  username=*   password=*                                          -&gt; fail.html
+[N4]  username=x   password=*)(uid=*))(|(uid=*                          -&gt; admin_panel  (contains )(| )
+[N5]  username=x   password=y)(                                        -&gt; fail.html   &lt;- partial
+[N6]  username=x   password=)(|                                        -&gt; fail.html   &lt;- REORDERED, also partial
+[N7]  username=x   password=(|)                                       -&gt; fail.html
+[N8]  username=*)(|(uid=*  password=x                                    -&gt; fail.html   &lt;- the textbook payload FAILS
+</code></pre>
+<p>Reading the table:</p>
+<ul>
+<li><strong><code>N2</code>/<code>N3</code> are the important ones.</strong> <code>*</code> is the entire semantic content of LDAP
+injection. It is inert. If this were a real LDAP injection, <code>*</code> would match every
+entry and <em>widen</em> the result set — the &quot;many where there should be few&quot; signal from
+the brief. It changes nothing at all, because nothing evaluates it.</li>
+<li><strong><code>N8</code> is the finding that would have saved me the wrong writeup.</strong> The canonical
+payload <code>*)(|(uid=*</code> — correct, minimal, textbook — is <strong>rejected</strong>. A tester who
+concluded &quot;this is not vulnerable, or I have the syntax wrong&quot; from <code>N8</code> alone
+would have been right about the syntax and wrong about the target. The payload
+works, and it is 3 bytes, and it is not a filter.</li>
+<li><strong><code>N5</code>/<code>N6</code>/<code>N7</code> bracket the marker on all three sides</strong>, showing the condition is
+a contiguous-substring test and not a structural parse. <code>)(</code> , <code>)(|</code> and <code>(|)</code> all
+fail; only the contiguous <code>)(|</code> passes. A filter parser would not behave this way.</li>
+<li><strong><code>N2</code> + <code>N8</code> together are the confirmation criterion.</strong> I did not conclude &quot;this
+is not an injection&quot; from the source comment; I concluded it from the fact that
+the two things an injection <em>must</em> do — accept the wildcard, accept the
+structural payload — are the two things that fail.</li>
+</ul>
+<p><strong>Tautology probe</strong> (for §3.2), each with the same positive control re-run:</p>
+<pre><code>[P] username=zzz  password=)(|  -&gt; admin_panel    (still wins with no '(&amp;' in the input)
+</code></pre>
+<p><strong>Blind vs filter, stated honestly.</strong> This is <strong>not</strong> a blind injection and I did not
+use timing. The channel is a plain response differential (302 to
+<code>admin_panel…</code> vs 302 to <code>fail.html</code>), it is one bit, and it is read from a
+<code>Location</code> header. I took <strong>one sample per input</strong> — no repetition, no timing
+measurement, no statistics — because the oracle is a string comparison in the
+application, not a directory doing work, so a single deterministic read settles it.
+Any claim here about &quot;blind boolean&quot; or &quot;time-based&quot; extraction would be invented:
+<strong>no directory was ever consulted</strong>, so there is nothing to extract and no schema to
+enumerate. That is the honest answer to the brief's question about this class, and
+it is the reason the confirmation criterion has to be about the <em>sink</em>, not the
+filter syntax.</p>
+<hr />
+<h2 id="5-chain-with-order-and-justification">5. Chain, with order and justification</h2>
+<h3 id="51-the-path-taken">5.1 The path taken</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Step</th>
+<th>Justification for the order</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>nmap -sV -Pn -p-</code></td>
+<td>First, and it retires the catalogue's LDAP claim immediately. Per §7, the port table is evidence.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Read <code>/etc/apache2/sites-enabled/</code></td>
+<td>3 files, gives the real subdomain list without any guessing. Content discovery beats enumeration, and here the config <em>is</em> the answer.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Read <code>login.php</code> in full</td>
+<td>32 lines. §7: read source before testing, to find the thing black-box cannot reach. It revealed both the substring oracle and that no LDAP exists.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Probe the bypass with positive controls</td>
+<td>§4. Two positives first, then eight negatives. Finding the tautology (§1.3) required testing a conjunct in isolation.</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>GET</code> the panel <strong>unauthenticated</strong></td>
+<td>Deliberately <em>before</em> using the bypass result. The point of the ordering is to find out whether the bypass is even needed — and it is not (§3.3).</td>
+</tr>
+<tr>
+<td>6</td>
+<td>SSH as <code>404-page</code>, <strong><code>id</code> first</strong></td>
+<td><code>uid=1001(404-page)</code>. §8: identity is a measurement. The first primitive, measured.</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>sudo -l</code></td>
+<td>One command, and it names the whole rest of the chain. Read the rule, not the target.</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Note the mode <code>rwx--x--x</code> and the <strong>owning directory</strong></td>
+<td><code>-rwx--x--x</code> says &quot;cannot read&quot;. The directory ownership says &quot;can replace&quot;. The second is the finding, and it is invisible if you stop at the mode bits.</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Black-box the target; <code>!id</code></td>
+<td>Black-box because the file is unreadable. <code>id</code> first, as always: <code>uid=1000(200-ok)</code>.</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>!cat [lab-home]/200-ok/user.txt</code></td>
+<td>Reward.</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Prove the missing rung</td>
+<td>Enumerate SUID, capabilities, cron, writable paths. Establish the chain ends — §5.3.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="52-what-each-step-bought">5.2 What each step bought</h3>
+<p>Steps 1–3 cost about a minute and eliminated two of three advertised techniques.
+Step 4 is where the class of the bug was settled. Step 5 removed the bypass from the
+critical path. Steps 6–10 are a textbook two-rung sudoers ladder, structurally
+identical to Elevator's, and the ladder worked exactly as configured. Step 11 is the
+one most writeups skip and the one I would keep: knowing where the chain <em>stops</em>, and
+why, is what makes the report trustworthy.</p>
+<h3 id="53-the-chain-stops-at-200-ok-and-here-is-the-proof">5.3 The chain stops at <code>200-ok</code>, and here is the proof</h3>
+<p><code>/root/root.txt</code> contains <code>2424b2a3292e20c6e1ade39ed3e77629</code> and is unreadable. I did
+not get root. This is a <strong>derived</strong> absence, not a failure to try:</p>
+<pre><code>$ (as 200-ok)
+$ sudo -n -l
+sudo: a password is required                     # no sudo at all
+$ find / -xdev -perm -4000
+/usr/lib/openssh/ssh-keysign
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/bin/passwd /usr/bin/chsh /usr/bin/gpasswd /usr/bin/newgrp
+/usr/bin/chfn /usr/bin/mount /usr/bin/umount /usr/bin/su /usr/bin/sudo
+                                            # stock Ubuntu 24.04 set, nothing added
+$ getcap -r /                                     # (empty)
+$ find / -xdev -type f -perm -0002 | grep -vE '^/(tmp|proc|sys|dev|run)'
+                                            # (empty)
+$ for d in /etc /etc/ld.so.conf.d /etc/cron.d /usr/local/bin /var/spool/cron; do test -w $d &amp;&amp; echo &quot;WRITABLE: $d&quot;; done
+                                            # (empty)
+$ ls /var/run/docker.sock
+ls: cannot access '/var/run/docker.sock': No such file or directory
+$ ls -la /etc/shadow
+-rw-r----- 1 root shadow                          # unreadable
+</code></pre>
+<p>No SUID beyond the distro set, no file capabilities, no world-writable file outside
+<code>/tmp</code>, no writable directory in the escalation surface, no cron for root, no socket,
+no readable shadow. <strong>There is no second rung.</strong></p>
+<p>And the lab says so itself, twice, in its own words:</p>
+<pre><code>$ cat [lab-home]/200-ok/boss.txt
+What is rooteable
+
+$ cat [lab-home]/200-ok/.bash_history
+exit
+cd ~
+ls -la
+find / -type f -perm -4000 -ls 2&gt;/dev/null
+/usr/bin/200/find.sh
+nano /usr/bin/200/find.sh
+ls -la /usr/bin/200/
+exit
+find / -type f -perm -4000 -ls 2&gt;/dev/null
+/usr/bin/200/find.sh
+exit
+su root
+cat boss.txt
+su root
+exit
+
+$ ls -ld /usr/bin/200
+ls: cannot access '/usr/bin/200': No such file or directory
+</code></pre>
+<p><strong><code>boss.txt</code> is root-owned, mode 644, and contains the question &quot;What is rooteable&quot;.</strong>
+It is the author asking their own escalation question. And <code>.bash_history</code> shows the
+intended answer was a SUID helper at <code>/usr/bin/200/find.sh</code> — a file that
+<strong>is not in the shipped image</strong>. The intended chain is one file short, and the author
+left both the question and the trail in the box.</p>
+<p>This is a broken target, and per <code>decision-making.md</code> §2 that is a statement about
+the target, not about me. It is also, per §7's <code>BALUHOME</code> corollary, a finding in its
+own right: <strong>a lab whose documented-by-artifact final step cannot execute is a
+finding, reported separately from the escalation it was meant to deliver</strong> — because
+the target is wrong in both directions at once, handing out a false impossibility
+while hiding a working primitive. Here the false impossibility is <code>root</code>, and the
+working primitive is the one the author did ship: the undocumented <code>eval</code> sink
+(§3.5), which is <em>stronger</em> than the intended <code>!</code> sink because it needs no
+particular prefix.</p>
+<h3 id="54-reward">5.4 Reward</h3>
+<p><strong>No <code>FLAG{}</code> exists in this lab.</strong> Reported as an absence, with the search:</p>
+<pre><code>$ grep -rInoE &quot;(FLAG|flag|CTF|ctf|Dockerlabs|DOCKERLABS)\{[^}]{0,80}\}&quot; / \
+    --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev --exclude-dir=run
+(no matches)
+
+$ grep -rInoE &quot;[A-Za-z0-9+/]{24,}={0,2}&quot; /var/www /home /root /etc
+/var/www/404-not-found/participar.html:105:UXVlIGhhY2VzPywgbWlyYSBlbiBsYSBVUwwu
+[lab-home]/200-ok/user.txt:1:bef4bb318a17abd01158337811750bcf
+/root/root.txt:1:2424b2a3292e20c6e1ade39ed3e77629
+/etc/cron.d/php:14:/usr/lib/php/sessionclean
+... (all remaining hits are stock distro strings)
+</code></pre>
+<p>Every base64-shaped string on the box is accounted for: one decoy that decodes to
+<code>Que haces?, mira en la URL.</code>, the two reward files, and <code>/etc/cron.d/php</code>. There is
+no third.</p>
+<p><strong>The reward is the user-tier hash, and it is obtained literally:</strong></p>
+<pre><code>$ (as 200-ok, via the sudoers ladder)
+$ cat [lab-home]/200-ok/user.txt
+bef4bb318a17abd01158337811750bcf
+</code></pre>
+<p><code>root.txt</code> contains <code>2424b2a3292e20c6e1ade39ed3e77629</code> and remains unread, per §5.3.
+Neither value is a guessable hash — 1 572 candidates (single tokens, case variants,
+and all ordered pairs joined by <code>-</code>, <code>_</code>, space and concatenation) produced <strong>no
+MD5 preimage</strong> for the user value, so I report it as the opaque literal it is rather
+than inventing a plaintext for it.</p>
+<p>This is the <strong>sixth consecutive lab with no <code>FLAG{}</code></strong>, and the first where the
+reward is genuinely reachable rather than merely absent. That distinction is worth
+recording: five of the six had nothing to find; this one has a real, obtainable
+user-tier reward and an unobtainable root-tier one, because the chain is one rung
+short.</p>
+<hr />
+<h2 id="6-the-ldap-injection-question-the-criterion-this-lab-actually-supplies">6. The LDAP injection question: the criterion this lab actually supplies</h2>
+<p>The brief is right that LDAP injection has no oracle in the methodology, and this lab
+is a poor place to learn the <em>syntax</em> — it teaches none, because there is no
+directory to inject into. What it does supply is sharper: <strong>the criterion for
+telling a real injection from a simulated one.</strong> Here is that criterion, in the
+order I would apply it.</p>
+<p><strong>1. Find the sink before writing the finding.</strong> Ask what function receives the
+filter. <code>ldap_search</code>, <code>ldap_bind</code>, <code>ldap_read</code>, <code>ldap.list()</code>, <code>SearchRequest</code> — one
+of these, or the equivalent in your client's language. <strong>A string that is assigned
+and never passed anywhere is not a sink.</strong> This is the whole finding in this lab,
+and it is one grep:</p>
+<pre><code class="language-bash">grep -nE 'ldap_(search|bind|read|list)|ldap\.|\.search\(|\.bind\(' login.php   # → no match
+</code></pre>
+<p>Note that the <em>absence of a client</em> is the stronger evidence, and it is checkable
+without reading the code at all: <code>php -m | grep -i ldap</code>. A PHP process with no
+<code>ldap</code> extension <strong>cannot</strong> speak LDAP regardless of what its source appears to do.
+That check takes two seconds and it retires the entire hypothesis.</p>
+<p><strong>2. A filter that is built is not a filter that is executed.</strong> Concatenation into a
+variable, logging, or a <code>strpos</code> is not dispatch. The distinction is not pedantic: it
+changes the CWE (CWE-90 → CWE-287), the severity (inject a filter → bypass an
+authenticator), and the fix (<code>ldap_escape</code> → implement the bind). Note the
+relationship to Elevator's <code>AddType</code> finding: there, the allowlist was correct and
+the RCE came from a directive <em>outside</em> the <code>&lt;Directory&gt;</code> that owned it. Here, the
+escaping-equivalent is irrelevant because the sink is outside the code entirely. In
+both cases the lesson is the same — <strong>the control everyone is checking is not the
+one that is deciding.</strong></p>
+<p><strong>3. Your success criterion must be one that only an injection can satisfy.</strong> Not
+&quot;the response changed&quot; and not &quot;many results came back&quot;. A legitimate filter
+<code>(&amp;(objectClass=person))</code> returns 300 entries; so does an injected one. For a real
+directory the criterion is: <strong>a field I controlled, which should not exist in the
+response, now exists in it</strong> — an extra attribute rendered, an extra DN listed, an
+entry count that exceeds the accounts the application knows about. Both extremes are
+evidence: <strong>zero where there should be some</strong> (a misplaced <code>*</code> invalidating the
+filter) and <strong>many where there should be few</strong> (a wildcard that matched
+everything). The middle — &quot;it worked, I got results&quot; — is not evidence.</p>
+<p><strong>4. Then, and only then, the syntax questions.</strong> Escaping (<code>ldap_escape</code> with
+<code>LDAP_ESCAPE_FILTER</code>, and note that the DN context needs a different escape mode),
+null-byte and UTF-8 termination, blind boolean extraction and its need for a
+channel (response, timing, <strong>or error</strong>), the fact that a timing difference needs
+many samples and is not conclusive alone, and the discipline of enumerating the
+schema before trusting a filter — because a filter over a non-existent attribute
+returns a <em>specific error</em>, which is a better oracle than an empty result set.</p>
+<p><strong>None of steps 3–4 is exercisable in this lab.</strong> I am writing them as the criterion
+for a target that has a directory, and I flag that clearly: this lab validated
+steps 1–2 and nothing else. Anything I asserted about 3–4 from here would be
+untested, and untested guidance is the thing <code>decision-making.md</code> §Evidence
+discipline exists to prevent.</p>
+<p><strong>5. Impact for a read-only injection is enumeration, not modification.</strong> Where the
+injection can only search, the finding is directory disclosure: the schema, the
+account list, group membership, whatever the filter can reach. That is a different
+severity and a different remediation from a writable injection, and the distinction
+is the difference between &quot;an attacker can read the staff directory&quot; and &quot;an
+attacker can add themselves to it&quot;. Establishing which one you have is part of the
+finding, and in this lab the answer is <em>neither</em>, because there is nothing to read.</p>
+<p><strong>On location.</strong> I did <strong>not</strong> put this in <code>active_directory.md</code>, and the reason is
+worth stating because that file is 40 KB and no engagement has touched it. It is not
+a domain: no DC, no Kerberos, no AD schema, no domain-joined host — one Ubuntu
+container, one Apache, one PHP file. Every one of the 24 LDAP mentions in
+<code>active_directory.md</code> is AD protocol tooling against a Windows DC (<code>certipy</code>,
+<code>nxc</code>, <code>ldap-shell</code>, <code>ldapwhoami</code>), i.e. <em>attacking a directory</em>, whereas what this
+lab needs is <em>auditing an application's filter construction</em> — a web-application
+sink question, and the missing member of the oracle family that <code>api_web.md</code> already
+carries (SSTI oracle, per-column escaping oracle, XXE error oracle, concurrency
+oracle). Putting an injection class in a DC playbook would file it where nobody looks
+when they are staring at a login form. My recommendation is a <strong>cross-ref from
+<code>active_directory.md</code></strong>, so the domain reader knows the application-side class
+exists and the web reader finds it in the right file.</p>
+<p>And the honest caveat: <code>active_directory.md</code> <strong>should</strong> get a real LDAP section —
+filter escaping, <code>ldap_escape</code> modes, null-byte, blind boolean and time-based
+extraction, schema enumeration, LDAP bind-as-service-account abuse. It is a genuine
+gap. <strong>This lab cannot write it</strong>, because the lab contains no LDAP whatsoever, so
+any such section written from here would ship untested — the exact failure mode the
+<code>BALUHOME</code> rule in §7 warns about. That section has to be written against a target
+that ships a directory, and measured there.</p>
+<hr />
+<h2 id="7-design-observations-on-the-lab">7. Design observations on the lab</h2>
+<p><strong>The catalogue is wrong in a way that costs the learner the actual lesson.</strong> It
+advertises &quot;LDAP injection&quot; and the source comment repeats it, so a learner arrives
+pre-loaded with the filter syntax and never asks the only question that matters here.
+The interesting bug — <em>an authenticator that is a substring test</em> — is real, is a
+better teaching example than LDAP injection, and is named nowhere. A comment reading
+<code>// Simulación de bypass</code> would have pointed at it honestly. This is <code>decision-making.md</code>
+§7 in its purest form, and it is the third lab in a row whose self-annotation names
+a class that is not the defect.</p>
+<p><strong>Two sinks, one documented.</strong> <code>!</code> → <code>os.system()</code> is intended and commented.
+<code>eval()</code> on the sibling branch is a second, undocumented CWE-95 path that needs no
+prefix and is therefore strictly easier to reach. A learner who solves the lab the
+intended way learns one technique; a learner who reads the <code>else</code> learns that the
+<em>other</em> branch was there all along. Keeping both is good design — I would only move
+the annotation so it does not read as an exhaustive description of the danger.</p>
+<p><strong>The <code>(&amp;</code> tautology is the best thing in the lab and is not intentional.</strong> An
+<code>if</code> with two conditions where one is unfalsifiable is a perfect illustration of
+<code>decision-making.md</code> &quot;a control that could not fail&quot;, shipped by accident into a
+Fácil lab. A learner who counts the conditions gets the wrong bug count. Fix:
+delete the conjunct, and keep the rest.</p>
+<p><strong>The sudoers ladder is genuinely well built.</strong> Execute-only file, owned by the
+<em>target</em> user, sitting in a directory owned by the <em>invoking</em> user. That combination
+teaches exactly the right lesson — the control is the filesystem, not <code>argv</code> — and
+the path pinning is genuinely enforced (§3.5), so the learner who tries to wrap the
+target in <code>timeout</code> gets refused and learns that sudoers is not a suggestion.</p>
+<p><strong>The image ships its own reconnaissance noise, and that is a mistake worth naming.</strong>
+<code>other_vhosts_access.log</code> carries 21 001 lines of the author's build-time <code>Wfuzz</code>
+run, all against the <code>default</code> catch-all, in a 2.4 MB file. It is the most
+conspicuous thing in the box and it is worth <strong>exactly nothing</strong>: 20 997 identical
+<code>GET /</code> requests to a redirect. A learner who reads logs will believe there is
+history worth mining. I would <code>truncate</code> the log before shipping.</p>
+<p><strong>The chain is one file short, and the box says so.</strong> <code>boss.txt</code> asks &quot;What is
+rooteable&quot; and <code>200-ok</code>'s <code>.bash_history</code> points at <code>/usr/bin/200/find.sh</code>, a SUID
+helper that is not in the image. The intended final rung is missing. Per the
+<code>BALUHOME</code> rule this is a finding about the target, separate from the escalation it
+was meant to deliver — and the escalation that <em>is</em> present (to <code>200-ok</code>, with the
+reward) is complete and works.</p>
+<p><strong>What I would change, in priority order:</strong> ship the intended SUID helper or remove
+<code>boss.txt</code> and the history that promises it; truncate the vhost log; delete the
+<code>(&amp;</code> conjunct; and re-label the login comment so it describes what the code actually
+does. With those four changes this becomes a good lab — the substring-oracle idea is
+sharp, the sudoers ladder is sound, and the reward is reachable.</p>
+<hr />
+<h2 id="8-no-probado-vs-descartado-con-razón">8. &quot;No probado&quot; vs &quot;descartado con razón&quot;</h2>
+<p><strong>Descartado con razón</strong> (tested, and the test is the reason):</p>
+<table>
+<thead>
+<tr>
+<th>Hypothesis</th>
+<th>Test</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LDAP injection</td>
+<td>`)(</td>
+<td><code>bypass works,</code><em><code>and</code></em>)(</td>
+</tr>
+<tr>
+<td>Subdomain enumeration</td>
+<td>5 names + 1 invented TLD, hostname normalised, re-hashed</td>
+<td><strong>All identical.</strong> Catch-all, 0 real subdomains</td>
+</tr>
+<tr>
+<td><code>(&amp;</code> conjunct is load-bearing</td>
+<td>`username=zzz password=)(</td>
+<td>`</td>
+</tr>
+<tr>
+<td>Panel requires the bypass</td>
+<td>unauthenticated <code>GET</code></td>
+<td><strong>200, no cookie ever set.</strong> Decorated</td>
+</tr>
+<tr>
+<td>Escalate to root from <code>200-ok</code></td>
+<td>SUID, capabilities, world-writable, cron, config dirs, socket, shadow</td>
+<td><strong>Nothing.</strong> Chain ends</td>
+</tr>
+<tr>
+<td><code>user.txt</code> reachable from <code>404-page</code></td>
+<td><code>cat</code> as <code>404-page</code></td>
+<td><strong>Denied.</strong> Boundary held</td>
+</tr>
+<tr>
+<td>Sudoers path pinning</td>
+<td>wrap in <code>timeout</code></td>
+<td><strong>Enforced.</strong> Control held</td>
+</tr>
+<tr>
+<td><code>!</code> sink is the only one</td>
+<td><code>__import__(&quot;os&quot;).system(&quot;id&quot;)</code></td>
+<td><strong>Two sinks.</strong> <code>eval</code> is undocumented</td>
+</tr>
+<tr>
+<td>Wildcard widens a result set</td>
+<td><code>password=*</code></td>
+<td><strong>Inert.</strong> No directory consulted</td>
+</tr>
+<tr>
+<td>A <code>FLAG{}</code> exists</td>
+<td>recursive grep + base64 census</td>
+<td><strong>No.</strong> Reported as absence</td>
+</tr>
+</tbody>
+</table>
+<p><strong>No probado</strong> (not attempted, and I am not claiming otherwise):</p>
+<ul>
+<li><strong>LDAP-specific extraction</strong> — blind boolean, time-based, schema enumeration,
+null-byte. <strong>Not applicable</strong>, not merely untried: there is no directory, so there
+is nothing to enumerate and nothing to extract. I did not test them and I make no
+claim about them.</li>
+<li><strong>Weaker-hash offline cracking of <code>user.txt</code> / <code>root.txt</code>.</strong> 1 572 MD5 candidates
+tried, no preimage. No GPU run, no wordlist, no <code>hashcat</code> — and none warranted for
+a value that is the reward itself.</li>
+<li><strong>Anything beyond <code>200-ok</code> on this host.</strong> No kernel exploit, no container escape,
+no attempt to reach the Docker socket (which does not exist in the container). Out
+of scope and not attempted.</li>
+<li><strong>The <code>!</code> sink's full command surface</strong> — pipes, redirection, backgrounding. The
+sink is a shell and obviously has it; I used single commands. No weaponisation.</li>
+<li><strong>§3.6's disk exhaustion.</strong> Measured as an accident of instrumentation (430 MB in
+~4 s) and reported as a rate. Not weaponised, not amplified, and the impact figure
+is an extrapolation I am explicitly not making.</li>
+<li><strong>Apache configuration hardening review</strong> beyond the three vhosts read. I read the
+shipped config; I did not audit the Ubuntu defaults around it.</li>
+</ul>
+<hr />
+<h2 id="9-restoration">9. Restoration</h2>
+<p>The lab was returned to its shipped state by <strong>destroying and recreating the
+container from the image</strong>, which is stronger than undoing my changes individually.</p>
+<p>My footprint was eight files, all in the container's writable layer:</p>
+<pre><code>/usr/local/bin/r200          /usr/local/bin/r200.py     (helpers, root-owned)
+/tmp/probe.sh  /tmp/run.sh   /tmp/r200.py               (helpers)
+/tmp/in.txt    /tmp/o.txt     /tmp/p2.txt /tmp/p3.txt /tmp/pwn.txt
+</code></pre>
+<pre><code>$ docker rm -f lab404_container &amp;&amp; docker run -d --name lab404_container 404-not-found:latest
+$ docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' lab404_container
+[net-0-13]
+$ docker ps --format '{{.Names}}\t{{.Status}\t{{.Ports}}'
+lab404_container	Up 50 seconds
+$ nmap -sV -Pn -p- [net-0-13]
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.4
+80/tcp open  http    Apache httpd 2.4.58
+Not shown: 65533 closed tcp ports (conn-refused)
+</code></pre>
+<p>Verified in the fresh container:</p>
+<table>
+<thead>
+<tr>
+<th>State I changed</th>
+<th>Verification after recreation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Eight helper/output files under <code>/tmp</code> and <code>/usr/local/bin</code></td>
+<td><code>ls /tmp/</code> → empty; <code>ls /usr/local/bin/</code> → empty</td>
+</tr>
+<tr>
+<td><code>user.txt</code> as read by <code>200-ok</code></td>
+<td><code>-rw-r--r-- 1 root root 33 Aug 19 2024</code>, <code>md5 20a6f6f3b6371dd8977c1208696d14fa</code> — shipped file, root-owned</td>
+</tr>
+<tr>
+<td>430 MB <code>/tmp/o.txt</code> from the EOF loop</td>
+<td>gone with the layer</td>
+</tr>
+<tr>
+<td>Any account, key, or file I wrote</td>
+<td>none — I never wrote outside <code>/tmp</code> and the two helpers</td>
+</tr>
+</tbody>
+</table>
+<p>Nothing was written to the host filesystem outside <code>/tmp/[tool]/</code>.
+<code>auto_deploy.sh</code> was never executed. <code>404-not-found:latest</code> is loaded and left in
+place, as shipped.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

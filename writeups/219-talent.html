@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 219 Talent &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Talent</p><h1 id="219-talent--dockerlabs-writeup">219 Talent — DockerLabs Writeup</h1>
+<p><strong>Class:</strong> a hardcoded default WordPress administrator credential in the image build artefact, used to reach an authenticated admin file-write primitive and execute code as <code>uid=33(www-data)</code>. The advertised Python privilege-escalation ladder is present in <code>sudoers</code> but <strong>non-functional as shipped</strong>, because the interpreter it names is not in the image.</p>
+<p><strong>Target:</strong> <code>http://[net-0-2]:80</code> (container <code>talent_container</code>, image <code>talent:latest</code>)
+<strong>Date:</strong> 2026-10-01
+<strong>Outcome:</strong> Reward recovered as <code>LNDSG98DSFG7D8SGY8SDFG9</code> through the web path. <strong>Privilege escalation to <code>bobby</code> or <code>root</code> NOT achieved — the mechanism is broken in the shipped image, and §6 reports the absence with its work count and control.</strong> The target was restored and verified with <code>stat -c</code>; the WordPress database was never modified.</p>
+<p><strong>Headline:</strong> the decisive control is not in the application, it is in <code>/entrypoint.sh</code> — and the third advertised element is a <em>dead grant</em>, not a hard target. Reading the sudoers file tells you a chain exists. Running it tells you it does not.</p>
+<hr />
+<h2 id="0-lab-identity">0. Lab identity</h2>
+<p>The platform catalogue entry for 219, quoted verbatim from <code>[lab-home]/dockerlabs/catalog.txt:23</code>:</p>
+<pre><code>219|Talent|medio|Web de wordpress con una vulnerabilidad y escalada de privilegios en linux mediante python.
+</code></pre>
+<p>Difficulty <code>medio</code>. The catalogue is the authority, and it advertises <strong>three</strong> elements. All three were hunted, and the outcome for each differs:</p>
+<table>
+<thead>
+<tr>
+<th>Advertised element</th>
+<th>Outcome</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A WordPress site</td>
+<td>Confirmed and used as the entry surface</td>
+</tr>
+<tr>
+<td>A vulnerability</td>
+<td>Confirmed and decisive — a default admin credential</td>
+</tr>
+<tr>
+<td>Linux privilege escalation via Python</td>
+<td><strong>Present in configuration, absent in the binary. Not achievable.</strong> §6</td>
+</tr>
+</tbody>
+</table>
+<p>The narrower work-queue label for this lab reads &quot;WordPress platform plus Linux privesc&quot; and would have framed the Python element as the objective. Reading the catalogue instead, and then the artefact, is what surfaced that the escalation target does not exist and that the <em>reward sits at the first hop</em>, not at root.</p>
+<h3 id="stack-from-version-bearing-artefacts">Stack, from version-bearing artefacts</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Value</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base OS</td>
+<td>Ubuntu 20.04.6 LTS (Focal Fossa)</td>
+<td><code>/etc/os-release:2-4</code></td>
+</tr>
+<tr>
+<td>Web server</td>
+<td>Apache 2.4.41-4ubuntu3.23, <code>ServerTokens OS</code>, <code>ServerSignature On</code></td>
+<td><code>/etc/apache2/conf-available/security.conf:25,36</code></td>
+</tr>
+<tr>
+<td>Vhost</td>
+<td><code>&lt;VirtualHost *:80&gt;</code>, <code>DocumentRoot /var/www/html</code></td>
+<td><code>/etc/apache2/sites-enabled/000-default.conf:1,12</code></td>
+</tr>
+<tr>
+<td>PHP</td>
+<td>7.4.3-4ubuntu2.29 (<code>mod_php</code>)</td>
+<td><code>dpkg -l php7.4</code>; <code>phpinfo()</code> <code>PHP Version 7.4.3</code></td>
+</tr>
+<tr>
+<td><code>disable_functions</code></td>
+<td><code>pcntl_*</code> family <strong>only</strong> — <code>system</code>, <code>exec</code>, <code>shell_exec</code>, <code>passthru</code> all live</td>
+<td><code>r02_info.html</code> (phpinfo, parsed)</td>
+</tr>
+<tr>
+<td><code>open_basedir</code></td>
+<td><strong>no value</strong> (unset)</td>
+<td><code>r02_info.html</code></td>
+</tr>
+<tr>
+<td><code>file_uploads</code> / <code>allow_url_fopen</code></td>
+<td><code>On</code> / <code>On</code></td>
+<td><code>r02_info.html</code></td>
+</tr>
+<tr>
+<td>WordPress</td>
+<td><strong>6.9.1</strong></td>
+<td><code>/var/www/html/wp-includes/version.php:19</code></td>
+</tr>
+<tr>
+<td>Plugin</td>
+<td><strong>Pie Register - Basic 3.7.1.0</strong></td>
+<td><code>wp-content/plugins/pie-register/pie-register.php:7</code></td>
+</tr>
+<tr>
+<td>Theme</td>
+<td>Twenty Twenty-Five 1.4</td>
+<td><code>wp-content/themes/twentytwentyfive/style.css</code></td>
+</tr>
+<tr>
+<td>Database</td>
+<td>MySQL 8.0.42-0ubuntu0.20.04.1, bound to loopback only</td>
+<td><code>/proc/net/tcp</code>; <code>mysqld --version</code></td>
+</tr>
+<tr>
+<td>DB credentials</td>
+<td><code>wpuser</code> / <code>wppass</code> on database <code>wordpress</code></td>
+<td><code>/entrypoint.sh:37-44</code></td>
+</tr>
+<tr>
+<td><strong>Admin credential</strong></td>
+<td><strong><code>admin</code> / <code>admin</code></strong></td>
+<td><strong><code>/entrypoint.sh:115-116</code></strong></td>
+</tr>
+<tr>
+<td><code>info.php</code></td>
+<td>left in the docroot, <code>&lt;?php phpinfo(); ?&gt;</code></td>
+<td><code>/entrypoint.sh:131</code></td>
+</tr>
+<tr>
+<td>Users</td>
+<td><code>bobby</code> uid 1000; <code>www-data</code> uid 33 (groups 33, <strong>101 mysql</strong>)</td>
+<td><code>/etc/passwd</code>; <code>id</code></td>
+</tr>
+<tr>
+<td>www-data sudo grant</td>
+<td><code>(bobby) NOPASSWD: /usr/bin/python3</code></td>
+<td><code>/etc/sudoers:32</code></td>
+</tr>
+<tr>
+<td>bobby sudo grant</td>
+<td><code>(ALL) NOPASSWD: /usr/bin/python3 /opt/backup.py</code></td>
+<td><code>/etc/sudoers:34</code></td>
+</tr>
+<tr>
+<td>Python interpreter</td>
+<td><strong>absent — no <code>python</code>, <code>python2</code> or <code>python3</code> anywhere</strong></td>
+<td>§6, five independent probes</td>
+</tr>
+<tr>
+<td><code>/opt</code></td>
+<td><code>757 root:root</code> — <strong>world-writable</strong></td>
+<td><code>stat -c</code>, measured as www-data</td>
+</tr>
+<tr>
+<td><code>/opt/backup.py</code></td>
+<td><code>644 root:root</code>, 6871 bytes, requires uid 0 at <code>backup.py:188</code></td>
+<td><code>stat -c</code>; <code>backup.py:187-188</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>disable_functions</code> blocking only <code>pcntl_*</code> and <code>open_basedir</code> being unset are the two facts that make the admin file-write primitive convert cleanly into command execution later.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<p>Re-measured from inside the container rather than assumed. <code>ss</code> and <code>netstat</code> are absent, so <code>/proc/net/tcp</code> is the source, as the brief requires:</p>
+<pre><code>00000000:0050   0.0.0.0:80       apache   world-reachable
+0100007F:0CEA   127.0.0.1:3306   mysql    loopback only   (0x0CEA = 3306)
+0100007F:8124   127.0.0.1:33060  mysql X  loopback only   (0x8124 = 33060)
+</code></pre>
+<p><strong>3 listener rows, matching the baseline.</strong> Port 80 is the only externally reachable service.</p>
+<p><strong>That negative is earned, not assumed.</strong> The MySQL-not-reachable claim rests on the <code>0100007F</code> bind prefix, which is a <em>static</em> file read. To convert it into a measured negative I attempted the connection from outside: <code>curl http://[net-0-2]:3306/</code> returned <code>http=000</code> with curl exit <strong>7</strong> (connection refused) — <em>refused</em>, not filtered, which is the signature of a loopback bind rather than a firewall drop. The positive control for the client path is request 1 in §5's accounting: the same curl invocation against <code>:80</code> returned <code>200</code> moments earlier. The client worked; the bind refused it.</p>
+<p><strong>Note on scan coverage:</strong> this is a TCP read of <code>/proc/net/tcp</code> only. UDP was never examined — see §7.</p>
+<p>Work count behind the HTTP surface: <strong>38 requests total</strong>, itemised in <code>evidence/workcount_full.txt</code>, of which 5 are explicit positive controls. The <code>find</code> sweeps behind the plugin and Python hunts are bounded and declared there as well.</p>
+<hr />
+<h2 id="2-the-class">2. The class</h2>
+<blockquote>
+<p>A <strong>hardcoded credential in the deployment artefact</strong> is the whole vulnerability, and the advertised escalation is a <strong>sudo grant whose target binary is absent</strong> — a configuration that reads as an attack surface and behaves as a wall.</p>
+</blockquote>
+<p>Two lessons a generic WordPress chapter does not teach:</p>
+<p><strong>1. Read the build artefact, not just the app.</strong> There is no WordPress misconfiguration here, no vulnerable plugin behaviour, no file-inclusion or deserialization sink. The path to administrator is <code>--admin_password=&quot;admin&quot;</code> at <code>/entrypoint.sh:116</code>, passed to <code>wp core install</code> at <code>:111</code>. A chapter on WordPress CVEs would find Pie Register 3.7.1.0 interesting, would look for the plugin's known role-import flaw, and would miss the actual entry point entirely. <strong>The credential is in the entrypoint; the entrypoint is not served by the web server.</strong> It is only findable by reading the image, which is why &quot;read the source first&quot; is the highest-yield step and not a formality.</p>
+<p><strong>2. A sudoers line is a claim, not a capability.</strong> <code>/etc/sudoers:32</code> grants www-data a passwordless run of <code>/usr/bin/python3</code> as <code>bobby</code>, and <code>:34</code> lets <code>bobby</code> run <code>/opt/backup.py</code> as root. The design is complete and deliberate: <code>/opt</code> is <code>757</code> specifically so www-data can write there, and <code>/opt/backup.py:188</code> gates itself on <code>os.geteuid() != 0</code>. Every link of the ladder is present <strong>except the interpreter</strong>. Reporting &quot;sudoers allows www-data to run python3 as bobby&quot; would be a true statement about a file and a false statement about the machine.</p>
+<hr />
+<h2 id="3-attack-chain">3. Attack chain</h2>
+<pre><code>artefact read: /entrypoint.sh:115-116  →  admin / admin
+        │
+        ▼
+POST /wp-login.php                          302 + logged-in cookies
+        │  control: same URL without the cookie → Login page (200, &quot;Login – Mi sitio WordPress&quot;)
+        ▼
+GET /wp-admin/  →  &lt;title&gt;Dashboard&lt;/title&gt;, &quot;Howdy, admin&quot;     [admin session proven]
+        │
+        ├── attempt A: plugin editor, new file in docroot        → HTTP 500 &quot;File does not exist!&quot;
+        ├── attempt B: plugin editor, new file in pie-register/  → HTTP 500 &quot;File does not exist!&quot;
+        │
+        ▼  attempt C: POST /wp-admin/update.php?action=upload-plugin  (zip)
+&quot;Plugin installed successfully.&quot;
+   → wp-content/plugins/lab219probe/lab219probe.php   644 www-data:www-data  792 bytes
+   → requested DIRECTLY over HTTP, never activated, so the DB was never touched
+        │
+        ▼
+uid=33(www-data) gid=33(www-data) groups=33(www-data),101(mysql)   [measured in the web process]
+        │
+        ├── witness: /tmp/lab219_witness_&lt;nonce&gt;  written-by-uid=33
+        │            read back out of band → 644 www-data:www-data
+        │            negative control: a nonce I never wrote does not exist
+        │
+        ├── REWARD  cat [lab-home]/flag.txt  →  LNDSG98DSFG7D8SGY8SDFG9
+        │
+        └── privesc, measured as uid=33:
+             sudo -n -l                 → grant IS real: (bobby) NOPASSWD: /usr/bin/python3
+             sudo -n -u bobby /usr/bin/python3 -c 'print(1)'
+                                      → sudo: /usr/bin/python3: command not found   (rc=1)
+             /opt  writable             → yes, measured
+             /opt/backup.py  writable   → no,  measured
+             /usr/bin        writable   → no,  measured
+             ⇒ no root path exists. Chain broken at the interpreter.
+</code></pre>
+<h3 id="hop-1--the-credential-is-in-the-build-artefact">Hop 1 — the credential is in the build artefact</h3>
+<p><code>/entrypoint.sh:111-118</code> runs <code>wp core install</code> with <code>--admin_user=&quot;admin&quot;</code> and <code>--admin_password=&quot;admin&quot;</code>, and the install is unconditional (<code>:117</code>, <code>if ! wp core is-installed</code>). The credential is not a leftover; it is written on every container start when the database is fresh.</p>
+<h3 id="hop-2--login-with-the-control-that-makes-it-mean-something">Hop 2 — login, with the control that makes it mean something</h3>
+<p>A <code>302</code> plus <code>[response-cookie-header]</code> is not proof of authentication; it is also what a redirect-before-check produces. The discriminating evidence is a <strong>paired</strong> request to the same URL:</p>
+<ul>
+<li><strong>with</strong> the session cookie: <code>http=200</code>, <code>&lt;title&gt;Dashboard ‹ Mi sitio WordPress — WordPress&lt;/title&gt;</code>, <code>Howdy, admin</code> (<code>evidence/r07_wpadmin.html</code>)</li>
+<li><strong>without</strong> it: <code>http=200</code> after redirect to <code>/?page_id=6&amp;...&amp;reauth=1</code>, <code>&lt;title&gt;Login – Mi sitio WordPress&lt;/title&gt;</code> (<code>evidence/ctl_noauth.html</code>)</li>
+</ul>
+<p>Two different bodies for one URL, differing only in the cookie. That difference is the result; the <code>302</code> was not.</p>
+<h3 id="hop-3--the-write-primitive-and-two-dead-ends-worth-recording">Hop 3 — the write primitive, and two dead ends worth recording</h3>
+<p>The admin file-write primitive was reached via <strong>plugin zip upload</strong>, not the editor:</p>
+<ul>
+<li><code>POST /wp-admin/update.php?action=upload-plugin</code> with a zip → <code>Plugin installed successfully.</code> and <code>wp-content/plugins/lab219probe/lab219probe.php</code> at <code>644 www-data:www-data</code>, 792 bytes.</li>
+</ul>
+<p><strong>Why upload and not the editor:</strong> WordPress 6.9.1's plugin editor refuses to create a file that does not exist. Attempts A and B both returned <code>HTTP 500</code> with the body <code>File does not exist! Please double check the name and try again.</code> — recorded in <code>evidence/r09_create.txt</code> and <code>r10_create2.txt</code>, and visible in the target's own <code>debug.log</code> as <code>file_get_contents(...zzlab219probe.php): failed to open</code>.</p>
+<p><strong>The reason upload is the better primitive here, beyond convenience:</strong> extracting the zip writes the <code>.php</code> into the docroot as <code>www-data</code>, and the file is then reachable <strong>without ever being activated</strong>. <code>wp option get active_plugins</code> still reads <code>[&quot;pie-register/pie-register.php&quot;]</code> afterwards (<code>evidence/db_state_check.txt</code>). The WordPress database was therefore never modified, and the whole write was removable as a single directory.</p>
+<h3 id="hop-4--execution-identity-measured-where-the-claim-is-made">Hop 4 — execution identity, measured where the claim is made</h3>
+<p><code>id</code> was read back <strong>from inside the web process</strong>, not from a <code>docker exec</code> harness:</p>
+<pre><code>IDENTITY:     uid=33(www-data) gid=33(www-data) groups=33(www-data),101(mysql)
+EFFECTIVE_UID: 33
+PHP_CWD:      /var/www/html/wp-content/plugins/lab219probe
+</code></pre>
+<p>This matters because <code>docker exec</code> runs as root and would have proved nothing about the web path. <code>groups=…,101(mysql)</code> is the group the entrypoint added at <code>/entrypoint.sh:66</code> (<code>usermod -aG mysql www-data</code>), and it is the reason the docroot is <code>www-data</code>-owned: <code>/entrypoint.sh:129</code> runs <code>chown -R www-data:www-data /var/www/html</code>.</p>
+<h3 id="hop-5--the-witness-green-in-both-directions">Hop 5 — the witness, green in both directions</h3>
+<p>Per the runbook's rule for vectors that need an oracle, the payload's effect was proved by an artefact the identity under test created, carrying a run nonce, read back <strong>out of band</strong> (a different channel from the one that wrote it):</p>
+<pre><code>out-of-band (docker exec):
+  /tmp/lab219_witness_L219R7q2x9m4k  644 www-data:www-data  37 bytes
+  content: written-by-uid=33 nonce=L219R7q2x9m4k
+  negative control: /tmp/lab219_witness_NEVERWROTE999 -&gt; No such file or directory
+</code></pre>
+<p>The witness is distinguishable by design (random nonce, <code>/tmp</code> path, ownership set by the writer), and the negative control proves the path was not pre-populated. Without the control, &quot;the file exists&quot; would be consistent with &quot;something else put it there&quot;.</p>
+<h3 id="hop-6--the-reward-then-the-privesc-that-is-not-there">Hop 6 — the reward, then the privesc that is not there</h3>
+<p><code>cat [lab-home]/flag.txt</code> through the web path returned the reward. <code>[lab-home]/flag.txt</code> is <code>644 www-data:www-data</code>, which is why the reward is reachable at the <strong>first</strong> hop and the escalation is not needed to collect it. The escalation was then measured anyway, as <code>uid=33</code>, and found broken — §6.</p>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<p>Separated by what they actually are, never merged.</p>
+<h3 id="reachability">Reachability</h3>
+<p><strong>R1 — Unauthenticated, state-changing AJAX handler in Pie Register.</strong> <code>pie-register.php:615</code> registers <code>wp_ajax_nopriv_pireg_update_invitation_code</code>, so the handler at <code>pie-register.php:7212</code> is reachable with no session and processes attacker-supplied <code>$_POST['data']</code> (id, type, value), issuing an <code>UPDATE</code> against the plugin's code table.</p>
+<p>Evidence with a control, unauthenticated in both cases:</p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th>Response</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST admin-ajax.php?action=pireg_update_invitation_code</code> with <code>data[id]=999999</code></td>
+<td><code>http=200</code>, body <code>error</code> (5 bytes) — handler ran</td>
+</tr>
+<tr>
+<td><code>POST admin-ajax.php?action=zz_no_such_action_9f3a</code></td>
+<td><code>http=400</code>, body <code>0</code> (1 byte)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>CWE-306 / CWE-862.</strong> Impact is bounded: <code>$inv_code_id</code> is passed through <code>intval()</code> at <code>pie-register.php:7217</code> and the value through <code>$wpdb-&gt;prepare()</code> at <code>:7247</code>, so this is <strong>not</strong> an injection. The realistic consequence is an unauthenticated attacker renaming or re-scoping invitation codes, i.e. a registration-gating control can be tampered with without credentials. Low severity, but it is a genuine unauthenticated write and the <code>nopriv</code> registration is the whole finding. The <code>id</code> used here was chosen to match no row, so this test changed nothing in the database.</p>
+<h3 id="disclosed">Disclosed</h3>
+<p><strong>D1 — <code>phpinfo()</code> served from the docroot.</strong> <code>/entrypoint.sh:131</code> writes <code>/var/www/html/info.php</code>, which answers <code>200</code> with 83351 bytes of PHP configuration.</p>
+<p><em>Positive control:</em> a URL that cannot exist returns <code>301</code>, not <code>200</code>. So the <code>200</code> is a real handler, not a catch-all. It discloses the exact <code>disable_functions</code> list, <code>open_basedir</code>, <code>DOCUMENT_ROOT</code>, absolute filesystem paths, and the loaded module set — the reconnaissance shortcut that removes most of the guesswork from the rest of the chain. <strong>CWE-200. High value to an attacker, trivially removable by the operator.</strong></p>
+<p><strong>D2 — Database credentials and the admin credential in the build artefact.</strong> <code>wpuser</code>/<code>wppass</code> (<code>/entrypoint.sh:37-44</code>) and <code>admin</code>/<code>admin</code> (<code>:115-116</code>). D2 is the <em>decisive</em> finding as well; it is listed here because it is also disclosure. <strong>CWE-798 (Use of Hard-coded Credentials).</strong></p>
+<p><strong>D3 — Passwordless sudo grant naming an absent binary, and a world-writable <code>/opt</code>.</strong> <code>/etc/sudoers:32,34</code> plus <code>/opt</code> at <code>757 root:root</code>. As shipped this grants nothing (§6), but the <em>configuration</em> would be a full <code>www-data → bobby → root</code> ladder the moment any interpreter appeared at that path. <code>www-data</code> is world-write-capable in <code>/opt</code>, so the design intent is unmistakable. <strong>CWE-250 / CWE-732.</strong></p>
+<h3 id="decisive">Decisive</h3>
+<p><strong>F1 — Default WordPress administrator credential gives full control of the application.</strong> <code>admin</code>/<code>admin</code> from <code>/entrypoint.sh:115-116</code> authenticates to <code>/wp-admin/</code> and yields the plugin-upload primitive, which converts to arbitrary PHP execution as <code>uid=33(www-data)</code>. <strong>CWE-798 / CWE-1392 (Use of Default Credentials).</strong> Root cause: the credential is baked into the image build rather than supplied at deploy time, so every fresh deployment of this image ships the same administrator password. This is the vulnerability the catalogue advertises, and it is the only element needed to collect the reward.</p>
+<p><strong>F2 — Full remote code execution as <code>www-data</code> via authenticated plugin upload.</strong> Mechanism: administrator session → <code>update.php?action=upload-plugin</code> → attacker-controlled <code>.php</code> extracted into a web-reachable, executable path. <code>disable_functions</code> blocks only <code>pcntl_*</code>, so <code>shell_exec</code> executes. <strong>CWE-434 (Unrestricted Upload of File with Dangerous Type)</strong>. By design this requires administrator, so it is not an independent vulnerability — filed with F1 as the consequence, because a reader who patches only F1's credential still has F2, and a reader who patches only F2 still has F1.</p>
+<p><strong>F3 — The advertised privilege escalation is non-functional in the shipped image.</strong> Not a finding against the operator so much as a reportable defect in the lab, and the single most useful thing this engagement produced. Full evidence in §6. <strong>CWE-284-adjacent: a privilege boundary expressed only in configuration, with no executable to enforce it.</strong></p>
+<h3 id="a-finding-i-deliberately-did-not-file">A finding I deliberately did not file</h3>
+<p><strong>The Pie Register role-import flaw is not unauthenticated.</strong> <code>import_user_from_json</code> at <code>pie-register.php:7351</code> takes the role straight from attacker-supplied JSON (<code>$user_role = $user['user']['roles'][0]</code> at <code>:7362</code>) and applies it with <code>set_role($user_field['role'])</code> at <code>:7400</code>. That is a textbook privilege-escalation primitive and it is the kind of finding a WordPress chapter would file as unauthenticated. <strong>It is not.</strong> The containing feature is gated at <code>pie-register.php:3088</code> (<code>add_submenu_page(..., 'manage_options', ...)</code>) and the handler is nonce-checked at <code>:5084</code>. Reaching it requires an existing administrator. Since an administrator can already assign any role, this is not a privilege boundary crossing at all. <strong>Discarded with reason, not silently dropped</strong> — see §7.</p>
+<hr />
+<h2 id="5-instrument-failures">5. Instrument failures</h2>
+<p>The mandatory section, and the most valuable one. Every entry is a place where <strong>my own instrument</strong> lied, counted wrong, or handed me a clean negative it had not earned.</p>
+<h3 id="i1--shell_exec-swallowed-stderr-and-i-nearly-filed-the-privesc-as-produces-no-output">I1 — <code>shell_exec</code> swallowed stderr and I nearly filed the privesc as &quot;produces no output&quot;</h3>
+<p><strong>Defect.</strong> My first pass at the privesc measurement sent four commands through the probe's <code>shell_exec()</code> sink and got output for exactly one. <code>sudo -n -l</code> returned its policy; <code>ls -l /usr/bin/python3</code>, <code>command -v python3 python python2</code>, and <code>sudo -n -u bobby /usr/bin/python3 -c 'print(1)'; echo SUDO_RC=$?</code> all returned <strong>completely empty bodies</strong> with <code>http=200</code>.</p>
+<p><strong>What it would have caused me to file.</strong> &quot;The sudo grant produces no output.&quot; Read as a <em>negative</em> that is a serious mistake, because the three silent commands are exactly the three that matter: an empty body from <code>ls</code> on a missing file and from <code>sudo</code>'s error is indistinguishable from &quot;the command never ran&quot; and from &quot;sudo silently succeeded&quot;. I would have had a <code>200 OK</code> and a blank body backing a claim that the escalation was inert — the same claim the lab actually turns out to support, reached for the wrong reason. <strong>A right answer for a wrong reason is how a false negative becomes a finding</strong>, and §6's entire honest-negative argument rests on this observation being correct rather than accidentally correct.</p>
+<p><strong>Class.</strong> Instrument that captures only one of two output channels. <code>shell_exec()</code> returns stdout; <code>ls</code> writes &quot;No such file or directory&quot; to stderr and <code>sudo</code> writes &quot;command not found&quot; to stderr. <code>http=200</code> confirms the sink ran, not that it reported.</p>
+<p><strong>Fix applied.</strong> Re-ran all three with <code>2&gt;&amp;1</code> appended inside the command string. The negatives then became earned, with discriminating detail and exit codes:</p>
+<pre><code>ls: cannot access '/usr/bin/python3': No such file or directory      RC=2
+command -v python3 python python2  (no output)                      RC=127
+sudo: /usr/bin/python3: command not found                          SUDO_RC=1
+</code></pre>
+<p><strong>The general rule this earns:</strong> a negative that arrives as an <em>empty success</em> is not a negative. It is an absence of observation. Every negative in §6 is quoted with its stderr and its exit code for this reason.</p>
+<h3 id="i2--i-measured-the-identity-on-the-wrong-side-of-the-trust-boundary-first">I2 — I measured the identity on the wrong side of the trust boundary first</h3>
+<p><strong>Defect.</strong> My first privesc measurements ran through <code>su -s /bin/sh www-data -c '...'</code> from a <code>docker exec</code> harness. That is a <em>correct</em> uid and it did prove the policy, but the brief's rule is stronger and I had adopted the weaker instrument by habit: the execution identity must be read back from inside the running context, because a harness proves the harness.</p>
+<p><strong>What it would have caused me to file.</strong> A chain step whose identity evidence is &quot;I ran <code>su</code> and it said www-data&quot; — which cannot distinguish &quot;the web server runs as www-data&quot; from &quot;I can become www-data with root&quot;, the exact confusion the rule exists to prevent. In a lab whose whole escalation story turns on <em>which</em> identity holds the sudo grant, that is not a pedantic difference.</p>
+<p><strong>Class.</strong> Verification performed by the party whose privilege is in question. The instrument inherits the trust of the caller, so it cannot independently corroborate the caller's own claim.</p>
+<p><strong>Fix applied.</strong> Re-measured the identity, the sudo policy, the interpreter absence and every writability claim through the web path itself — <code>uid=33(www-data)</code>, read from PHP inside the running Apache child. All of §3 Hop 6 and §6 cite the web-path measurement. The <code>su</code> result is retained in this writeup only as corroboration, never as the load-bearing evidence.</p>
+<h3 id="i3---l-made-a-resource-i-had-already-deleted-look-like-it-still-answered-200">I3 — <code>-L</code> made a resource I had already deleted look like it still answered <code>200</code></h3>
+<p><strong>Defect.</strong> During restore verification I requested the probe URL with <code>curl -L</code> and recorded <code>http=200</code>. My restore was, in that moment, reported as <strong>failed</strong>.</p>
+<p><strong>What it would have caused me to file.</strong> Either a false finding (&quot;cleanup failed, the webshell is still live&quot;) or, worse, a botched remediation — leaving a <code>lab219probe</code> directory in the docroot because I could not get a clean <code>404</code> out of it. The truthful state was that the resource was gone.</p>
+<p><strong>Class.</strong> Redirect-following collapses a response chain into one number. <code>-w '%{http_code}'</code> under <code>-L</code> reports the <strong>last</strong> hop, so a <code>301 Moved Permanently</code> to a nonexistent path — which is exactly what Apache emits for a deleted <code>.php</code> in a deleted directory — is reported as the final code, and WordPress renders its own soft page with <code>200</code>. The <code>-L</code> flag destroyed the very evidence that would have settled it.</p>
+<p><strong>Fix applied.</strong> Re-requested without <code>-L</code> and captured headers and body separately:</p>
+<pre><code>HTTP/1.1 301 Moved Permanently
+Location: http://[net-0-2]/wp-content/plugins/lab219probe/lab219probe.php/
+body: 0 bytes
+</code></pre>
+<p>and confirmed the filesystem state directly: <code>test -e</code> → <code>DIR-GONE</code>, <code>stat -c</code> → <code>No such file or directory</code>. The filesystem is the authority on whether a file exists; the HTTP layer was never going to give me a clean answer here.</p>
+<p><strong>General rule:</strong> verify restoration with <code>stat -c</code> on the path, and treat an HTTP status on a deleted resource as uninformative. An HTTP code answers &quot;what did the server say&quot;, never &quot;does this file exist&quot;.</p>
+<h3 id="i4--a-docroot-hash-mismatch-that-i-nearly-filed-as-an-incomplete-restore">I4 — a docroot hash mismatch that I nearly filed as an incomplete restore</h3>
+<p><strong>Defect.</strong> After removing the probe, the plugins directory was byte-identical to its pre-engagement snapshot, but the <strong>whole-docroot</strong> hash still differed:</p>
+<pre><code>pre : ecdffb96fd128b6e8a5e2f0cd7cc8d378aa62410c28dac0c6af550ad92b8f6e9
+post: acc26d4352b399b5ff225a481e59058d464a83c7dc466b6797937ee21e360201
+</code></pre>
+<p><strong>What it would have caused me to file.</strong> &quot;Restore incomplete — unexplained modification to the target.&quot; A hash that does not return to its pre-engagement value is precisely the signature of a write I failed to account for, and the correct instinct is to treat it as a real residue rather than a rounding error.</p>
+<p><strong>Class.</strong> A hash answers &quot;is this the same?&quot; and not &quot;what differs?&quot;. A single opaque digest gives a binary verdict with no attribution, so the reader — including me — is left to guess. The instinct to escalate on a mismatch is right; escalating without an attribution step is not.</p>
+<p><strong>Fix applied.</strong> Listed docroot files by modification time newer than the engagement start. Exactly one file qualified:</p>
+<pre><code>/var/www/html/wp-content/debug.log   644 www-data:www-data  1635 bytes
+</code></pre>
+<p>whose contents are my own error trail — the two <code>file_get_contents(...failed to open)</code> warnings from the rejected plugin-editor attempts, and one <code>wp_version_check()</code> warning. <strong>This is the target writing about me</strong>, not an artefact I left: <code>wp-config.php</code> sets <code>WP_DEBUG_LOG</code> true and <code>WP_DEBUG_DISPLAY</code> false (<code>/entrypoint.sh</code>, the <code>--extra-php</code> block), so the target's own telemetry records the engagement. That is the correct end state for a log, and truncating it would destroy the target's incident record. It is disclosed here rather than cleaned.</p>
+<p><strong>What I still cannot state, honestly:</strong> I snapshotted the plugins directory and the docroot hash before starting, but <strong>not</strong> <code>debug.log</code>'s size. So I can prove <em>which</em> file changed and <em>why</em>, and that it grew, but I <strong>cannot</strong> state the exact byte delta. That is a gap in my own instrumentation, recorded here instead of papered over.</p>
+<h3 id="i5--two-http-500s-that-read-like-no-write-primitive-exists">I5 — two <code>HTTP 500</code>s that read like &quot;no write primitive exists&quot;</h3>
+<p><strong>Defect.</strong> Two attempts to create a PHP file through the WordPress plugin editor returned <code>HTTP 500</code> with the body <code>File does not exist! Please double check the name and try again.</code></p>
+<p><strong>What it would have caused me to file.</strong> &quot;No server-side file-write primitive is available; the admin session does not convert to code execution.&quot; A <code>500</code> is an unhandled-error code; in a lab with <code>display_errors</code> off and no PHP surface to read, an unhandled <code>500</code> is easy to attribute to the environment rather than to a specific business rule.</p>
+<p><strong>Class.</strong> Uninformative failure code standing in for a specific, documented rule. The status code says &quot;the request broke&quot;; only the body says <em>which rule</em> broke it. The rule here is benign and in fact helpful — WordPress 6.9.1's editor will only edit files that already exist — so the 500 was the application correctly refusing to create a file, not the application being broken.</p>
+<p><strong>Fix applied.</strong> Read the response body, which named the rule, and changed strategy to the upload path instead of retrying the editor. Both 500 bodies are retained (<code>r09_create.txt</code>, <code>r10_create2.txt</code>) precisely because a <code>500</code> with no body would have been unciteable.</p>
+<h3 id="i6--a-302-from-the-wrong-endpoint-which-is-what-success-also-looks-like">I6 — a <code>302</code> from the wrong endpoint, which is what success also looks like</h3>
+<p><strong>Defect.</strong> I posted the plugin zip to <code>/wp-admin/plugin-install.php?tab=upload</code> and got <code>http=302</code>. I initially read that as &quot;uploaded&quot;. It was not: the form's real action is <code>update.php?action=upload-plugin</code> (read from the form element), and the <code>302</code> was just a bounce. Verified out of band — the extracted file did not exist.</p>
+<p><strong>What it would have caused me to file.</strong> &quot;Plugin upload succeeded&quot; and then, having found no file, a contradictory &quot;the upload silently failed&quot;, with a real RCE primitive discarded somewhere in between. The dangerous part is that <code>302</code> is genuinely ambiguous: it is what both success and a wrong-endpoint redirect produce.</p>
+<p><strong>Class.</strong> A status code shared by two opposite outcomes, in a workflow where the success artifact is not in the response body. <strong>Fix applied:</strong> resolved the real <code>action</code> attribute from the form, re-posted to it, got the body <code>Plugin installed successfully.</code>, and — decisively — verified the artifact on disk with <code>stat -c</code> out of band. Where a write either happens or does not, the filesystem is the oracle, not the status code.</p>
+<h3 id="i7--my-evidence-filenames-collided-so-two-requests-share-an-r13-prefix">I7 — my evidence filenames collided, so two requests share an <code>r13</code> prefix</h3>
+<p><strong>Defect.</strong> I saved the follow-up-to-<code>302</code> response as <code>r13_upload_result2.html</code> and the successful upload as <code>r13_upload_ok.html</code>. Two distinct requests, one request number, and the numbering skips nothing but is not unique.</p>
+<p><strong>What it would have caused me to cite.</strong> A reader mapping <code>evidence/</code> back to the work count in <code>workcount_full.txt</code> would find two files for request 13 and no way to order them. In a corpus whose §5 is specifically about instruments that produce confident-looking but untraceable output, shipping non-unique evidence identifiers is the same failure in miniature.</p>
+<p><strong>Class.</strong> Bookkeeping defect: identifiers allocated from a counter that was incremented by intent rather than by completion. <strong>Fix applied:</strong> the full request-to-file mapping is written out explicitly in <code>evidence/workcount_full.txt</code>, which is unambiguous even though the two filenames share a prefix. The collision is disclosed rather than renamed away, because renaming would hide that it happened.</p>
+<h3 id="i8--the-narrow-work-queue-label-pointed-at-the-wrong-objective">I8 — the narrow work-queue label pointed at the wrong objective</h3>
+<p><strong>Defect.</strong> The work queue describes this lab as &quot;WordPress platform plus Linux privesc&quot;, which frames the escalation as the goal. The catalogue — the authority — advertises a <em>site</em>, <em>a vulnerability</em>, and an <em>escalation</em>, and the artefact contradicts the queue on two counts: the decisive vulnerability is a build-artefact credential rather than a platform weakness, and the escalation cannot be completed at all.</p>
+<p><strong>What it would have caused me to do.</strong> Spend the engagement driving at root via a broken sudo grant, and — when that dead end arrived — either report a fabricated escalation or file a false negative against the lab's own advertised third element. The brief warns that a previous engagement in this repository was mis-scoped from a queue label and produced a false negative on three of four advertised elements. The correct response is to treat the queue label as a hypothesis and the catalogue plus the artefact as the facts.</p>
+<p><strong>Class.</strong> Scope inherited from a summary rather than read from the specification and the artefact. <strong>Fix applied:</strong> all three catalogue elements were tracked as separate objectives with separate outcomes (§0 table), and the element that could not be reached is reported as an explicit absence in §6 rather than dropped.</p>
+<hr />
+<h2 id="6-reward">6. Reward</h2>
+<p><strong>The reward was recovered, through the web path, as <code>uid=33(www-data)</code>:</strong></p>
+<pre><code>LNDSG98DSFG7D8SGY8SDFG9
+</code></pre>
+<p>Obtained by <code>cat [lab-home]/flag.txt</code> executed by the probe through the authenticated web path (<code>evidence/flag_via_webpath.txt</code>), with the file's ownership independently measured as <code>644 www-data:www-data</code> (<code>evidence/final_state.txt</code>).</p>
+<p>This is the <strong>first</strong> hop, not the end of the chain. <code>[lab-home]/flag.txt</code> is owned by <code>www-data</code> and world-readable, so the escalation is not required to collect it. The escalation was still measured, as <code>uid=33</code>, because the catalogue advertises it.</p>
+<h3 id="the-advertised-python-privilege-escalation-an-explicit-measured-absence">The advertised Python privilege escalation: an explicit, measured absence</h3>
+<p><strong>Claim: <code>www-data</code> cannot become <code>bobby</code>, and <code>bobby</code> cannot become <code>root</code>, in this image. This is not a difficulty result — the mechanism is absent from the filesystem.</strong></p>
+<p>Every observation below was made <strong>from the web path as <code>uid=33(www-data)</code></strong>, not from a root harness (§5, I2).</p>
+<p><strong>The ladder, exactly as configured</strong> — <code>/etc/sudoers:32,34</code>:</p>
+<pre><code>www-data ALL=(bobby) NOPASSWD: /usr/bin/python3
+bobby     ALL=(ALL)   NOPASSWD: /usr/bin/python3 /opt/backup.py
+</code></pre>
+<p><strong>The grant is real and sudo evaluates it</strong> — this is the positive control, without which every negative below would be unearned:</p>
+<pre><code>$ sudo -n -l                       (as uid=33)
+User www-data may run the following commands on 81548424282c:
+    (bobby) NOPASSWD: /usr/bin/python3
+</code></pre>
+<p>sudo is present, functional, and parsing www-data's policy correctly. It is not that sudo is broken or that the rule is absent.</p>
+<p><strong>The target of the grant does not exist:</strong></p>
+<pre><code>$ sudo -n -u bobby /usr/bin/python3 -c 'print(1)'    →  sudo: /usr/bin/python3: command not found   (rc=1)
+$ ls -l /usr/bin/python3                              →  ls: cannot access ...: No such file or directory  (rc=2)
+$ command -v python3 python python2                    →  (no output)  (rc=127)
+</code></pre>
+<p><strong>Work count behind this absence — 5 independent strategies, plus 4 corroborating from the source read:</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Strategy</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>which python python2 python3</code></td>
+<td>nothing</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>find / -xdev -name &quot;python*&quot; -o -name &quot;*python*&quot;</code></td>
+<td>only <code>/usr/share/gcc/python</code>, <code>/usr/share/nano/python.nanorc</code> — no interpreter</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>find /</code> <strong>without</strong> <code>-xdev</code> (guards against a separate mount hiding it)</td>
+<td>no interpreter</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>find / -maxdepth 4 -name &quot;python*&quot; -type l</code> (symlink scan)</td>
+<td>none</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>dpkg -l | grep -i python</code> (package database)</td>
+<td><strong>no Python package installed at all</strong></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>stat -c</code> on <code>/usr/bin/python3</code> directly</td>
+<td><code>cannot stat</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The gap cannot be closed from <code>www-data</code>.</strong> The one remaining theoretical route would be to create the interpreter at the exact path sudo resolves:</p>
+<pre><code>/usr/bin      755 root:root   →  touch /usr/bin/.lab219  →  Permission denied  (USRBIN_NOT_WRITABLE)
+/opt          757 root:root   →  touch /opt/.lab219_wtest  →  succeeded  (OPT_WRITABLE)
+/opt/backup.py 644 root:root  →  write attempt  →  refused  (BACKUP_PY_NOT_WRITABLE)
+</code></pre>
+<p><code>/opt</code> being <code>757</code> is the giveaway that the design is otherwise complete: the author <em>intended</em> www-data to stage a file there, which is what makes <code>bobby</code>'s <code>sudo /usr/bin/python3 /opt/backup.py</code> grant meaningful, and <code>backup.py:188</code> (<code>if os.geteuid() != 0</code>) confirms the script is built to run only as root. <strong>Every link of the ladder is present except the interpreter.</strong> <code>/usr/bin</code> is root-owned <code>755</code>, so www-data cannot supply the missing link either.</p>
+<p><strong>Root cause, from the artefact.</strong> <code>[lab-home]/bobby/.bash_history</code> records the image build's cleanup step:</p>
+<pre><code>apt-get clean
+apt-get autoremove -y
+rm -rf /var/lib/apt/lists/*
+...
+pip cache purge
+</code></pre>
+<p>The build installed tooling, then cleaned it out. The sudoers rules were left behind pointing at <code>/usr/bin/python3</code>, which the cleanup removed.</p>
+<p>The precise mechanism is line 404, not lines 403 or 405. <code>apt-get clean</code> empties the package cache and
+<code>rm -rf /var/lib/apt/lists/*</code> deletes the index; neither removes an installed binary from <code>/usr/bin</code>.
+<strong><code>apt-get autoremove -y</code> is the command that deletes packages</strong>, and it only touches packages apt recorded as
+auto-installed. That the interpreter was auto-installed rather than requested explicitly is not directly provable
+from the history, so this is the consistent explanation rather than a measured one — but it is the only line in that
+history capable of producing the observed state, and the other two provably cannot. <strong>This is a defect in the lab image, and it is reported as such rather than as a failed attack.</strong> An operator reading this lab would otherwise reasonably believe the escalation is solvable and hunt for a technique that does not exist.</p>
+<p><strong>If the interpreter were restored</strong>, the intended chain would be: <code>www-data</code> → <code>sudo -u bobby /usr/bin/python3 &lt;args&gt;</code> (note the grant names the binary with <strong>no argument restriction</strong>, so this is an argument-injection primitive giving arbitrary code as <code>bobby</code>) → write <code>/opt/backup.py</code> as <code>bobby</code> (<code>/opt</code> is <code>757</code>) → <code>bobby</code> runs <code>sudo /usr/bin/python3 /opt/backup.py</code> as root. <strong>I did not execute this</strong>, because the first link cannot be taken; it is stated as the design read from <code>sudoers</code> and <code>/opt</code>, not as a result.</p>
+<hr />
+<h2 id="7-not-tested">7. NOT tested</h2>
+<p>Kept strictly separate from the discarded-with-reason list in §4. These are untested, not closed.</p>
+<table>
+<thead>
+<tr>
+<th>Not tested</th>
+<th>Why it matters</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>UDP of any kind</strong></td>
+<td>The runbook is explicit that <code>nmap -p-</code> is TCP and hides whole classes (BMC/IPMI on <code>623/udp</code>). My surface came from <code>/proc/net/tcp</code>, which is <strong>also TCP-only</strong>.</td>
+<td><code>/proc/net/udp</code> was never read and no UDP probe was sent. <strong>UDP is untested, not closed.</strong> A management plane on UDP would be invisible to everything in §1.</td>
+</tr>
+<tr>
+<td><strong>Root escalation by any route other than Python</strong></td>
+<td>§6 proves the Python ladder is dead; it does <strong>not</strong> prove no root path exists.</td>
+<td>I checked sudo policy, SUID, SGID, cron and writability of the key directories. I did not attempt kernel/container-escape classes, did not audit the full setuid binary surface against known local privesc, and did not test the MySQL service for a <code>LOAD DATA</code>/<code>INTO OUTFILE</code> write as <code>www-data</code> (group 101 <code>mysql</code>). <strong>&quot;The advertised escalation is broken&quot; is a stronger claim than &quot;no root exists&quot;, and only the first is proven.</strong></td>
+</tr>
+<tr>
+<td><strong><code>bobby</code>'s account directly</strong></td>
+<td><code>bobby</code> is the pivot in the intended chain.</td>
+<td>No password attack on it. <code>[lab-home]/bobby</code> has no readable credential material and I did not attempt to obtain any.</td>
+</tr>
+<tr>
+<td><strong>Pie Register's registration forms, login-security and 2FA features</strong></td>
+<td>They are the plugin's main attack surface and could carry their own issues.</td>
+<td>Registration is disabled at the WordPress level (<code>users_can_register=0</code>) and the plugin's own forms were not exercised.</td>
+</tr>
+<tr>
+<td><strong>MySQL reachable on loopback</strong></td>
+<td><code>wpuser</code>/<code>wppass</code> are disclosed and the service is bound to <code>127.0.0.1</code>.</td>
+<td>I confirmed the <em>external</em> negative (§1) but never connected to the loopback service to test what that credential can reach from inside.</td>
+</tr>
+<tr>
+<td><strong>Akismet, Hello Dolly, the theme, and WordPress core 6.9.1 itself</strong></td>
+<td>6.9.1 is recent and the plugins are the default set.</td>
+<td>No version-to-CVE mapping was attempted beyond noting the versions from the artefact. Not a clean bill of health — simply untested.</td>
+</tr>
+<tr>
+<td><strong>Password spraying / rate ladder</strong></td>
+<td>A rate-budget finding would be worth filing.</td>
+<td>Moot: the credential came from the artefact, so no guessing was performed. <strong>No rate control was exercised, and none is claimed.</strong></td>
+</tr>
+<tr>
+<td><strong>What <code>/opt/backup.py</code> actually does when run as root</strong></td>
+<td>It is the intended escalation payload.</td>
+<td>It cannot be executed — the interpreter is absent and I have no root. It was read statically only. Its <code>os.geteuid() != 0</code> guard is confirmed at <code>backup.py:188</code>; <strong>its behaviour as root is unverified.</strong></td>
+</tr>
+<tr>
+<td><strong>Any second engagement / re-test of my own chain</strong></td>
+<td>Freshness of the result.</td>
+<td>Single pass. The reward was requested once through the web path.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-evidence-inventory">8. Evidence inventory</h2>
+<p>Only files a reader can obtain from the target, plus the measurements taken against it. All paths are relative to <code>corpus/219/evidence/</code>.</p>
+<p><strong>Artefact and source reads (reproducible from the image)</strong></p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>entrypoint.sh.txt</code></td>
+<td><code>/entrypoint.sh</code> verbatim — the admin credential at <code>:115-116</code>, <code>info.php</code> at <code>:131</code>, the <code>chown -R</code> at <code>:129</code>, the <code>usermod -aG mysql www-data</code> at <code>:66</code></td>
+</tr>
+<tr>
+<td><code>privesc_measured_from_webpath.txt</code></td>
+<td>First privesc pass, 4 commands, as <code>uid=33</code> — <strong>the run that returned empty bodies. See §5 I1</strong></td>
+</tr>
+<tr>
+<td><code>privesc_stderr_captured.txt</code></td>
+<td>The same probes re-run with <code>2&gt;&amp;1</code>; the earned negatives with exit codes</td>
+</tr>
+<tr>
+<td><code>privesc_surface_from_webpath.txt</code></td>
+<td><code>stat</code> of <code>/opt</code>, <code>/opt/backup.py</code>, <code>/usr/bin</code>, <code>/usr/local/bin</code> plus three write probes, as <code>uid=33</code></td>
+</tr>
+<tr>
+<td><code>db_state_check.txt</code></td>
+<td><code>wp plugin list</code> and <code>active_plugins</code>, proving the probe plugin was never activated</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Recon and authentication</strong></p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>recon_requests.txt</code></td>
+<td>Requests 1-4 with status and size</td>
+</tr>
+<tr>
+<td><code>info_control.txt</code></td>
+<td>Positive control that <code>info.php</code> is genuinely <code>phpinfo()</code> and that a nonexistent URL returns <code>301</code>, not <code>200</code></td>
+</tr>
+<tr>
+<td><code>r02_info.html</code></td>
+<td>The <code>phpinfo()</code> output the stack table is parsed from</td>
+</tr>
+<tr>
+<td><code>r05_page6.html</code></td>
+<td>The login form (Pie Register serves <code>/wp-login.php</code> → <code>/?page_id=6</code>)</td>
+</tr>
+<tr>
+<td><code>r07_wpadmin.html</code></td>
+<td>Authenticated dashboard: <code>Howdy, admin</code></td>
+</tr>
+<tr>
+<td><code>ctl_noauth.html</code></td>
+<td>The same URL with no session: the login page. The pair is the finding</td>
+</tr>
+<tr>
+<td><code>h06_headers_sanitized.txt</code></td>
+<td>Login response headers, cookie names and values redacted</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Persistence and execution</strong></p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>r08_plugineditor.html</code></td>
+<td>The plugin editor form and its nonce</td>
+</tr>
+<tr>
+<td><code>r09_create.txt</code>, <code>r10_create2.txt</code></td>
+<td>The two <code>HTTP 500</code> &quot;File does not exist!&quot; bodies (§5 I5)</td>
+</tr>
+<tr>
+<td><code>r11_upload.html</code></td>
+<td>The upload form, showing the real <code>action=update.php?action=upload-plugin</code></td>
+</tr>
+<tr>
+<td><code>r13_upload_ok.html</code></td>
+<td><code>Plugin installed successfully.</code></td>
+</tr>
+<tr>
+<td><code>r14_identity.txt</code></td>
+<td><code>uid=33(www-data) gid=33(www-data) groups=33(www-data),101(mysql)</code> read from inside the web process</td>
+</tr>
+<tr>
+<td><code>r15_witness_write.txt</code></td>
+<td>The witness write confirmation</td>
+</tr>
+<tr>
+<td><code>witness_oob_read.txt</code></td>
+<td>Out-of-band witness read: <code>644 www-data:www-data</code>, content, and the negative control for a nonce never written</td>
+</tr>
+<tr>
+<td><code>flag_via_webpath.txt</code></td>
+<td>The reward, obtained through the web path</td>
+</tr>
+<tr>
+<td><code>nopriv_handler_test.txt</code>, <code>nopriv_control.txt</code></td>
+<td>Finding R1 and its control</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Restore</strong></p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prestate_plugins.txt</code>, <code>prestate_docroot_hash.txt</code></td>
+<td>Pre-engagement state: 828 paths with mode/owner/size, and the docroot digest</td>
+</tr>
+<tr>
+<td><code>poststate_plugins.txt</code>, <code>restore_diff_plugins.txt</code></td>
+<td>The diff showing exactly two added paths — both mine</td>
+</tr>
+<tr>
+<td><code>restore_actions.txt</code></td>
+<td>Removal of my two artefacts, and <code>stat -c</code> confirming both are gone</td>
+</tr>
+<tr>
+<td><code>restore_verification.txt</code></td>
+<td>Service still answering (<code>/</code> 200, <code>/wp-login.php</code> 302) and the misread probe status (§5 I3)</td>
+</tr>
+<tr>
+<td><code>restore_discrepancy_investigation.txt</code></td>
+<td>Attribution of the docroot hash mismatch to the target's own <code>debug.log</code> (§5 I4)</td>
+</tr>
+<tr>
+<td><code>final_state.txt</code></td>
+<td>Final state: <code>debug.log</code> is my error trail, <code>/tmp</code> clean, <code>/opt</code> holding only the shipped <code>backup.py</code></td>
+</tr>
+<tr>
+<td><code>payload_probe.php</code></td>
+<td>The probe source that was uploaded, as written. <strong>Removed from the target</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Accounting</strong></p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workcount_full.txt</code></td>
+<td>The <strong>38-request</strong> itemised accounting, the 5 explicit positive controls, and the declared bounds of every sweep</td>
+</tr>
+</tbody>
+</table>
+<h3 id="restore-statement">Restore statement</h3>
+<p>One write was made into the target: the plugin zip extraction at
+<code>/var/www/html/wp-content/plugins/lab219probe/</code>. It was removed and verified with
+<code>stat -c</code> (not a content check) plus a filesystem-level <code>test -e</code>, and the plugins
+directory is <strong>byte-identical to its pre-engagement snapshot (0 differences)</strong>.
+<code>/opt</code> and <code>/tmp</code> are clean. <strong>The WordPress database was never modified</strong> — the
+probe plugin was never activated, so <code>active_plugins</code> is unchanged and no option,
+user or post was touched. The only residual change is the target's <strong>own</strong>
+<code>/var/www/html/wp-content/debug.log</code>, which grew because <code>WP_DEBUG_LOG</code> is enabled
+in <code>wp-config.php</code> and it recorded my own rejected requests. That is the target's
+telemetry behaving correctly; it was disclosed rather than truncated, because
+deleting it would destroy the record of this engagement. Its exact pre-engagement
+size was not snapshotted, so the byte delta cannot be stated (§5 I4).</p>
+<p><strong>The container was left running and no image or container was removed, staged or
+committed, per the brief.</strong></p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

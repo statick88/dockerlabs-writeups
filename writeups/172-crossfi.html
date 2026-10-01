@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 172 Crossfi &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Crossfi</p><h1 id="crossfi-dockerlabs-172--csrf-at-two-levels">Crossfi (DockerLabs 172) — CSRF at two levels</h1>
+<p><strong>Lab:</strong> 172 · <em>Crossfi</em> · Medio · author <em>El Pingüino de Mario</em>, 27/11/2025 · category <code>Bug Bounty</code>
+<strong>Description (full, from the platform catalog):</strong> <em>&quot;Laboratorio para explotar la vulnerabilidad CSRF en dos niveles distintos, primero en la funcionalidad de cambio de contraseña y después en detectar el campo vulnerable donde no se incluye la cabecera CSRF.&quot;</em>
+<strong>Target:</strong> <code>http://[net-0-3]:5000</code> — single container <code>crossfi_container</code>, image <code>crossfi:latest</code>
+<strong>Stack (from the artefact):</strong> Flask 3.1.2, Werkzeug 3.1.3, Python 3.13.5, SQLite, <code>flask-wtf==1.2.2</code> <strong>installed but never imported</strong>
+<strong>Outcome:</strong> token-less state change on a victim's session at <strong>two</strong> levels; independently, a forged session cookie that makes the CSRF token forgeable and yields unauthenticated account takeover; and, via the credentials the app itself hands out, <code>uid=1000(balulero) euid=0(root)</code>.</p>
+<hr />
+<h2 id="1-the-class-gap-stated-before-the-findings">1. The class gap, stated before the findings</h2>
+<p>CSRF is not in <code>INDEX.md</code>. It is also the class most often filed wrongly, because three
+different claims get collapsed into the word &quot;CSRF&quot;. This engagement separates them,
+and says which ones the lab actually contains.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Claim</th>
+<th>What it requires to be true</th>
+<th>Present here?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td>There is a <strong>state-changing endpoint</strong> a victim's browser can be made to issue</td>
+<td><code>POST/PUT/DELETE</code> that mutates something the victim cares about</td>
+<td><strong>Yes</strong> — <code>/change-password</code> (<code>app.py:143</code>)</td>
+</tr>
+<tr>
+<td>C2</td>
+<td>The session cookie is <strong><code>SameSite</code></strong></td>
+<td>absent from <code>[response-cookie-header]</code> ⇒ browser default applies</td>
+<td><strong>Attribute absent</strong> (<code>app.py</code> sets no <code>SESSION_COOKIE_SAMESITE</code>)</td>
+</tr>
+<tr>
+<td>C3</td>
+<td>A <strong>token exists</strong></td>
+<td><code>generate_csrf_token</code> (<code>app.py:68</code>)</td>
+<td><strong>Yes</strong>, and it <em>is</em> validated on 4 of 5 routes</td>
+</tr>
+<tr>
+<td>C4</td>
+<td>The token is <strong>actually checked</strong> server-side</td>
+<td><code>validate_csrf_token</code> reached on the route</td>
+<td><strong>No on <code>/change-password</code>; yes on 4 level-2 routes; absent on <code>/update-biografia</code></strong></td>
+</tr>
+<tr>
+<td>C5</td>
+<td>A <strong>second, distinct</strong> weakness</td>
+<td>not the same bug twice</td>
+<td><strong>Yes</strong> — a sibling route with the token omitted</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Entry criterion (the generalisable one):</strong> <em>a state-changing request that an attacker can
+cause a victim's browser to issue, and that the server honours.</em> Note what this criterion
+deliberately does <strong>not</strong> require: it does not require a token to be absent, and it does
+not require the victim's browser to be tricked into anything unusual. C2 matters because
+it is a <strong>browser-side</strong> mitigation that sits in front of a server-side property — see
+§6, where it is filed as a control that partly held.</p>
+<p>The decisive artefact for all of this is <code>app.py</code>, and specifically <strong>registration
+order</strong>: the level-2 module declares four guarded routes and then, immediately after,
+one unguarded route with an identical auth decorator (<code>app.py:371-374</code>). Nothing about
+the <em>response</em> distinguishes the two; only the source does.</p>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-3]
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH 10.0p2 Debian 7 (protocol 2.0)
+5000/tcp open  http    Werkzeug httpd 3.1.3 (Python 3.13.5)
+</code></pre>
+<p>Two ports; <code>auto_deploy.sh</code> was <strong>read, not run</strong> (<code>labs/172/auto_deploy.sh:145</code> is the
+<code>while true; do sleep 1; done</code> that never returns). It declares no networks, no
+<code>macvlan --internal</code> segments, and a single <code>docker run -d</code> (<code>:129-132</code>) — so the
+one-container topology is the intended one, confirmed by <code>ExposedPorts 22/tcp, 5000/tcp</code>.</p>
+<p><strong>Hidden surface found.</strong> A TCP scan cannot see the interactive Werkzeug debugger,
+because it is not a port — it is a <em>response to a request that raises</em>. It is live:</p>
+<pre><code>$ curl -b &lt;session&gt; -X POST http://[net-0-3]:5000/change-password -d 'nothing=here'
+HTTP/1.1 500 INTERNAL SERVER ERROR
+Server: Werkzeug/3.1.3 Python/3.13.5
+Content-Length: 17833
+</code></pre>
+<p>The body contains the debugger shell, with the source of the failing frame rendered
+inline (<code>new_password = request.form['new_password']</code>, <code>app.py:146</code>) and the banner
+<code>console is locked and needs to be unlocked by entering the PIN.</code> Reachable by <strong>any
+anonymous visitor</strong>, because <code>/register</code> (<code>app.py:89</code>) is unauthenticated: register → log
+in → trigger → full source disclosure. This is Finding 5.</p>
+<p><strong>Versions read from the artefact, not from memory:</strong> <code>requirements.txt</code> → <code>Flask==3.1.2</code>,
+<code>flask-wtf==1.2.2</code>; <code>Server:</code> header → <code>Werkzeug/3.1.3 Python/3.13.5</code>.</p>
+<hr />
+<h2 id="the-class">The class</h2>
+<p><strong>Entry criterion question that started it:</strong> <em>is there a <code>POST</code> that mutates state and
+that carries no proof the request came from the page that issued it?</em></p>
+<p><strong>Source that settled it:</strong> <code>app.py:143-153</code>. The handler reads exactly one field
+(<code>request.form['new_password']</code>), writes it straight to the <code>users</code> table, and never
+consults a token. <code>validate_csrf_token</code> is defined 70 lines above at <code>app.py:74</code> and is
+simply not called.</p>
+<p><strong>And the sharpest single fact in the engagement.</strong> <code>flask-wtf</code> is in
+<code>requirements.txt</code> — the correct library is <em>installed</em> — and it is referenced nowhere:</p>
+<pre><code>$ grep -rn &quot;flask_wtf\|CSRFProtect\|WTForms&quot; /app/
+(no output)
+</code></pre>
+<p>Confirmed at runtime, from the app's own config object:</p>
+<pre><code>&gt;&gt;&gt; app.config['WTF_CSRF_ENABLED']
+KeyError: 'WTF_CSRF_ENABLED'
+</code></pre>
+<p><code>CSRFProtect(app)</code> is never called, so the config key is not merely <code>False</code> — <strong>it does
+not exist</strong>. This is the cleanest possible separator between <em>a CSRF library is
+available</em> and <em>CSRF protection is active</em>, and it generalises: on any machine, grep for
+the protection's constructor before you grep for the vulnerability.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>The lab's design hands out SSH credentials on level-1 success (<code>app.py:179-180</code>,
+<code>app.py:294-295</code>), so the graph of reach continues past the web app. Every hop was
+executed, and every identity measured rather than assumed.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>victim <code>victima</code></td>
+<td>registers/logs in; holds <code>session</code> cookie</td>
+<td><code>[response-cookie-header]: session=…; HttpOnly; Path=/</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td><strong>Flask process, root</strong></td>
+<td>attacker-driven <code>POST /change-password</code>, session cookie only, <strong>no token</strong>; DB password <code>victima123</code> → <code>CSRFLEVEL1_pwned</code></td>
+<td><code>/proc/18/status</code> → <code>Uid: 0 0 0 0</code> (<code>ps</code>: <code>18 root python3 app.py</code>)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Flask process, root</strong></td>
+<td><code>POST /update-biografia</code> with browser-cached HTTP Basic, <strong>no token</strong>; <code>biografia</code> <code>''</code> → <code>CSRFLEVEL2_pwned_marker_9f2a</code></td>
+<td>same PID 18, <code>euid=0</code></td>
+</tr>
+<tr>
+<td>2'</td>
+<td><strong>Flask process, root</strong></td>
+<td><strong>forged</strong> session cookie + attacker-chosen <code>csrf_token</code>; <code>nombre</code> → <code>TOKEN_FORGERY_PROOF</code>; <code>/dashboard</code> → <code>HTTP 200</code> with <strong>no victim interaction at all</strong></td>
+<td>forged cookie accepted by PID 18</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>balulero</code></td>
+<td>SSH with the credentials the app hands out (<code>app.py:294-295</code>)</td>
+<td><code>uid=1000(balulero) gid=1000(balulero) groups=1000(balulero)</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong><code>euid=0(root)</code></strong></td>
+<td><code>/usr/bin/env</code> is SUID root; <code>env</code> does not drop privileges</td>
+<td><code>uid=1000(balulero) gid=1000(balulero) euid=0(root) groups=1000(balulero)</code></td>
+</tr>
+</tbody>
+</table>
+<p>Hop 4 is reported as <code>uid=1000 … euid=0</code>, not as &quot;root&quot;: the real uid never changes, and
+collapsing that pair would hide exactly the fact that makes the escalation a <em>file
+capability</em> problem rather than a switch-uid problem.</p>
+<h3 id="evidence--level-1-change-password">Evidence — level 1 (<code>/change-password</code>)</h3>
+<pre><code>$ curl -b victim.jar -X POST http://[net-0-3]:5000/change-password \
+       -H 'Origin: null' -H 'Referer: file:///tmp/exploit.html' \
+       --data-raw 'new_password=CSRFLEVEL1_pwned'
+HTTP/1.1 200 OK
+¡Enhorabuena! Has explotado la vulnerabilidad CSRF
+pinguinitojeje
+
+password before = victima123
+password after  = CSRFLEVEL1_pwned
+</code></pre>
+<p><strong>Negative control</strong> — the same request without the session cookie:</p>
+<pre><code>$ curl -X POST .../change-password -H 'Origin: null' --data-raw 'new_password=NO_COOKIE_SHOULD_FAIL'
+HTTP/1.1 302 FOUND        Location: /login
+password after = CSRFLEVEL1_pwned      ← unchanged
+</code></pre>
+<p>So the endpoint is not simply open; it is session-bound and token-less. That is the
+precise shape of the flaw.</p>
+<h3 id="evidence--level-2-update-biografia">Evidence — level 2 (<code>/update-biografia</code>)</h3>
+<pre><code>$ curl -u pinguinito:pinguinitojeje -b l2.jar -X POST .../update-biografia \
+       -H 'Referer: http://attacker.example/csrf.html' -H 'Origin: http://attacker.example' \
+       --data-raw 'biografia=CSRFLEVEL2_pwned_marker_9f2a'
+HTTP/1.1 302 FOUND        Location: /csrf-level2
+biografia = ''  →  'CSRFLEVEL2_pwned_marker_9f2a'
+</code></pre>
+<p>No <code>csrf_token</code> field was sent, and the route never reads one. HTTP Basic auth is not a
+CSRF defence: a browser re-sends cached Basic credentials on its own, so the attacker
+needs only the victim to load a page.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="finding-1--level-1-post-change-password-has-no-csrf-token-cwe-352">Finding 1 — Level 1: <code>POST /change-password</code> has no CSRF token (CWE-352)</h3>
+<p><strong>Evidence:</strong> <code>app.py:143-153</code>, template <code>dashboard.html:20-27</code> (the comment
+<code>&lt;!-- VULNERABILITY: No CSRF token here --&gt;</code> is in the shipped source). Password
+<code>victima123</code> → <code>CSRFLEVEL1_pwned</code> with only a session cookie.</p>
+<p><strong>Impact:</strong> full account takeover. The change-password form is the last line of defence
+for an account; taking it removes the user's ability to recover the account at all.</p>
+<p><strong>Root cause:</strong> <code>validate_csrf_token</code> (<code>app.py:74</code>) is never called on this route, and
+<code>flask-wtf</code> is installed but never initialised.</p>
+<p><strong>Remediation:</strong> <code>CSRFProtect(app)</code> as the first statement after the app object, and a
+hidden <code>csrf_token</code> field in the form. Nothing else — a <code>Referer</code> heuristic is not a
+substitute (Finding 3).</p>
+<h3 id="finding-2--level-2-update-biografia-omits-the-token-its-four-siblings-enforce-cwe-352-cwe-693">Finding 2 — Level 2: <code>/update-biografia</code> omits the token its four siblings enforce (CWE-352, CWE-693)</h3>
+<p>This is what the lab's own description calls <em>&quot;el campo vulnerable donde no se incluye la
+cabecera CSRF&quot;</em>, and it is a <strong>different defect from Finding 1</strong>, not a restatement:
+Finding 1 is a module with no token; Finding 2 is a module that <em>has</em> a working token
+system and one route that bypasses it.</p>
+<pre><code>app.py:304  /update-nombre       @requires_basic_auth   token = request.form.get('csrf_token')   ✔ checked
+app.py:321  /update-edad         @requires_basic_auth   token = …                                 ✔ checked
+app.py:338  /update-profesion    @requires_basic_auth   token = …                                 ✔ checked
+app.py:355  /update-ciudad       @requires_basic_auth   token = …                                 ✔ checked
+app.py:372  /update-biografia    @requires_basic_auth   ← no token read at all                     ✘
+</code></pre>
+<p><strong>The UI gives no way to tell the two apart — and asserts protection for both.</strong> All five
+profile fields carry the identical green <code>🔒 Protegido</code> (&quot;Protected&quot;) badge
+(<code>csrf-level2.html:33, 52, 71, 90, 109</code>), and all five are styled alike. Four of them
+render a <code>csrf_token</code> hidden input (<code>:36, 55, 74, 93</code>); the fifth
+(<code>:111-117</code>, the biography form) renders none. The badge is a <em>blanket</em> claim that is
+false for one field in five, and because it is uniform it provides <strong>no signal at all</strong>
+to a reader trying to identify which field is the vulnerable one. Anyone auditing this
+page visually — which is the obvious way to audit a profile form — will conclude all
+five are hardened.</p>
+<p><strong>Impact:</strong> arbitrary write to a shared <code>profile</code> row (<code>WHERE id = 1</code>,
+<code>app.py:379</code>) — a single global record, so the attacker corrupts data belonging to
+everyone using the level, not just the victim.</p>
+<p><strong>Remediation:</strong> the token check is duplicated by hand five times; that is why one copy
+was missed. Apply it once, as a decorator or <code>before_request</code>, so the default is
+&quot;checked&quot; and any new route is protected unless it explicitly opts out. Never assert a
+security property from a CSS badge — derive the label from the guard that enforces it,
+so a route that loses its guard also loses its claim.</p>
+<h3 id="finding-3--the-refererorigin-logic-is-a-scorer-not-a-control-cwe-693">Finding 3 — The <code>Referer</code>/<code>Origin</code> logic is a <em>scorer</em>, not a control (CWE-693)</h3>
+<p>Both exploit handlers compute <code>is_exploit</code> <strong>after</strong> the write has already been committed
+(<code>app.py:151</code> vs <code>:157-171</code>; <code>app.py:379</code> vs <code>:384-396</code>). It decides which template to
+render. It cannot prevent anything.</p>
+<p>The experiment that proves it — a request that keeps the <em>appearance</em> of being
+legitimate, so <code>is_exploit</code> is <code>False</code> and the app reports ordinary success:</p>
+<pre><code>$ curl -b victim.jar -X POST .../change-password \
+       -H 'Referer: http://[net-0-3]:5000/dashboard' -H 'Origin: http://[net-0-3]:5000' \
+       --data-raw 'new_password=STEALTH_PLAIN'
+HTTP/1.1 302 FOUND                      ← normal path, no congratulation modal
+modal string count: 0
+password = STEALTH_PLAIN                ← the account was still taken over
+</code></pre>
+<p>Same at level 2: with a same-origin <code>Referer</code>, <code>biografia</code> became <code>STEALTH_L2_no_flag</code>
+and no success flag was set. <strong>A defender reading the lab's own telemetry would have
+recorded &quot;no successful CSRF&quot; for every request that actually succeeded.</strong> This is the
+single most transferable lesson in the engagement: a detector placed downstream of the
+side effect is a reporting function. Ask of any CSRF control <em>where in the handler it
+runs</em>, not whether it exists.</p>
+<h3 id="finding-4--hardcoded-appsecret_key-forges-the-session-which-makes-the-token-forgeable-cwe-798-cwe-384">Finding 4 — Hardcoded <code>app.secret_key</code> forges the session, which makes the token forgeable (CWE-798, CWE-384)</h3>
+<p><code>app.py:9</code> — <code>app.secret_key = 'supersecretkey'</code>. Flask's session is a <strong>client-side
+signed</strong> cookie, so anyone holding the key can mint an arbitrary session. The victim's
+cookie is not even needed:</p>
+<pre><code>$ curl -H &quot;Cookie: session=eyJ1c2VyX2lkIjoxLCJ1c2VybmFtZSI6InZpY3RpbWEiLCJjc3JmX3Rva2VuIjoiQVRUQUNLRVJfQ0hPU0VOX1RPS0VOX2ZmZmYifQ.arxIQA.pKncj1oJ-Kb2yMHeJW1PBEfVmzI&quot; \
+       http://[net-0-3]:5000/dashboard
+GET /dashboard w/ forged cookie -&gt; HTTP 200
+</code></pre>
+<p><strong>This is the deeper level-2 lesson, and it generalises past this lab.</strong> The CSRF token
+is <em>stored in the session cookie</em> (<code>generate_csrf_token</code>, <code>app.py:68-72</code>). A token bound
+to a forgeable session is a token the attacker chooses. Proven directly — the <em>same</em>
+route and the <em>same</em> handler that rejected a wrong token accepted an attacker-chosen one:</p>
+<pre><code>$ curl -u pinguinito:pinguinitojeje -H &quot;Cookie: session=$FORGED&quot; \
+       -X POST .../update-nombre \
+       -d 'nombre=TOKEN_FORGERY_PROOF' -d 'csrf_token=ATTACKER_CHOSEN_TOKEN_ffff'
+nombre in DB = 'TOKEN_FORGERY_PROOF'
+</code></pre>
+<p>So the token control measured in §7 is real <em>against a browser-borne attack</em> and
+<strong>worthless against an attacker who knows the key</strong>. Rank it accordingly, and never
+report &quot;CSRF is mitigated by a token&quot; without asking where the token is stored.</p>
+<p><strong>Impact:</strong> unauthenticated impersonation of any user, with no victim interaction and
+no CSRF at all. <strong>Remediation:</strong> load the key from the environment, rotate it, and
+invalidate existing sessions. Keep CSRF tokens in a server-side store if you want them
+to mean anything independently of the session key.</p>
+<h3 id="finding-5--debugtrue-on-0000-interactive-debugger-reachable-cwe-489-cwe-215">Finding 5 — <code>debug=True</code> on <code>0.0.0.0</code>; interactive debugger reachable (CWE-489, CWE-215)</h3>
+<p><code>app.py:408</code> — <code>app.run(debug=True, host='0.0.0.0', port=5000)</code>. An anonymous visitor
+(register → login → malformed <code>POST /change-password</code>) receives a full Werkzeug debug
+page with the failing source frame inline. The <code>/console</code> endpoint is mounted — it
+answers <code>400</code>, not <code>404</code>, which is the signature of &quot;present and PIN-gated&quot; rather than
+&quot;absent&quot;.</p>
+<p>I computed the PIN with Werkzeug's own algorithm (<code>werkzeug/debug/__init__.py:184-215</code>)
+from the container's real <code>machine-id</code> (<code>b17fec3ca61f47399de27e6489347cd1</code>) and
+<code>uuid.getnode()</code> (<code>134693594076093</code>), reproducing the cookie-name checksum <code>__wzd…</code> so
+a mismatch would have been visible. <code>/console</code> still returned <code>400</code>: <strong>the PIN is not
+derivable from the data I could reach, and console RCE is NOT proven.</strong> See §8.</p>
+<p><strong>Remediation:</strong> <code>debug=False</code> in production, behind a real WSGI server. Independently:
+do not let an unhandled exception on an authenticated route return a stack trace.</p>
+<h3 id="finding-6--passwords-stored-and-compared-in-plaintext-cwe-256-cwe-208">Finding 6 — Passwords stored and compared in plaintext (CWE-256, CWE-208)</h3>
+<p><code>app.py:97</code> inserts the password verbatim; <code>app.py:118</code> compares with <code>user['password'] == password</code>.
+Measured, not assumed:</p>
+<pre><code>&gt;&gt;&gt; select id,username,password from users
+[(1, 'victima', 'CSRFLEVEL1_pwned'), ...]
+</code></pre>
+<p>Any database read is an immediate credential dump. The CSRF finding <em>feeds</em> this one: the
+password an attacker writes over CSRF is then stored in the clear.</p>
+<h3 id="finding-7--state-changing-get-logout-no-token-cwe-352-cwe-650">Finding 7 — State-changing <code>GET /logout</code>, no token (CWE-352, CWE-650)</h3>
+<p><code>app.py:127-131</code>. Session cleared, reachable by a plain <code>GET</code> — no form, no token, no
+<code>POST</code>. Measured: <code>GET /logout</code> → <code>302</code>, and the subsequent <code>/dashboard</code> → <code>302 /login</code>,
+i.e. the session was destroyed. Filed separately from Findings 1-2 because its severity
+and its reach differ (see §6).</p>
+<h3 id="finding-8--the-labs-own-files-ship-the-attack-informational-but-it-changes-the-threat-model">Finding 8 — The lab's own files ship the attack (informational, but it changes the threat model)</h3>
+<p><code>/app/exploit.html</code> and <code>/app/exploit-level2.html</code> are in the image, and <code>INSTRUCCIONES_CSRF.md</code>
+walks the solver through both. They post to <code>http://127.0.0.1:5000</code>, so they only work for a
+solver running the app locally. Reported because it is a <strong>deployment</strong> fact: any instance
+where the webroot is served — or where <code>/app</code> is otherwise reachable — hands the attacker
+a working CSRF page for free.</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<p>Each row is a control that was <strong>observed to fire</strong>, with a positive control proving the
+detector is not simply broken. A control that has never seen a success is not a control.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Where</th>
+<th>Positive control that proves this detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Session binding on <code>/change-password</code></strong></td>
+<td><code>app.py:144</code> <code>@login_required</code></td>
+<td>Detector <strong>fires</strong> without a cookie → <code>302 Location: /login</code> and the password is <strong>unchanged</strong>. With the cookie → <code>200</code> and the password <strong>changes</strong>. The same detector produces both outcomes, so the rejection is attributable to the cookie and not to a dead route.</td>
+</tr>
+<tr>
+<td><strong>HTTP Basic on all 5 level-2 routes</strong></td>
+<td><code>app.py:56-65</code></td>
+<td><code>POST /update-nombre</code> with no credentials → <code>401</code> + <code>WWW-Authenticate: Basic realm=&quot;CSRF Level 2&quot;</code>. Gate demonstrably fires.</td>
+</tr>
+<tr>
+<td><strong>CSRF token on <code>/update-nombre</code> (and 3 siblings)</strong></td>
+<td><code>app.py:307-310</code></td>
+<td>Proven <strong>in both directions</strong>: wrong token → write rejected, <code>nombre</code> stays <code>''</code>, literal <code>Token CSRF inválido</code>; <strong>valid</strong> token on the same route → write <strong>succeeds</strong> (<code>nombre = 'Auditor Metodologia'</code>). Sending no token at all → rejected. The second direction is what makes the first meaningful: it proves the rejection was the <em>token</em>, not a broken endpoint.</td>
+</tr>
+<tr>
+<td><strong><code>HttpOnly</code> on the session cookie</strong></td>
+<td>observed <code>[response-cookie-header]: … ; HttpOnly; Path=/</code></td>
+<td>Present in the header on every issuance. Not bypassed anywhere in this engagement.</td>
+</tr>
+<tr>
+<td><strong>Ownership scoping on task API</strong></td>
+<td><code>app.py:243</code>, <code>:270</code></td>
+<td><code>WHERE id = ? AND user_id = ?</code> on PUT and DELETE — the query binds the row to the session's user rather than trusting a path id. A clean negative. (Read-only check; see §8.)</td>
+</tr>
+<tr>
+<td><strong>The lab's own hint at <code>flag</code> absent</strong></td>
+<td>—</td>
+<td>A file named <code>*flag*</code> that contained a flag would have been found by the same <code>find</code> that located <code>hint.txt</code>. See §9.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The reportable negative:</strong> the token rejection is <strong>not</strong> silently reported as ordinary
+success — it emits a distinct message (<code>Token CSRF inválido</code>) and the write does not
+happen. The control fires <em>and</em> is distinguishable from success, which is the ideal
+shape. By contrast the <code>Referer</code>/<code>Origin</code> heuristic (Finding 3) is a control that fires
+but reports success on exactly the requests that harmed the user — the worst of both.</p>
+<hr />
+<h2 id="not-tested-vs-discarded-with-reason">NOT tested vs discarded with reason</h2>
+<p><strong>NOT tested</strong> (honest gaps, not conclusions):</p>
+<ul>
+<li><strong>Browser-side delivery.</strong> No browser was available, so I did not observe a real
+cross-origin navigation. Everything above is server-side behaviour proven with the
+session cookie supplied directly. Whether a given browser attaches the cookie to a
+given cross-site request is stated in §6 as browser policy, not as a measurement.</li>
+<li><strong>Werkzeug debugger PIN.</strong> Mounted, checksum-verified, not derived (§8). Console RCE
+is neither claimed nor refuted.</li>
+<li><strong>Task API authorisation at runtime.</strong> The <code>AND user_id = ?</code> scoping
+(<code>app.py:243</code>, <code>:270</code>) is read from source and was not exercised with a second user's
+<code>task_id</code>. It is listed under &quot;controls that held&quot; as a <strong>source-read</strong> result and is
+flagged here so it is not over-read.</li>
+<li><strong>Full <code>/api/tasks</code> CRUD</strong> — not exercised end to end; it is a <code>localStorage</code>-fronted
+demo (<code>app.js:26-33</code>) and not part of the declared class.</li>
+</ul>
+<p><strong>Discarded with reason:</strong></p>
+<ul>
+<li><strong>XSS.</strong> The task framing warns that CSRF and XSS get conflated. I found no injection
+sink reaching a browser: Jinja2 autoescapes, and the one <code>| safe</code> filter
+(<code>dashboard.html:47</code>) renders <code>success_message</code>, a server-built literal, not user input.
+Discarded on source evidence, not on absence of testing.</li>
+<li><strong>Session fixation / <code>Secure</code> flag.</strong> <code>SESSION_COOKIE_SECURE=False</code>, but the lab is
+plain HTTP and there is no TLS to downgrade; flagged, not filed as exploitable here.</li>
+<li><strong>Container escape.</strong> No socket, no <code>docker.sock</code>, no privileged flag. <code>/proc/self/status</code>
+read from inside showed no unexpected capabilities. Not pursued further.</li>
+</ul>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>The most valuable section, per the runbook. One of these nearly produced a false finding,
+and one produced a <em>false confirmation</em>.</p>
+<h3 id="1-rtk-curl-silently-drops--h-headers--this-inverted-a-finding">1. <code>rtk curl</code> silently drops <code>-H</code> headers — this inverted a finding</h3>
+<p>My first stealth test sent a <strong>same-origin</strong> <code>Referer</code>/<code>Origin</code> and reported the success
+modal, i.e. it suggested the <code>is_exploit</code> check could be defeated. It was wrong. The
+headers were never sent. Isolated with identical arguments:</p>
+<pre><code>$ rtk curl  … -H &quot;Referer: http://[net-0-3]:5000/dashboard&quot; -H &quot;Origin: …&quot;  → 0 request headers
+$ curl      … -H &quot;Referer: http://[net-0-3]:5000/dashboard&quot; -H &quot;Origin: …&quot;  → both headers present
+</code></pre>
+<p><strong>What caught it:</strong> I had already computed the server's branch logic by hand
+(<code>app.py:163-171</code> vs <code>request.host_url</code>) and it said <code>is_exploit = False</code> for those
+headers. The instrument and the source disagreed, so the instrument was the suspect.
+<strong>Lesson:</strong> a wrapper that takes the same flags as the tool underneath it is not the
+same tool. For any finding that depends on a <em>request header</em>, verify with <code>-v</code> that the
+header arrived. This defect is invisible on success and only distorts negatives — the
+direction that quietly manufactures findings.</p>
+<h3 id="2-a-real-500-traceback-made-the-debugger-look-like-a-404">2. A real 500 traceback made the debugger look like a 404</h3>
+<p><code>/nope-404</code> returns an ordinary <code>404</code> with no debugger, so &quot;the debugger is not exposed&quot;
+looked plausible from a single probe. It is wrong: the debugger only appears when a
+handler <em>raises</em>, and the routes that raise are all <strong>behind</strong> <code>@login_required</code>. A
+probe without a session is redirected before the exception can happen. An analyst who
+tested unauthenticated and saw <code>404</code> would have filed &quot;not exploitable&quot;.</p>
+<p><strong>What caught it:</strong> asking what makes the request <em>unusual</em> rather than only what makes
+it succeed. The trigger is a malformed body, not a bad path.</p>
+<h3 id="3-the-labs-own-scoring-logic-is-a-decoy">3. The lab's own scoring logic is a decoy</h3>
+<p>Findings 1-2 and this one are the same underlying weakness viewed two ways, and the
+conflation risk is real. The congratulation modal and the SSH credentials are emitted by
+<code>is_exploit</code>, which sits <strong>after</strong> the write. Treating the modal as &quot;exploit succeeded&quot;
+inverts the truth: a stealth request gets <strong>no</strong> modal and <strong>still</strong> succeeds. The modal
+is the lab's reward, not a security control, and treating it as one produces a writeup
+that says the opposite of the truth.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>No <code>FLAG{}</code> or <code>DL{}</code> exists in this lab.</strong> Measured as <code>euid=0(root)</code>, not guessed:</p>
+<pre><code>$ grep -rIoh -E 'DL\{[^}]*\}|FLAG\{[^}]*\}|flag\{[^}]*\}' / --exclude-dir=proc --exclude-dir=sys
+(no output)
+
+$ find / \( -name '*flag*' -o -name '*reward*' -o -name '*secret*' -o -name '*.txt' \) -type f
+  …  [lab-home]/balulero/hint.txt
+  …  /app/requirements.txt
+</code></pre>
+<p><code>/root</code> and <code>[lab-home]/balulero</code> were listed in full at root privilege; <code>/opt</code> and <code>/srv</code> are
+empty. The only <code>*flag*</code> hits are unrelated (<code>tty_flags.h</code>, <code>dpkg-buildflags</code>,
+<code>kpageflags</code>). The two credential-shaped values the app hands out —
+<code>pinguinito:pinguinitojeje</code> (<code>app.py:179-180</code>) and <code>balulero:balulei</code>
+(<code>app.py:294-295</code>) — are <strong>not</strong> a flag: both are hardcoded in the source and both are
+reached without difficulty.</p>
+<p><strong>The lab's actual reward is the level-2 transition itself</strong>, gated on <code>is_exploit</code>. Its
+own instructions call the SSH credentials <em>&quot;ficticias&quot;</em> (<code>INSTRUCCIONES_LEVEL2.md</code>),
+and that is <strong>wrong</strong> — <code>balulero</code> exists as <code>uid=1000</code> and sshd is running; the
+credentials work. Reported as a measured absence with the search that established it,
+not invented.</p>
+<hr />
+<h2 id="restore">Restore</h2>
+<pre><code>$ docker rm -f crossfi_container &amp;&amp; docker run -d --name crossfi_container crossfi:latest
+restored IP=[net-0-3]
+</code></pre>
+<p>Verified <strong>positively</strong>, not by &quot;the container is up&quot;:</p>
+<pre><code>GET /login                 -&gt; HTTP 200
+select count(*) from users -&gt; 0            (all test accounts gone)
+profile.biografia           -&gt; ''           (my level-2 write gone)
+</code></pre>
+<p>The container was recreated from the image rather than reverted, so the SQLite writes,
+the forged sessions and the PIN scratch file are gone by construction. Nothing was
+written outside <code>/tmp/csrf172</code>; nothing under <code>labs/</code> was modified. <code>git commit</code> and
+<code>git push</code> were not run (<code>git status</code> read only).</p>
+<hr />
+<h2 id="feed-forward--the-csrf-section-the-methodology-lacks">Feed-forward — the CSRF section the methodology lacks</h2>
+<p><code>INDEX.md</code> has no CSRF row, and after 27 labs the omission is surprising. The four rules
+this engagement produced, in the order that would have saved time:</p>
+<ol>
+<li><strong>Grep the protection's constructor, not the vulnerability.</strong>
+<code>flask-wtf</code> was in <code>requirements.txt</code> and absent from <code>app.py</code>. A dependency listing
+is evidence of <em>availability</em>, never of <em>enforcement</em>.</li>
+<li><strong>Ask where the control runs relative to the side effect.</strong> Here the check is at
+<code>app.py:157</code> and the write at <code>app.py:151</code>. A guard downstream of the damage is a
+reporting function; its absence of alerts is not evidence of safety.</li>
+<li><strong>A token's strength is the strength of whatever holds it.</strong> The token here is
+correct, enforced, and forgeable, because the session key at <code>app.py:9</code> is hardcoded.
+Before filing &quot;CSRF mitigated&quot;, establish where the token is <em>stored</em>.</li>
+<li><strong>A missing <code>SameSite</code> is a browser-side control, and it is partial.</strong> It blocks the
+cross-site <code>POST</code> but not the top-level <code>GET</code> — which is why <code>GET /logout</code> (Finding 7)
+remains reachable while the two <code>POST</code> endpoints are hardened against it in a modern
+browser. Record SameSite state, then record what it does <em>not</em> cover.</li>
+</ol>
+<p>Two structural notes for the class: CSRF and XSS must stay separate (no injection sink
+existed here — see §8), and <strong>&quot;a token exists&quot; is a fourth, separate question from
+&quot;a token is checked&quot;</strong>, which is a fifth question from &quot;the token is unforgeable&quot;. Most
+CSRF writeups collapse all three into the first.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

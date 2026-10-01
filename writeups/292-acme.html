@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 292 Acme &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Acme</p><h1 id="acme-corporation--dockerlabs-writeup">ACME Corporation — DockerLabs Writeup</h1>
+<p><strong>Target:</strong> <code>http://[net-0-3]:80</code> (container <code>acme_container</code>, image <code>acme:latest</code>, Apache/2.4.52 Ubuntu, PHP-FPM 8.1, MariaDB, OpenSSH)
+<strong>Internal services:</strong> <code>127.0.0.1:8080</code> (Apache vhost → WordPress), <code>127.0.0.1:3306</code> (MariaDB), <code>127.0.0.1:9000</code> (PHP-FPM), <code>0.0.0.0:22</code> (OpenSSH)
+<strong>Date:</strong> 2026-09-27
+<strong>Outcome:</strong> Two flags recovered. User-level flag as an unprivileged SSH user; root flag as <strong>uid=0</strong> through a two-hop chain that required no application credentials at all.</p>
+<hr />
+<h2 id="1-target-stack-and-how-the-chain-was-actually-found">1. Target, stack, and how the chain was actually found</h2>
+<p>The lab ships as a single tar loaded into Docker; there is no API specification and no Swagger surface. Reconnaissance therefore started from the exposed ports and went straight to source, which is the §7 rule in action: <strong>read the container before probing the container.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Binding</th>
+<th>Service</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>22</td>
+<td><code>0.0.0.0</code></td>
+<td>OpenSSH (<code>sshd -D</code>, under supervisord)</td>
+</tr>
+<tr>
+<td>80</td>
+<td><code>0.0.0.0</code></td>
+<td>Apache — <code>DocumentRoot /var/www/maintenance</code>, a single static decoy page</td>
+</tr>
+<tr>
+<td>8080</td>
+<td><strong><code>127.0.0.1</code> only</strong></td>
+<td>Apache vhost <code>wordpress.conf</code> — <code>DocumentRoot /var/www/wordpress</code></td>
+</tr>
+<tr>
+<td>3306</td>
+<td><code>127.0.0.1</code></td>
+<td>MariaDB</td>
+</tr>
+<tr>
+<td>9000</td>
+<td><code>127.0.0.1</code></td>
+<td>PHP-FPM FastCGI</td>
+</tr>
+</tbody>
+</table>
+<p>The published surface is one static HTML page. The actual attack surface is a <em>bastion topology</em>: the public host is a maintenance decoy, and the interesting service is an internal-only vhost that any local account can reach over loopback. Port 8080 being bound to <code>127.0.0.1</code> is what makes the lab's name literal — and it is the pivot the whole chain turns on.</p>
+<h3 id="the-decoy-and-what-it-was-actually-telling-me">The decoy, and what it was actually telling me</h3>
+<p>Port 80 serves a styled &quot;Modo Mantenimiento&quot; page reading <em>&quot;El acceso a las consolas de gestión se realiza exclusivamente mediante el servicio SSH. Pruebe a conectarse por SSH con <strong>cualquier usuario</strong>&quot;</em>, with the hint <em>&quot;El servidor SSH emitirá automáticamente el banner de bienvenida del nodo con el protocolo de mantenimiento.&quot;</em></p>
+<p>Read as attacker guidance, that page is not a hint — it is a <strong>map of the intended chain</strong>, and the <code>X-Notice</code> response header (<code>Connect via SSH to view system access banner</code>) repeats it. The claim &quot;cualquier usuario&quot; is a lure toward spraying credentials. The real defect is one layer down: <code>sshd_config</code> sets <code>Banner /etc/issue.net</code>, and <code>/etc/issue.net</code> is served <strong>before the authentication prompt</strong>. There is no guessing, no spraying, and no lockout to evade. The credential is <em>handed to the client</em>, unauthenticated, by the server's own login banner.</p>
+<p><strong>A note on target-supplied text.</strong> The container's startup log contains a line styled as an error: <code>Removed matches synchronization on error (Restored CVE-2026-63030 Desync Bug)</code>. That string is data emitted by the target, not a finding, and it was treated as such. No request-desync behaviour was observed, no HTTP desync was tested, and the root cause below was derived independently from file permissions and interpreter configuration. The flag value happens to embed a matching identifier, which is the lab's own narrative — not evidence. This is the correct handling of a target that asserts a vulnerability about itself: <strong>a target's claim about its own weakness carries zero evidentiary weight until reproduced.</strong></p>
+<p>The same defect the §7 rule in <a-unlinked>Decision Making</a> describes is present here too, in the same shape: <code>/etc/ssh/sshd_config:16</code> carries the comment <code># Banner with credential hints for Nmap</code> directly above <code>Banner /etc/issue.net</code> (<code>:17</code>). The configuration names its own purpose and names the tool expected to find it. Two independent targets, the same annotation antipattern — which is a reasonable prior that it is a habit of this exercise series rather than a coincidence, and a standing reminder that a config file is a source file and carries the same comments.</p>
+<hr />
+<h2 id="2-finding-1--operational-credentials-disclosed-in-a-pre-authentication-banner">2. Finding 1 — Operational credentials disclosed in a pre-authentication banner</h2>
+<p><strong>Category:</strong> CWE-497 Exposure of Sensitive System Information to an Unauthorized Control Sphere, with CWE-200.</p>
+<h3 id="evidence">Evidence</h3>
+<p>SSH connection to the exposed port, with <strong>no credentials supplied at the point the banner is emitted</strong>:</p>
+<pre><code>$ ssh usuario@[net-0-3]
+Warning: Permanently added '[net-0-3]' (ED25519) to the list of known hosts.
+===================================================================
+[*] ACME Corporation - Nodo Bastion de Mantenimiento Interno
+[!] AVISO DE SEGURIDAD Y ACCESO:
+[!] Portal corporativo en proceso de migracion a infraestructura interna.
+[!] Credenciales temporales asignadas para tareas de mantenimiento:
+[!]   - Usuario: usuario
+[!]   - Password: &lt;REDACTED&gt;
+===================================================================
+usuario@[net-0-3]'s password:
+</code></pre>
+<p>The ordering is the whole finding. The banner is emitted <strong>above</strong> the <code>password:</code> prompt. The client receives a working username and password before it has authenticated to anything — no request required, no guessing, no rate limiting, and nothing to brute-force because there is no guessing involved.</p>
+<p>Login then succeeds with exactly the disclosed material, and <strong>no</strong> WordPress, database, or application credential is required at any point:</p>
+<pre><code>usuario@[net-0-3]'s password:
+Welcome to Ubuntu 22.04.5 LTS (GNU/Linux 7.0.0-34-generic x86_64)
+usuario@[net-0-3]:~$ id; hostname; whoami
+uid=1000(usuario) gid=1000(usuario) groups=1000(usuario)
+05d3737a07ff
+usuario
+</code></pre>
+<p>Session established as an ordinary, unprivileged, non-sudoable account.</p>
+<h3 id="flag-1--recovered">Flag 1 — recovered</h3>
+<p><code>[lab-home]/usuario/user.txt</code> is <code>root</code>-readable but owned by <code>usuario</code> at mode <code>644</code>, so the foothold account reads it directly:</p>
+<pre><code>usuario@[net-0-3]:~$ cat [lab-home]/usuario/user.txt
+&lt;flag value withheld — sha256 99a0ef6c44d6710794dc0f62f5ba69359f2c45148b53155e4277b4446bb997d3&gt;
+</code></pre>
+<p><strong>Proof of possession, not the value</strong> — per <code>decision-making.md</code> §&quot;Claim vs verified&quot;, <code>sha256(flag)</code> proves possession without publishing the secret:</p>
+<table>
+<thead>
+<tr>
+<th>Artifact</th>
+<th>sha256</th>
+<th>bytes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[lab-home]/usuario/user.txt</code></td>
+<td><code>99a0ef6c44d6710794dc0f62f5ba69359f2c45148b53155e4277b4446bb997d3</code></td>
+<td>39</td>
+</tr>
+</tbody>
+</table>
+<h3 id="impact">Impact</h3>
+<p>Complete pre-authentication compromise of the bastion. An anonymous network peer reads a valid credential from the service's own greeting and logs in. The account is low-privilege, so this is a foothold rather than host compromise — but the foothold is on a host whose entire purpose is to front internal services, and step 3 shows what a foothold on this host is worth.</p>
+<h3 id="root-cause">Root cause</h3>
+<p><code>/etc/ssh/sshd_config</code> sets <code>Banner /etc/issue.net</code>, and that file is a static, world-readable, world-writable-by-build text containing a live credential. Two independent failures compose:</p>
+<ol>
+<li><strong>A credential was written into a file served pre-auth.</strong> SSH banners are shown to every connecting party, authenticated or not. They are a <em>public</em> channel by specification; a banner is the wrong place for a secret under any circumstances.</li>
+<li><strong>The credential is real and static.</strong> <code>/entrypoint.sh</code> provisions the account at build time with a fixed password, so every deployment of this image ships the same working secret. The banner is not a stale copy of a rotated credential — it is a live one.</li>
+</ol>
+<p>Note the layering. The public page's claim that access is &quot;exclusively via SSH&quot; is <em>true</em>, and it is the problem: the design routes all administrative trust through a single service whose pre-auth channel is a public broadcast.</p>
+<h3 id="remediation">Remediation</h3>
+<ol>
+<li>Remove the credential from the banner immediately and treat it as compromised — rotate the account's password and every credential it could reach.</li>
+<li>Move the notice to <code>/etc/issue</code> or MOTD, which is emitted <strong>after</strong> successful authentication, and keep it free of secrets.</li>
+<li>Ban credentials in any pre-auth channel as a CI check, not a review convention: grep the image for <code>Banner</code>-referenced files and fail the build on a password-shaped literal.</li>
+<li>Provision per-deployment credentials at first boot from a secret store, never baked into an image layer. A credential in an image is a credential in every clone of that image, forever, including in any registry the image was ever pushed to.</li>
+<li>If a banner is genuinely required for operational reasons, sign it and treat it as public — and put nothing in it that is not already public.</li>
+</ol>
+<hr />
+<h2 id="3-finding-2--world-writable-document-root-code-execution-with-no-application-credentials">3. Finding 2 — World-writable document root: code execution with no application credentials</h2>
+<p><strong>Category:</strong> CWE-732 Incorrect Permission Assignment for Critical Resource, chained with CWE-434 and CWE-269 (execution at the interpreter's privilege).</p>
+<p>This is the finding that carries the chain, and its most important property is what it <strong>does not</strong> require: <strong>no WordPress account, no admin password, no SQL injection, no application-level exploit of any kind.</strong> The application is never attacked. A file is written to a directory, and the interpreter picks it up.</p>
+<h3 id="evidence-1">Evidence</h3>
+<p><code>/entrypoint.sh</code> sets the permissions explicitly, which is what makes this a designed defect rather than a packaging accident:</p>
+<pre><code>chown -R www-data:www-data /var/www/maintenance /var/www/wordpress
+chmod -R 775 /var/www/wordpress
+chmod -R 777 /var/www/wordpress/wp-content
+</code></pre>
+<p>Observed state — the entire <code>wp-content</code> tree, and the plugins directory inside it, are world-writable:</p>
+<pre><code>drwxrwxrwx 1 www-data www-data 4096 Aug 18 23:42 /var/www/wordpress/wp-content/plugins/
+-rwxrwxrwx 1 www-data www-data 2669 Jul  6 21:09 /var/www/wordpress/wp-content/plugins/hello.php
+drwxrwxrwx 3 root     root     4096 Sep 27 21:23 /var/www/wordpress/wp-content/uploads/
+</code></pre>
+<p>The <code>usuario</code> account from Finding 1 is in group <code>usuario</code> and holds no membership in <code>www-data</code>, so the <code>777</code> — not group membership — is what authorises the write. Staging the payload as the unprivileged foothold user:</p>
+<pre><code>usuario@[net-0-3]:~$ echo &lt;base64&gt; | base64 -d &gt; /var/www/wordpress/wp-content/probe.php
+$ ls -l /var/www/wordpress/wp-content/probe.php
+-rw-rw-r-- 1 usuario usuario 409 Sep 27 21:26 /var/www/wordpress/wp-content/probe.php
+</code></pre>
+<p>The file is now owned by <code>usuario</code> and lives inside the document root of the internal vhost. Requesting it needs no WordPress session, because Apache serves <code>wp-content</code> as a static path and hands <code>.php</code> to the FPM handler:</p>
+<pre><code>usuario@[net-0-3]:~$ curl -s http://127.0.0.1:8080/wp-content/probe.php
+</code></pre>
+<pre><code>=== PHP RCE as ===
+uid=0(root) gid=0(root) groups=0(root)
+=== sudo -n -l (as this user) ===
+User root may run the following commands on 05d3737a07ff:
+    (ALL : ALL) ALL
+=== cat /root/root.txt direct ===
+&lt;flag value withheld — sha256 f02e22b392250b831c4c045a7540bc833060e542196cd8183c91105dd786ba27&gt;
+=== sudo -n cat /root/root.txt (privesc) ===
+&lt;flag value withheld — sha256 f02e22b392250b831c4c045a7540bc833060e542196cd8183c91105dd786ba27&gt;
+=== whoami under sudo ===
+root
+</code></pre>
+<h3 id="flag-2--recovered">Flag 2 — recovered</h3>
+<table>
+<thead>
+<tr>
+<th>Artifact</th>
+<th>sha256</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/root/root.txt</code> (<code>root:root</code>, mode <code>600</code>)</td>
+<td><code>f02e22b392250b831c4c045a7540bc833060e542196cd8183c91105dd786ba27</code></td>
+</tr>
+</tbody>
+</table>
+<p>Reached as <code>uid=0(root)</code>, mode-<code>600</code> file that the <code>usuario</code> foothold could not read.</p>
+<h3 id="a-correction-the-evidence-forced">A correction the evidence forced</h3>
+<p>The first hypothesis was that this chain ended at <code>www-data</code> and needed a privilege escalation to cross to root. <strong>The evidence contradicted it.</strong> <code>id</code> inside the executed PHP returned <code>uid=0(root)</code> on the very first call, and <code>cat /root/root.txt</code> succeeded with <strong>no <code>sudo</code> at all</strong> — the <code>sudo -n</code> line was never the mechanism. The escalation had already happened at the interpreter boundary, one hop earlier than assumed:</p>
+<pre><code>$ grep -E '^\s*(user|group|listen)' /etc/php/8.1/fpm/pool.d/www.conf
+user = root
+group = root
+listen = 127.0.0.1:9000
+$ ps -o user,pid,args -C php-fpm8.1
+root         281 php-fpm: master process (/etc/php/8.1/fpm/php-fpm.conf)
+root         350 php-fpm: pool www
+root         352 php-fpm: pool www
+</code></pre>
+<p><strong>The PHP-FPM worker pool runs as <code>root</code>.</strong> So the real chain is two hops, not three, and the honest finding is not &quot;web shell plus privesc&quot; — it is <strong>&quot;web shell, and the web service is already root.&quot;</strong> Every PHP execution primitive on this host is a root shell, and any PHP-level vulnerability anywhere in the document root is a full host compromise with no further work. Had the assumption gone unchallenged, the report would have named a privesc step that does not exist and understated the severity of the interpreter misconfiguration, which is the actual root cause.</p>
+<h3 id="impact-1">Impact</h3>
+<p>Unauthenticated-to-the-application remote code execution <strong>as root</strong>, from any local account on the host, requiring only write access to a world-writable directory. Root-owned filesystem read and write, arbitrary package installation, credential extraction from the whole host, and a pivot to every internal service on loopback including the database socket. The compromise is total and needs no application-layer exploit.</p>
+<h3 id="root-cause-1">Root cause</h3>
+<p>Two independent defects, either of which alone is serious:</p>
+<ol>
+<li><strong>CWE-732 — the document root is world-writable.</strong> <code>chmod -R 777</code> on <code>wp-content</code> hands code-drop rights to <em>every</em> local account, including any account obtained by a low-severity foothold. The directory is writable precisely because a build step needs to write there; the fix is to make the owning service account the only writer (<code>775</code>, owner <code>www-data</code>) and to keep the build writing through that account.</li>
+<li><strong>CWE-269 — the interpreter executes as root.</strong> <code>user = root</code> in the FPM pool means the process identity has no confinement whatsoever. The <code>listen.owner/listen.group = www-data</code> socket restriction is irrelevant: it controls <em>who may connect to the FPM socket</em>, not <em>what the worker becomes</em> once a request is accepted.</li>
+</ol>
+<p>The dangerous composition is worth stating plainly: defect 1 is what makes the write possible, and defect 2 is what makes the write worth doing. A world-writable document root behind a properly-confined <code>www-data</code> pool is a serious finding. Behind a root pool, it is a one-request host takeover. <strong>Report the interpreter's execution identity as a finding in its own right</strong> — it is the assumption every other web-app severity rating silently depends on, and it is the one most often left at the distro default and never verified.</p>
+<h3 id="remediation-1">Remediation</h3>
+<ol>
+<li>Set <code>user = www-data</code> / <code>group = www-data</code> in the FPM pool and restart it. Verify with a request that prints the execution identity — do not assume the distro default survived the image build.</li>
+<li>Set <code>chmod 775</code> on <code>wp-content</code>, owned <code>www-data:www-data</code>, and remove the <code>777</code>. Nothing in a running site needs a world-writable content directory; if a plugin does, fix the plugin.</li>
+<li>Move uploaded and generated content <strong>outside</strong> the document root entirely, served by a handler that streams with an explicit <code>Content-Type</code>. A PHP file should never be reachable at a predictable static path.</li>
+<li>Disable the PHP engine in any directory that accepts writes, or gate execution behind a hard-coded path allowlist rather than a <code>FilesMatch \.php$</code> pattern applied to a tree that includes user-writable space.</li>
+<li>Run the whole stack — Apache, PHP-FPM, MariaDB — as distinct unprivileged users, and add a container-level read-only root filesystem with dropped capabilities so an interpreter compromise cannot reach the host.</li>
+</ol>
+<hr />
+<h2 id="4-finding-3--passwordless-root-sudo-granted-to-the-web-service-account">4. Finding 3 — Passwordless root sudo granted to the web service account</h2>
+<p><strong>Category:</strong> CWE-250 Execution with Unnecessary Privileges / CWE-269.</p>
+<p><strong>This finding was not used in the chain, and it is reported anyway.</strong> That distinction matters and is stated explicitly rather than buried.</p>
+<p><code>/etc/sudoers</code> contains:</p>
+<pre><code>www-data ALL=(ALL) NOPASSWD: ALL
+</code></pre>
+<p>Had PHP-FPM been confined to <code>www-data</code>, this single line would have converted every code-execution primitive on the site into root — no exploit chain, no kernel bug, just <code>sudo -n /bin/bash</code>. It was never needed, because the pool was already running as root (Finding 2). Two independent paths to root existed; the chain took one, and this is the other.</p>
+<p>Per <code>decision-making.md</code> §&quot;Load-bearing does not mean classified&quot;, the inverse case deserves the same discipline: an unused root path is not a non-finding because the chain found a shorter one. A reviewer who fixed only the <code>777</code> would believe they had closed the hole, while <code>www-data</code> retained passwordless root. <strong>The remediation for this line is independent of, and additional to, everything in Finding 2.</strong> It is reported with its own impact and its own fix for exactly that reason.</p>
+<p><strong>Remediation:</strong> delete the line. If a task genuinely requires privilege, grant the specific binary as a specific user, with an argument allowlist — <code>www-data</code> needs no <code>sudo</code> at all once the pool runs as <code>www-data</code>. Add a CI check that fails the build if any <code>NOPASSWD: ALL</code> rule exists for a non-interactive service account.</p>
+<hr />
+<h2 id="5-the-chain-in-order-and-why-each-step-is-necessary">5. The chain, in order, and why each step is necessary</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Action</th>
+<th>Credential required</th>
+<th>Delivers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Port scan → <code>22/tcp</code>, <code>80/tcp</code> exposed</td>
+<td>none</td>
+<td>the SSH surface exists</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Connect to <code>22</code>, read the banner <strong>before</strong> authenticating</td>
+<td>none</td>
+<td>a working username and password (Finding 1)</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Log in as the disclosed user</td>
+<td>the disclosed credential</td>
+<td><code>uid=1000</code>, unprivileged, no sudo — <strong>flag 1</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Read <code>sshd_config</code> → <code>Banner</code>; read Apache vhosts → WordPress on <code>127.0.0.1:8080</code>; read <code>entrypoint.sh</code></td>
+<td>foothold</td>
+<td>the document root, the <code>777</code>, the FPM pool identity</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Write a <code>.php</code> file into world-writable <code>wp-content</code> as the foothold user</td>
+<td>foothold only</td>
+<td>a file owned by <code>usuario</code> inside the document root</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>GET http://127.0.0.1:8080/wp-content/probe.php</code></td>
+<td>foothold only (loopback)</td>
+<td>code execution by the FPM pool — Finding 2</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Observe <code>uid=0</code>; read <code>/root/root.txt</code></td>
+<td>none</td>
+<td><strong>flag 2</strong>, as root</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Why each step is load-bearing:</strong></p>
+<ul>
+<li><strong>Step 1→2:</strong> step 2 is impossible without the banner; the credential is not guessable and not derivable.</li>
+<li><strong>Step 2→3:</strong> the foothold is unprivileged by design (<code>id</code> → <code>uid=1000</code>, <code>sudo -n -l</code> → <em>&quot;a password is required&quot;</em>, no rule in <code>/etc/sudoers.d/</code>). It buys nothing on its own. It buys <strong>filesystem access as a named local account</strong>, which is what step 5 needs.</li>
+<li><strong>Step 3→5:</strong> the write requires <em>some</em> local identity. Any account would do — the point is that Finding 1's low-privilege account is sufficient, which is what makes the chain's severity independent of the credential's importance.</li>
+<li><strong>Step 5→6:</strong> the file must be <em>inside the document root</em> to be reachable, and <em>writable by the foothold</em> to be plantable. Both conditions come from Finding 2; neither is an application exploit.</li>
+<li><strong>Step 6→7:</strong> reaching <code>127.0.0.1:8080</code> requires being <strong>on the host</strong>. A remote attacker with only Finding 1's credential on a different machine cannot use it — which is exactly why this is a bastion-topology lab. The loopback binding is a real control that Finding 2 partially defeats by running from the inside.</li>
+</ul>
+<p>Note what is <strong>absent</strong> from that table: any WordPress login, any database credential, any application-level exploit, and any <code>sudo</code>. The application is never compromised in the conventional sense. It is bypassed entirely by writing a file the interpreter will pick up. <strong>A vulnerability class that requires no interaction with the application's own logic is invisible to every scanner that probes endpoints</strong> — which is the argument for reading source and reading permissions first.</p>
+<hr />
+<h2 id="6-what-did-not-work-and-what-was-not-tried">6. What did not work, and what was not tried</h2>
+<h3 id="discarded-with-a-reason">Discarded with a reason</h3>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Credential guessing / user enumeration on SSH</td>
+<td>Not attempted, and not needed. The credential is disclosed pre-auth. Spraying here would be both pointless and a self-DoS risk against a live <code>sshd</code> (<code>decision-making.md</code> §&quot;Self-DoS is a testing defect&quot;).</td>
+</tr>
+<tr>
+<td>HTTP request smuggling / desync</td>
+<td><strong>Never tested</strong>, and specifically <em>not</em> on the strength of the <code>CVE-2026-63030 Desync Bug</code> string in the container's startup log. That line is target-supplied text, not a finding. No desync behaviour was observed, and the root causes here are permissions and interpreter identity — neither of which desync would explain. Recorded as <strong>not tested</strong>, not as dismissed.</td>
+</tr>
+<tr>
+<td>WordPress login / admin credential path</td>
+<td>Not needed. <code>wp-content</code> is writable by any local account, so the entire authentication surface of the application is bypassable. The <code>wp core install</code> step in <code>entrypoint.sh</code> does provision an admin account, but using it would have been <em>slower and weaker</em> than writing a file — worth recording as the reason the app's auth was never a factor.</td>
+</tr>
+<tr>
+<td>MySQL <code>SELECT … INTO OUTFILE</code> / <code>LOAD_FILE</code></td>
+<td><strong>Tested and failed.</strong> <code>wp_user</code> holds <code>ALL PRIVILEGES</code> on <code>wordpress.*</code> but <code>USAGE</code> globally, so no <code>FILE</code> privilege. <code>LOAD_FILE('/etc/hostname')</code> returned <code>NULL</code>; the outfile attempt was refused. Dead end, with the reason recorded.</td>
+</tr>
+<tr>
+<td>Privilege escalation from <code>www-data</code> via <code>sudo</code></td>
+<td><strong>Tested and unnecessary.</strong> The <code>NOPASSWD: ALL</code> rule exists and would have worked, but <code>sudo -n cat</code> was never the mechanism — <code>cat</code> as plain <code>www-data</code>/root already succeeded. Reported as an independent finding (Finding 3), not as a chain step.</td>
+</tr>
+<tr>
+<td>SUID/cron/systemd abuse</td>
+<td>Enumerated and found nothing usable: the SUID set is the stock Ubuntu set (<code>newgrp</code>, <code>chfn</code>, <code>mount</code>, <code>umount</code>, <code>su</code>, <code>bash</code>, <code>sudo</code>, <code>ssh-agent</code>, <code>unix_chkpwd</code>, <code>pam_extrausers_chkpwd</code>) with no custom binary; <code>/etc/crontab</code> has no entries; <code>/var/spool/cron/crontabs/</code> is empty; <code>/etc/cron.d/</code> holds only stock <code>e2scrub_all</code> and <code>php</code>. The escalation was in the FPM pool all along.</td>
+</tr>
+<tr>
+<td>Unauthenticated access to port 8080 from the host</td>
+<td>Refused at the network layer — confirmed. The vhost binds <code>127.0.0.1:8080</code> and the connection from the test host failed. It is reachable from <em>inside</em> the container only, which is the point of the bastion design.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="not-tested--open-with-the-vector-recorded">Not tested — open, with the vector recorded</h3>
+<ul>
+<li><strong>The MariaDB instance.</strong> <code>mysql -u root</code> succeeds over the unix socket <strong>with no password</strong> (verified). Unreachable from the foothold account, so it was not a chain step — but on any host where the socket is exposed or the account is in a group that can reach it, that is instant full database compromise. Not exercised further.</li>
+<li><strong>WordPress itself, as an application.</strong> No plugin, theme, or core vulnerability was assessed. With <code>akismet</code> and <code>hello.php</code> as the only plugins there was no CVE surface to chase, and the file-drop path made the question moot. The WordPress version was never fingerprinted.</li>
+<li><strong>The <code>/api</code>-equivalent surface.</strong> None exists. There is no JSON API, no OpenAPI document, and no Swagger UI in this lab, so the &quot;document the spec before fuzzuring&quot; shortcut from <code>api_web.md</code> had nothing to apply to. Recorded so the next reader does not look for it.</li>
+<li><strong>Other local accounts.</strong> <code>/etc/passwd</code> was enumerated for uid &lt; 65534; the only interactive account is the one in Finding 1. Whether other seeded accounts exist with different privilege was not tested.</li>
+<li><strong>Network pivoting.</strong> No attempt was made to reach services beyond the container's own loopback set, or to fingerprint the Docker host. Out of scope for the lab.</li>
+<li><strong>Persistence.</strong> The planted <code>probe.php</code> was <strong>removed</strong> after evidence capture (<code>rm -f /var/www/wordpress/wp-content/probe.php</code>, verified). No persistence mechanism was installed or tested.</li>
+</ul>
+<hr />
+<h2 id="7-artifacts">7. Artifacts</h2>
+<p>Raw evidence under <code>/tmp/[tool]/dl_labs/acme-evidence/</code>:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>root.html</code>, <code>root.hdr</code></td>
+<td>the port-80 decoy page and headers, including the <code>X-Notice</code> banner hint</td>
+</tr>
+<tr>
+<td><code>ssh_login.txt</code></td>
+<td>the full SSH transcript: pre-auth banner, password prompt, successful login as <code>uid=1000</code> (password redacted)</td>
+</tr>
+<tr>
+<td><code>rce_wwwdata.txt</code></td>
+<td>the executed payload output: <code>uid=0</code>, <code>sudo -n -l</code>, both flag reads</td>
+</tr>
+</tbody>
+</table>
+<p>Container-side evidence, reproducible with <code>docker exec acme_container</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/etc/ssh/sshd_config</code></td>
+<td><code>Banner /etc/issue.net</code>, <code>PasswordAuthentication yes</code></td>
+</tr>
+<tr>
+<td><code>/etc/issue.net</code></td>
+<td>the credential disclosure, mode 644, served pre-auth</td>
+</tr>
+<tr>
+<td><code>/etc/apache2/sites-available/wordpress.conf</code></td>
+<td>the internal vhost on <code>127.0.0.1:8080</code></td>
+</tr>
+<tr>
+<td><code>/etc/php/8.1/fpm/pool.d/www.conf</code></td>
+<td><code>user = root</code> — the interpreter's execution identity</td>
+</tr>
+<tr>
+<td><code>/etc/sudoers</code></td>
+<td><code>www-data ALL=(ALL) NOPASSWD: ALL</code> (Finding 3)</td>
+</tr>
+<tr>
+<td><code>/entrypoint.sh</code></td>
+<td>the build-time design: <code>chmod -R 777</code>, the provisioned accounts, the <code>wp core install</code> step</td>
+</tr>
+</tbody>
+</table>
+<p><strong>No credential, cookie, token, or flag value from this engagement appears in this document.</strong> The SSH password, the WordPress admin password, the database password, and both flag values are withheld; each flag is identified by its <code>sha256</code> and its on-disk path instead, which is the convention this repository already sets in <code>decision-making.md</code> §&quot;<code>sha256(flag)</code> is the proof, not the value.&quot;</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>
