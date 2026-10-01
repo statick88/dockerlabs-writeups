@@ -1,15 +1,18 @@
 # 32 Vulnerame — writeup
 
 **Lab:** 32 · *Vulnerame otra vez* · **difícil**
-**Description (full, from the platform catalog):** *"Laboratorio WordPress; el plugin es la
-superficie."* — **the catalog description is wrong, and the first job of this engagement was
-finding out why** (§0).
+**Description (full, from the platform catalog, `~/dockerlabs/catalog.txt:147`):** *"Laboratorio
+para practicar la explotación de un CMS vulnerable (WordPress/Joomla) y escalada de privilegios
+en Linux."* — **the catalogue does not name a product; it names both candidates, and the shipped
+artefact is neither-plus-one: Joomla! 4.0.3** (§0). What misleads here is the **queue label**
+(`tooling/labs.manifest:63`, *"WordPress platform"*) and the docroot's directory name — not the
+catalogue, which is deliberately hedged.
 **Target:** `172.17.0.3` — single container `vulnerame_container`, image `vulnerame:latest`.
 **Stack (from the artefact, not from memory):** Ubuntu **20.04.6** (focal), Apache **2.4.41**,
 PHP **7.4.3** (NTS, `mod_php` — *not* PHP 8), **MySQL 8.0.37** on `0.0.0.0:3306`,
 **Joomla! 4.0.3 "Furaha"** as shipped *and* as running (§9). OpenSSH 8.2p1.
 **Result:** unauthenticated → `uid=1000(guadalupe)` → **`uid=1001(ignacio)`** → **`uid=0(root)`**.
-**No reward present** (§8). No lab in this series since 108 has shipped a `FLAG{}`, and this one does not either — reported as a measured absence, not as an assumption.
+**No reward present** (§8) — reported as a measured absence on this host, not as an assumption, and not generalised to any other lab.
 
 **Topology.** `auto_deploy.sh` was read, never run. It creates **no network at all**: a bare
 `docker run -d --name $CONTAINER_NAME $IMAGE_NAME` (line 131) on the default bridge, one
@@ -198,8 +201,9 @@ reachable through the catch-all at `/wordpress/` (200, 29150 B) because the docr
 
 ## 2. The class
 
-**Entry criterion, and it is not the one the catalog names.** The catalog says "the plugin is
-the surface". There is no plugin. The criterion that started the engagement was the boring one
+**Entry criterion, and it is not the one the queue label names.** The queue says "WordPress
+platform" (`labs.manifest:63`), and a WordPress platform implies a plugin surface. There is no
+plugin. The criterion that started the engagement was the boring one
 from 108 and 61:
 
 > *Does the platform disclose a credential that can be used against a service it exposes, and
@@ -613,7 +617,7 @@ believed.
 
 | Hypothesis | Why discarded |
 |---|---|
-| "It is WordPress" — the catalog description, the directory name, the queue's gap reason | `Version.php:37,45,53` = 4/0/3; `generator` = `Joomla!`; no `wp-content`, no `wp-includes`, no `wp-config.php`; docroot byte-identical to the 4.0.3 ZIP (F7). **This is the belief that would have burned the whole budget.** |
+| "It is WordPress" — the docroot's directory name and the queue's narrowed label (`labs.manifest:63`); the catalogue itself hedges across WordPress/Joomla | `Version.php:37,45,53` = 4/0/3; `generator` = `Joomla!`; no `wp-content`, no `wp-includes`, no `wp-config.php`; docroot byte-identical to the 4.0.3 ZIP (F7). **This is the belief that would have burned the whole budget.** |
 | A third-party Joomla extension with a CVE is the surface | 4 explained differences from the vendor ZIP over 8 115 files; 22 plugin groups, all core; 215 `#__extensions` rows, all core |
 | The 26 MB `joomla4.0.3zip` is a backup with a credential in it (lab 108's F1 mechanism) | 8 258 file entries listed: no SQL dump, no live `configuration.php`, no `.htaccess`, no flag/secret artefact. It is the vendor installer |
 | `configuration.php` is readable over HTTP, so the DB is anonymously reachable | 7 variants probed; `.php` → 200 with **0 bytes**; `.phps` → 403; no backup variant exists. F2 is a *lateral* finding, and the writeup says so |
@@ -668,7 +672,7 @@ database was also searched through the application's own store: `#__content` (11
 `ffsnq_*` text dump (404 143 lines, §7) contains no `flag{`/`ctf{` in any of the 69 tables.
 `/root/.ssh` does not exist; there is no `crontab` command and no MTA.
 
-**No `FLAG{}` on this host, consistent with every lab in the series since 108.** Four locations remain
+**No `FLAG{}` on this host.** That is a claim about this host only. Four locations remain
 unsearchable *without* root (`/root/.ssh` is absent, so this list is empty) — and the search
 that establishes the absence is the one above, not an assumption.
 
@@ -716,10 +720,11 @@ to run one.
 
 Number of hops is not difficulty; this lab has three and one of them is a credential. Measured:
 
-1. **The label is a lie, and it is a lie that costs a whole engagement if you believe it.** The
-   directory is `wordpress`, the lab is *Vulnerame otra vez*, the catalog says *"Laboratorio
-   WordPress; el plugin es la superficie"*, and the queue's gap reason says
-   *"WordPress platform"*. **The product is Joomla 4.0.3.** There is no `wp-content`, no plugin
+1. **The label narrows to one product, and that narrowing costs a whole engagement if you
+   believe it.** The directory is `wordpress`, the lab is *Vulnerame otra vez*, the catalogue
+   (`catalog.txt:147`) deliberately hedges across *"un CMS vulnerable (WordPress/Joomla)"*, and
+   the queue then narrows it to *"WordPress platform"* (`labs.manifest:63`). **The product is
+   Joomla 4.0.3.** There is no `wp-content`, no plugin
    surface, and no WordPress CVE to reach for. §0 is the engagement's real work, and it is
    thirty seconds of `Version.php` — but only if you look for the product instead of the
    directory name.

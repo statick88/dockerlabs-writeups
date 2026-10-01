@@ -198,7 +198,7 @@ a setuid transition could not hide.
 |---|---|---|---|
 | 0 | operator console | `docker exec` before any attack | `uid=0(root) gid=0(root) groups=0(root)` / `Uid:\t0\t0\t0\t0` |
 | 1 | unauthenticated | `Host: pressenter.hl` → `:80`, vhost 2 of 2 | none — no identity claimed |
-| 2 | `pressi` (WordPress administrator) | offline phpass recovery of `$P$…`, then `wp-login.php` POST | `Set-Cookie: wordpress_logged_in_e7a137efe822bd6c55d151ff31374727=pressi%7C1790929628%7C…`; `Location: …/wp-admin/`; `GET /wp-admin/` with cookie → `200`, 88 116 bytes, `<title>Escritorio &lt; PressEnter — WordPress</title>` |
+| 2 | `pressi` (WordPress administrator) | offline phpass recovery of `$P$…`, then `wp-login.php` POST | `Set-Cookie: wordpress_logged_in_e7a137efe822bd6c55d151ff31374727=<TRUNCATED — username, session start and HMAC redacted; the raw capture is in `evidence/login-ok.txt:10`>`; `Location: …/wp-admin/`; `GET /wp-admin/` with cookie → `200`, 88 116 bytes, `<title>Escritorio &lt; PressEnter — WordPress</title>` |
 | 3 | `uid=33(www-data)` | ZIP upload → `update.php?action=upload-plugin` → activate → HTTP | see hop 3 detail below |
 
 ### Hop 2 — credential recovery, with the oracle proven green first
@@ -357,7 +357,15 @@ Remediation: set `DISALLOW_FILE_EDIT` and `DISALLOW_FILE_MODS` in `wp-config.php
 (neither is defined here — 1 pattern set, 0 matches), and treat administrator
 credentials as equivalent to code execution in any design that keeps them usable.
 
-### Finding 4 — All eight authentication keys are the WordPress install placeholder
+### Finding 4 — WITHDRAWN — All eight authentication keys are the WordPress install placeholder
+
+> **⚠️ WITHDRAWN (`60e0612`).** The eight constants are the install placeholder, and that is
+> still a CWE-321 hygiene defect in the shipped file — but the **impact claimed below does
+> not hold on this artefact**. WordPress *ignores* the placeholder and uses the generated
+> `wp_options` values, so no cookie key is forgeable offline from this file. Retracted by
+> `60e0612` after lab 108 and this lab contradicted each other; the core settled it. The body
+> is kept unedited because it is what the mistake looked like.
+
 **CWE-321 (Hardcoded Cryptographic Key) / CWE-798.** `/var/www/pressenter/wp-config.php:51-58`:
 
 ```
@@ -402,7 +410,8 @@ wp_options auth_key[:34]: q5nFbcdR0_`D;lxe}>[Oal%++~?h688^Cs
 ```
 
 **What the original evidence already showed.** `wp_salt('auth') strlen=128` — a
-33-character placeholder cannot produce a 128-character salt, so the quoted output
+27-character placeholder (`put your unique phrase here`, measured by lab 102) cannot
+produce a 128-character salt, so the quoted output
 was already refuting the conclusion drawn beside it. The mistake was reading
 `AUTH_KEY defined: true` (trivially true of any constant) as evidence of which
 value WordPress *uses*, and reading the adjacency of two printed values as a
@@ -436,23 +445,32 @@ COOKIE_NEGCTRL_VALIDATES=false
 `COOKIE_NEGCTRL_VALIDATES=false` is the same detector on that cookie with one
 character changed. Both branches proven, so the boolean means something.
 
-Impact, stated at the level I measured: WordPress' session cookie is
+> **⚠️ RETRACTED (`60e0612`).** The two paragraphs that followed here claimed that
+> `AUTH_KEY` is the key `wp_salt()` returns — "the DB copies are **not** the ones in use",
+> the opposite of what this writeup now concludes above. That claim is **retracted**: the
+> core skips the placeholder and uses the `wp_options` values. Both readings were recorded
+> here, and the adjudication is at *What the core actually does* above.
+
+Impact as originally written (retracted, kept for the record): WordPress' session cookie is
 `HMAC-SHA256(…, key)` where `key` derives from a **public constant**. An attacker
 who obtains a user's password hash — from a SQL injection, a backup, a second-order
-read, or the Finding 2 database access — can forge an authenticated session cookie
-for that user **offline**, on any host, with no access to this server. I did **not**
-demonstrate an unauthenticated forgery, because producing it requires the password
-hash, and the only copy I read was obtained through the operator's root console; that
-is listed under **NOT tested**, not claimed as a result.
+read, or the Finding 2 database access — could forge an authenticated session cookie
+for that user **offline**, on any host, with no access to this server. This is the impact
+that does **not** survive retraction: `key` comes from `wp_options`, not from the
+placeholder, and the placeholder is not a path to the live value either. No forgery is
+claimed here in either direction.
 
 Remediation for the hygiene defect that remains: generate all eight with
 `https://api.wordpress.org/secret-key/1.1/salt/` and store them outside the document
-tree. The DB copies are currently the ones in use, not dead weight.
+tree. **Correction to the sentence that stood here:** the config value is **ignored**,
+not "not dead weight" — the `wp_options` copies are the ones in use.
 
 ### Finding 5 — Password hashes readable through the `wp-config.php` DB credential
-**CWE-522 (Insufficiently Protected Credentials).** Composition of Findings 2 and 4:
-`admin`/`rooteable` yields `wordpress.wp_users.user_pass` for both accounts, and the
-placeholder salts then make any recovered hash directly forgeable. One query:
+**CWE-522 (Insufficiently Protected Credentials).** Composition of Findings 2 and 4 —
+with the second half **retracted** (`60e0612`, see Finding 4): `admin`/`rooteable` yields
+`wordpress.wp_users.user_pass` for both accounts, which is the finding; the "placeholder
+salts make a recovered hash forgeable" clause is **withdrawn**, because the placeholder
+salts are not the ones in use. One query:
 `select ID,user_login,user_pass from wordpress.wp_users;` returned 2 rows. Not
 independently rated — it is the composition, and it is listed so the two halves are
 not read as harmless.
@@ -731,12 +749,30 @@ plugins I uploaded existed only in the pre-restore container.
 
 ## Evidence files
 
-`corpus/117/evidence/` — `nmap-full.txt`, `nmap-udp.txt`, `body-*.txt` (4 vhost
-bodies), `home.html`, `readme.html`, `rest-*.json`, `feed.xml`, `cfeed.xml`,
-`author2.html`, `login-ok.txt` / `login-bad.txt` / `login-ok2.txt`, `cj*.txt`
-(cookie jars), `optgen*.html`, `settings.enc`, `te-*.html` (theme-editor pages and
-responses), `ctl.php` / `functions.orig.php` / `functions.payload.php` (the payloads),
-`pkg/` + `pe117shell.zip` / `pe117id.zip` / `pe117salt.zip` (the three uploaded
-plugin artefacts), `rce1.txt` (subprocess `id`), `rce2.txt` (PHP-native
-`/proc/self/status`), `salt2.txt` (the salt probe), `candidates.txt`,
-`dictionary.txt`, `yes.pl` (the yescrypt sweeper).
+`corpus/117/evidence/` — **62 tracked files, and that is exactly what a reader can
+obtain from a clone.** Nothing in this inventory is an artefact this list cannot produce,
+and nothing it cannot produce is listed.
+
+- `nmap-full.txt` — the `-p-` scan. **There is no `nmap-udp.txt`**: the UDP sweep produced
+  nothing worth keeping, and an absent file is not evidence.
+- `body-*.txt` (4 vhost bodies), `home.html`, `readme.html`, `admin-ok.html` /
+  `admin-noauth.html`, `author2.html`, `optgen*.html`, `opt-save*.txt`,
+  `settings.enc` / `settings.json`, `feed.xml` / `cfeed.xml`,
+  `rest-*.json`, `login-ok.txt` / `login-bad.txt` / `login-ok2.txt`,
+  `te-*.html` / `te-*.txt` / `tetheme-editor.php` / `teplugin-editor.php`
+  (theme- and plugin-editor pages and responses), `plugup*.html`,
+  `plugup-res.html` / `plugup-res2.txt` / `pu3.html` / `plugins*.html` /
+  `plugres2.html`, `up2.txt` / `up3.txt` / `upres.txt`, `act*.txt`, `l3.txt` /
+  `l4.txt` / `l5.txt`, `rce1.txt` (subprocess `id`), `rce2.txt` (PHP-native
+  `/proc/self/status`), `salt.txt` / `salt2.txt` (the salt probe),
+  `candidates.txt`, `dictionary.txt`, `yes.pl` (the yescrypt sweeper),
+  `ctl.php` / `functions.orig.php` / `functions.payload.php` (the payloads).
+
+**Two things that do not survive a clone, said plainly.** The three uploaded plugin
+archives — `pe117shell.zip`, `pe117id.zip`, `pe117salt.zip` — exist on the working disk
+and are **excluded by `.gitignore`'s `*.zip`**, so a cloned reader gets **no** plugin ZIP
+from this repository; the payloads inside them are reproducible from `ctl.php` and
+`functions.payload.php`, which are tracked. And **there is no `cj*.txt` cookie jar**: the
+sessions were carried in the operator's transient jar, not committed, so the cookie values
+quoted in this writeup cannot be replayed from a clone — which is the intended state, not
+an oversight.

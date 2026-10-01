@@ -1,8 +1,9 @@
 # 61 BadPlugin — writeup
 
 **Lab:** 61 · *BadPlugin* · Medio
-**Description (full, from the platform catalog):** *"Laboratorio WordPress; el plugin es la
-superficie."*
+**Description (full, from the platform catalog, `~/dockerlabs/catalog.txt:85`):** *"Laboratorio
+para practicar la explotación de un plugin malicioso en WordPress, con escalada de privilegios
+en Linux."*
 **Target:** `192.168.1.100` — single container `badplugin_container`, image `badplugin:latest`.
 **Stack (from the artefact, not from memory):** Ubuntu 24.04, Apache 2.4.58, PHP 8.3,
 MariaDB on `127.0.0.1:3306`, **WordPress 6.7.1 as shipped and as running** (§9).
