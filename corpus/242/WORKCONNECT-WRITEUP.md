@@ -11,7 +11,7 @@
 
 | Source | Text |
 |---|---|
-| Catalogue (`/home/search14/dockerlabs/catalog.txt:16`) | `242\|WorkConnect\|medio\|Laboratorio de hacking web que nos permite enumerar los DNIs de la plataforma y reutilizar esa información para continuar con el proceso de intrusión.` |
+| Catalogue (`~/dockerlabs/catalog.txt:16`) | `242\|WorkConnect\|medio\|Laboratorio de hacking web que nos permite enumerar los DNIs de la plataforma y reutilizar esa información para continuar con el proceso de intrusión.` |
 | Queue (`tooling/labs.manifest:84`) | `242\|WorkConnect\|medio\|enumerating platform DNS records` |
 | Artefact | **zero** occurrences of `dns`, case-insensitive, in the whole application tree |
 
@@ -117,6 +117,14 @@ HIT 71902678E  http=200 bytes=2268
 # RESPONSE SIZES: ABSENT -> [1332]  PRESENT -> [2268]
 # FOUND: 4  -> 71902223C, 71902345A, 71902565I, 71902678E
 ```
+
+**Reading the `000-1000` in that log line.** It is an **exclusive** upper bound, not an
+inclusive one: the harness iterates `for i in range(a.lo, a.hi)` with `hi` defaulting to
+`1000` (`evidence/dni_sweep.py:65,101`), so the numbers actually submitted are `000`–`999`,
+i.e. **1 000 × 26 = 26 000** candidates. Read inclusively the same line would say 26 026,
+which the `candidates submitted = 26000` on the line above it disproves. The label the
+harness prints is inclusive in appearance and exclusive in fact; the count is the ground
+truth.
 
 The negatives are evidence, not a blind spot, for three independent reasons:
 
@@ -246,7 +254,7 @@ $ for p in / /login /register /dashboard; do curl -sD- http://172.17.0.4:8000$p 
 
 > **Therefore the enumeration the catalogue advertises is not the intrusion path.** The correct account is: the DNI enumeration is a real, complete, unauthenticated measurement of the user base (F1) — and the "reutilizar esa información para continuar con el proceso de intrusión" step is unnecessary, because there is nothing to reuse. Anyone who plays the advertised game — enumerate, log in, then look for the injection — will find the injection sitting on an endpoint they never needed a credential for, and may credit the wrong hop.
 
-Login still works as an oracle (200/1855 B failure vs 302/0 B success, positive control fired before and after 70 failures), so this is filed as **missing authentication**, not as a broken login. Fix: a server-side session; the redirect is not one.
+Login still works as an oracle (200/1855 B failure vs 302/0 B success, positive control fired before the rate ladder, after all **60** ladder attempts, and again after the 1,000-candidate spray), so this is filed as **missing authentication**, not as a broken login. Fix: a server-side session; the redirect is not one.
 
 ### F5 — CWE-78: unauthenticated command injection, in-band
 `main.py:120-123`:
@@ -312,7 +320,7 @@ Measured on the target: `/opt/backup.py root:humanresources 664`, and `recruiter
 | Control | Positive control that proves this detector works |
 |---|---|
 | The existence oracle is **not** a wildcard / catch-all — the failure mode that makes an enumeration worthless | `71902345A` → `PRESENT`, 200/**2268** B, marker present (fires **before** the sweep, and the harness aborts if it does not). Negative control `00000000T` → `ABSENT`, 200/**1332** B. Across 26,000 probes the response sizes form two **disjoint singleton sets** with 0 `INDETERMINATE` — an always-true oracle cannot produce that. |
-| The login credential oracle discriminates | `71902678E` / `chocolate` → **302**, `location: /dashboard`, 0 bytes — fired **before** the rate ladder, again **after** 70 failures, and again after the spray. One-character-changed password → 200/**1855** B with `DNI o contraseña incorrectos`, byte-distinct from the success case. |
+| The login credential oracle discriminates | `71902678E` / `chocolate` → **302**, `location: /dashboard`, 0 bytes — fired **before** the rate ladder, again **after all 60** of its attempts, and again after the 1,000-candidate spray. (An earlier draft of this cell said "after 70 failures"; the measured ladder is 60 — see the next row — and no 70-attempt run exists.) One-character-changed password → 200/**1855** B with `DNI o contraseña incorrectos`, byte-distinct from the success case. |
 | The login oracle has no rate budget | 60 consecutive wrong attempts: statuses `{200}`, bytes `{1855}`, elapsed **0.0574 s**, **1,045.5/s**, zero refusals, zero delay growth. The correct password still returned 302 immediately afterwards — the detector was never throttled into a false negative. |
 | `/opt/backups` is a real boundary, not a naming convention | `touch` **and** `ls` against the same path from the injected `uid=1000` both returned `Permission denied`, verbatim, twice. The root loop then created a file in exactly that directory. Without this control the escalation witness would be indistinguishable from something the unprivileged identity could have written itself. |
 | The injected process holds no ambient privilege | `CapEff:	0000000000000000`, `CapInh:	0000000000000000`, read from the injected process's **own** `/proc/self/status` — no capabilities to inherit on the way up, and no setuid transition at hop 1 (`Uid: 1000 1000 1000 1000`). |
@@ -405,7 +413,7 @@ Reading that as "the escalation failed" would have been the expensive mistake. R
 
 **I5 — `docker exec` is root, so an `id` from it is a statement about my tooling.** Every identity claim in §3 is therefore taken from either the injected process's **own** `/proc/self/status` (`Uid: 1000 1000 1000 1000`, read with no subprocess in the middle) or from a root payload run by the lab's own loop. The one `docker exec … id` in the transcript is labelled as the container's shell, not as the service.
 
-**I6 — I wrote four scratch files into the wrong repository.** A `cd` had reset, so `d.html`, `e.html`, `dni-file-check.txt` and `sweep-rowcount.txt` landed in `/home/search14/PenTestMethodology/` instead of this corpus. Caught by `git status` on that repo, not by any error. Moved into `corpus/242/evidence/raw/`; that working tree returned to exactly the state I found it in. Nothing that was not mine was touched. All subsequent scratch writes used absolute paths.
+**I6 — I wrote four scratch files into the wrong repository.** A `cd` had reset, so `d.html`, `e.html`, `dni-file-check.txt` and `sweep-rowcount.txt` landed in `~/PenTestMethodology/` instead of this corpus. Caught by `git status` on that repo, not by any error. Moved into `corpus/242/evidence/raw/`; that working tree returned to exactly the state I found it in. Nothing that was not mine was touched. All subsequent scratch writes used absolute paths.
 
 **I7 — The UDP negative had to be rebuilt without `nmap`.** `nmap -sU` refused (`requires root privileges`), so an untested instrument would have been the only source for the claim "no DNS service". Resting it on `/proc/net/udp` and `/proc/net/udp6` (**1 line each = header only = 0 sockets**), cross-checked against the image's `ExposedPorts: 8000/tcp` and a full `-p-` scan, is what turned "I could not scan UDP" into a count. A count of zero would have been UNTESTED; here the count is one header line and the interpretation is stated.
 
@@ -413,7 +421,16 @@ Reading that as "the escalation failed" would have been the expensive mistake. R
 
 ## 10. Feed-forward
 
-**The class is absent from `RUNBOOK.md` §5 and gets a new row**, and it is not the row the queue asked for. Two things generalise:
+**The class is absent from `RUNBOOK.md` §5, and the row it proposes was never added.**
+This writeup originally said the class "gets a new row"; `RUNBOOK.md` §5 still has no
+structured-identifier row, so that forward reference was wrong. The proposed row is stated
+here and stays a proposal until someone adds it:
+
+| Class | The question that starts it | The discriminator |
+|---|---|---|
+| **Structured-identifier enumeration** (proposed, not in `RUNBOOK.md`) | Does an unauthenticated request return a distinguishable answer for "this identifier is taken", and is the namespace closed enough to enumerate? | The response-size set is a **partition into disjoint classes**, and the submitted count closes against the artefact |
+
+The class is also **not** the row the queue asked for. Two things generalise:
 
 1. **Structured-identifier enumeration (this lab).** Entry criterion: *does an unauthenticated request return a distinguishable answer for "this identifier is taken", and is the namespace closed enough to enumerate?* Discriminator: **the response-size set is a partition into disjoint classes, and the count closes against the artefact.** The wildcard lesson transfers directly: an always-positive oracle is a wildcard, and a "found" count equal to the query count is the signature.
 2. **The check-character rule, which is the part that will save someone a day.** *A format constraint you did not measure is not a filter you may apply.* 0 of 4 real records satisfied the official DNI check character, and 25 of 26 letters for a registered number were accepted and stored. A keyspace cut from 26,000 to 1,000 would have reported **0 of 4** and called the namespace empty. The general form is the one the corpus already has for `ANY` vs `TXT`: **a refusal tells you about the component that refused, not about the data.** Measure the target's own validation, in the direction where the format is *accepted*, before you let a format shrink your keyspace.
@@ -444,4 +461,4 @@ Reading that as "the escalation failed" would have been the expensive mistake. R
 | `evidence/raw/root-output5.txt` | the final reward measurement at `uid=0 euid=0`, with the counts |
 | `evidence/raw/esc-payload*.txt`, `root-exec*.b64` | every payload, in order, including the two that were wrong |
 
-Target restored from the image and **positively** re-verified: `GET /` 200/1479 B · `POST /login` 302 → `/dashboard` · `POST /register` with a taken DNI 200/2291 B · `/opt/backup.py` md5 `93c7c2d83c91e042e9c622781dededca` · `database.db` md5 `13f03a85914cc376a8d6ad75d48a7352` · `users=4` · `/opt/workconnect` back to 13 entries · `/opt/backups` holds only the loop's own backup directory.
+Target restored from the image and **positively** re-verified: `GET /` 200/1479 B · `POST /login` 302 → `/dashboard` · `POST /register` with a taken DNI 200/2268 B (the PRESENT size measured 26 000 times; the "2291" an earlier draft printed appears nowhere in `evidence/` and is not reproducible) · `/opt/backup.py` md5 `93c7c2d83c91e042e9c622781dededca` · `database.db` md5 `13f03a85914cc376a8d6ad75d48a7352` · `users=4` · `/opt/workconnect` back to 13 entries · `/opt/backups` holds only the loop's own backup directory.

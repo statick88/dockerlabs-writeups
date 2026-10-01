@@ -1,6 +1,6 @@
-read /home/search14/PenTestMethodology/wordlists/Passwords.txt               5166141 bytes ->  421445 new candidates
-read /home/search14/PenTestMethodology/wordlists/sorted-passwords.txt        1093766 bytes ->       0 new candidates
-read /home/search14/PenTestMethodology/wordlists/2025-sort-uniq-words.txt    1174030 bytes ->  125472 new candidates
+read ~/PenTestMethodology/wordlists/Passwords.txt               5166141 bytes ->  421445 new candidates
+read ~/PenTestMethodology/wordlists/sorted-passwords.txt        1093766 bytes ->       0 new candidates
+read ~/PenTestMethodology/wordlists/2025-sort-uniq-words.txt    1174030 bytes ->  125472 new candidates
 read /usr/share/nmap/nselib/data/passwords.lst                                 40146 bytes ->    2267 new candidates
 TOTAL unique candidates = 549184
 tested=549184 elapsed=170.16s rate=3227.5 candidates/s

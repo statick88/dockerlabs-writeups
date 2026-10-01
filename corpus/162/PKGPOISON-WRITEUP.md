@@ -15,7 +15,7 @@ almost everything else. Read plainly:
 
 > **An attacker who controls *what gets installed* does not need a vulnerability in
 > the application.** Here there is no application at all — no PHP, no CMS, no
-> framework, no `mod_php`, no database, four files in the docroot. **The boundary is
+> framework, no `mod_php`, no database, three files and one subdirectory in the docroot. **The boundary is
 > drawn at whatever decides the version**, and in this lab that boundary is a single
 > `sudoers` wildcard.
 
@@ -85,8 +85,8 @@ A search of the 58 existing writeups for this class:
 
 | Step | Result |
 |---|---|
-| Fetch | already verified: `/home/search14/dockerlabs/state/162.ok`; `dist/pkgpoison.zip` 163.7M |
-| Extract | `env DL_ROOT=/home/search14/dockerlabs tooling/download-labs.sh extract 162` → `labs/162/` = `pkgpoison.tar` (165.6M) + `auto_deploy.sh` (5.1K) |
+| Fetch | already verified: `~/dockerlabs/state/162.ok`; `dist/pkgpoison.zip` 163.7M |
+| Extract | `env DL_ROOT=~/dockerlabs tooling/download-labs.sh extract 162` → `labs/162/` = `pkgpoison.tar` (165.6M) + `auto_deploy.sh` (5.1K) |
 | Image | `docker load -i pkgpoison.tar` → `Loaded image: pkgpoison:latest`, `9ec88646ca1b`, 1.11GB (535MB compressed) |
 | Run | `docker run -d --name pkgpoison_container pkgpoison:latest` → `172.17.0.6`, HOSTNAME `84dbffed895e` |
 
@@ -968,7 +968,7 @@ install` appears in **none** of them, and neither does dependency confusion or a
 
 **Entry criterion.** *An attacker who controls what gets installed does not need a
 vulnerability in the application.* The corollary is the half that is easy to get wrong:
-**there may be no application.** Lab 162 has four files in its docroot and a static
+**there may be no application.** Lab 162 has three files (and one subdirectory) in its docroot and a static
 HTML page; the entire finding is a policy line. A tester who starts by looking for a
 vulnerability in an application will not find one, and may conclude the lab is empty.
 

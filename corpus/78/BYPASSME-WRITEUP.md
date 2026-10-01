@@ -808,7 +808,7 @@ find /var/www -mindepth 1 | wc -l -> 7  (the shipped webroot, unchanged)
 
 ## Artifacts left in this engagement
 
-* `/home/search14/dockerlabs/labs/78/bypassme.tar` (136.9 MB) and the
+* `~/dockerlabs/labs/78/bypassme.tar` (136.9 MB) and the
   `bypassme:latest` image (1.67 GB) — **left in place**, re-obtainable from the
   archive, and other workers are running concurrently. Reclaim by **image
   name** only; never `docker system prune`.

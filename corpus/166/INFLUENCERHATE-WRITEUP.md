@@ -14,7 +14,7 @@ One authorized DockerLabs engagement. Id 166, name InfluencerHate, difficulty
 166|InfluencerHate|facil|brute force on a web form, then a second escalation route
 ```
 
-The platform catalogue (`/home/search14/dockerlabs/catalog.txt:45`) reads, in full:
+The platform catalogue (`~/dockerlabs/catalog.txt:45`) reads, in full:
 
 ```
 166|InfluencerHate|facil|Fuerza bruta en formulario web de apache y despu\u00e9s otra forma de fuerza bruta en formulario de login web.
