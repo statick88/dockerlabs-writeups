@@ -1,4 +1,4 @@
-# Corpus index — 59 writeups + 1 unobtainable
+# Corpus index — 59 writeups + 2 unobtainable
 
 | # | Lab | Difficulty | Writeup | Class | Reward |
 |---|-----|-----------|---------|-------|--------|
@@ -65,6 +65,7 @@
 | 295 | Baremetal | Medio | [`corpus/295/BAREMETAL-WRITEUP.md`](295/BAREMETAL-WRITEUP.md) | BMC/IPMI en UDP invisible a TCP · GRUB | `Congratulations!` |
 | 296 | Asturias | Medio | [`corpus/296/ASTURIAS-WRITEUP.md`](296/ASTURIAS-WRITEUP.md) | Upload sin restricción · MIME map · orden de registro de middleware | — |
 | 268 | kmspwned | (no engagement) | — | **NO OBTENIBLE**: el servidor trunca el archivo al 75–95% de sus 116 916 224 bytes y `Range` devuelve `200` en vez de `206`, así que la cola es inalcanzable y no hay reanudación posible | **nunca alcanzado** — ver [`HOW-IT-WAS-RESOLVED.md`](HOW-IT-WAS-RESOLVED.md) |
+| 254 | Gotham | (no engagement) | — | **NO OBTENIBLE — truncado, y el servidor miente sobre `Content-Length`**: sirve 107 479 040 bytes = **102,5 MiB exactos**, un límite redondo de proxy, y reporta ESA longitud como completa. Las propias entradas del archivo declaran 107 575 879, así que **faltan 96 839 bytes**. El `gotham.tar` interno declararía 337 918 976 sin comprimir. Seis descargas, tamaño y fallo idénticos | **nunca alcanzado** — §32 |
 
 **45 of 52 have no reward value** — the reward cell contains no literal `FLAG{…}` and no other `prefix{…}` token. A cell reading *"no `FLAG{}`"* counts as **no** reward, because that is what it says.
 established it. A reward that is invented teaches the reader nothing about the
