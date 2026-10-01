@@ -1,0 +1,17 @@
+=== root-only readable candidates for a reward ===
+total 20
+drwx------ 1 root root 4096 Apr  5  2025 .
+drwxr-xr-x 1 root root 4096 Oct  1 16:23 ..
+-rw-r--r-- 1 root root  571 Apr 10  2021 .bashrc
+drwxr-xr-x 3 root root 4096 Apr  5  2025 .local
+-rw-r--r-- 1 root root  161 Jul  9  2019 .profile
+/root/.profile
+/root/.bashrc
+=== any flag-ish name anywhere ===
+/var/lib/ucf/cache/:etc:php:8.2:mods-available:tokenizer.ini
+/var/lib/php/modules/8.2/cli/enabled_by_maint/tokenizer
+/var/lib/php/modules/8.2/registry/tokenizer
+/var/lib/php/modules/8.2/apache2/enabled_by_maint/tokenizer
+/etc/php/8.2/cli/conf.d/20-tokenizer.ini
+/etc/php/8.2/apache2/conf.d/20-tokenizer.ini
+/etc/php/8.2/mods-available/tokenizer.ini

@@ -1,0 +1,27 @@
+=== file ===
+traffic.pcap: pcap capture file, microsecond ts (little-endian) - version 2.4 (Raw IPv4, capture length 65535)
+=== sha256 ===
+e98d75f0ea4ee7a5b3a980bf4f6ea440706d91d8f1641615411550bd97a4ce8c  traffic.pcap
+85e98bd7e65a921a97d60ad9a8517d73d5bd405f2d16740d6f695ba1fb81cd51  secretito.zip
+=== zipinfo encryption facts ===
+  compression method:                             deflated
+  file security status:                           encrypted
+  32-bit CRC value (hex):                         04a65ee4
+  compressed size:                                293 bytes
+  uncompressed size:                              375 bytes
+=== pcap global header ===
+0000000 d4 c3 b2 a1 02 00 04 00 00 00 00 00 00 00 00 00
+0000016 ff ff 00 00 e4 00 00 00 6d 12 f1 67 dc 56 0d 00
+=== pcap printable strings ===
+POST /login HTTP/1.1
+Host: ejemplo.com
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 29
+username=root&password=secretitosecretazo!
+GET /private HTTP/1.1
+Authorization: Basic cm9vdDpTdXBlclNlY3JldDEyMyE=
+Host: ejemplo.com
+=== decoded Basic auth ===
+root:SuperSecret123!
+=== crack log ===
+wordlist: sorted-passwords.txt (101074 lines); CRACKED at candidate 22574 -> 'chocolate'

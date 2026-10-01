@@ -1,0 +1,54 @@
+=== pcap/zip/key hunt across fs ===
+/usr/bin/passwd
+/usr/bin/gpasswd
+/usr/bin/htpasswd
+/usr/sbin/chpasswd
+/usr/sbin/chgpasswd
+/usr/sbin/update-passwd
+/var/lib/pam/password
+/var/lib/systemd/deb-systemd-helper-enabled/timers.target.wants
+/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants
+/var/cache/debconf/passwords.dat
+/etc/pam.d/passwd
+/etc/pam.d/chpasswd
+/etc/pam.d/common-password
+/etc/passwd
+/etc/alternatives/builtins.7.gz
+/etc/alternatives/which.1.gz
+/etc/alternatives/which.sl1.gz
+/etc/alternatives/which.fr1.gz
+/etc/alternatives/which.pl1.gz
+/etc/alternatives/nawk.1.gz
+/etc/alternatives/which.es1.gz
+/etc/alternatives/rmt.8.gz
+/etc/alternatives/which.it1.gz
+/etc/alternatives/which.de1.gz
+/etc/alternatives/pager.1.gz
+/etc/alternatives/which.ja1.gz
+/etc/alternatives/awk.1.gz
+/etc/alternatives/pico.1.gz
+/etc/alternatives/phar.phar.1.gz
+/etc/alternatives/editor.1.gz
+/etc/alternatives/phar.1.gz
+/etc/alternatives/php.1.gz
+/etc/passwd-
+/etc/systemd/system/timers.target.wants
+/etc/systemd/system/multi-user.target.wants
+/etc/security/opasswd
+/etc/apache2/mods-available/proxy_fdpass.load
+/home/balutin/secretito.zip
+=== balutin home as root ===
+total 24
+drwx------ 2 balutin balutin 4096 Apr  5  2025 .
+drwxr-xr-x 1 root    root    4096 Apr  5  2025 ..
+-rw-r--r-- 1 balutin balutin  220 Apr  5  2025 .bash_logout
+-rw-r--r-- 1 balutin balutin 3526 Apr  5  2025 .bashrc
+-rw-r--r-- 1 balutin balutin  807 Apr  5  2025 .profile
+-rw-r--r-- 1 balutin balutin  483 Apr  5  2025 secretito.zip
+=== zip type ===
+Archive:  /home/balutin/secretito.zip
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+      375  2025-04-05 11:24   traffic.pcap
+---------                     -------
+      375                     1 file

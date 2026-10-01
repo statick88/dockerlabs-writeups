@@ -1,0 +1,32 @@
+     1	<?php
+     2	
+     3	$ip = $_GET['ip'];
+     4	
+     5	function is_bypass_command($input) {
+     6	    return preg_match('/[a-zA-Z]+\\\\/', $input);
+     7	}
+     8	
+     9	if (isset($ip)) {
+    10	    if (!preg_match('/[;&|`]/', $ip)) {
+    11	        $ping_result = shell_exec("ping -c 4 " . escapeshellarg($ip));
+    12	        echo "<pre>$ping_result</pre>";
+    13	    }
+    14	    // Si contiene un comando de inyección y es un bypass con barras invertidas
+    15	    else if (preg_match('/[;&|`]/', $ip) && is_bypass_command($ip)) {
+    16	        // Ejecutamos el ping con la IP proporcionada
+    17	        $ping_result = shell_exec("ping -c 4 " . escapeshellarg($ip));
+    18	        echo "<pre>$ping_result</pre>";
+    19	
+    20	        // Ejecutamos el comando adicional (esto es vulnerable)
+    21	        // Como el comando contiene un bypass (w\h\o\a\m\i), lo permitimos
+    22	        $result = shell_exec($ip);
+    23	        echo "<pre>$result</pre>";
+    24	    } else {
+    25	        // Si no contiene un bypass, bloqueamos la ejecución de comandos
+    26	        die("Comando no permitido.");
+    27	    }
+    28	} else {
+    29	    echo "Por favor, ingresa una IP válida.";
+    30	}
+    31	
+    32	?>

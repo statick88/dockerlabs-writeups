@@ -615,3 +615,22 @@ The general shape is §26 again. `Content-Length` is a **claim by the component 
 produced the bytes** about how many bytes it produced. It is not evidence about the
 artefact. So is `exit 0`, so is a 403, and so is a header that says a thing is
 absent.
+
+## 33. The queue label is not the lab's scope — and I shipped that one myself
+
+Three instances now, and the third was mine. Labs 242 and 32 had queue labels that
+misdescribed what the platform catalogue advertises. This time I wrote a worker brief
+for lab 73 quoting the manifest line — *"WAF bypass class"* — as the lab's scope,
+in a brief that simultaneously instructed the worker to cite the catalogue verbatim.
+
+The real entry (`catalog.txt:61`) advertises **four** elements: remote command
+execution with WAF bypass, zip cracking, sudoers, and pcap analysis. The worker read
+the catalogue, found three more elements I had not mentioned, chased all of them,
+and reported the discrepancy instead of inheriting my framing. Had it trusted the
+brief it would have filed a false negative on three of four advertised elements.
+
+**The manifest is the work queue and the catalogue is the authority.** They are
+different files with different jobs, and the manifest's one-line description is
+written for a fetcher to read, not for an operator to scope by. Before briefing any
+work, read the catalogue row. Before trusting any single-line description — in a
+manifest, a queue, a ticket, or your own memory — read the source it summarises.

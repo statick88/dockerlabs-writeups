@@ -1,0 +1,29 @@
+=== VERIFY every artifact absent (stat -c) ===
+/tmp/cmd.txt           ABSENT
+/tmp/run.sh            ABSENT
+/tmp/run4.sh           ABSENT
+/tmp/bal.out           ABSENT
+/tmp/p.sh              ABSENT
+/tmp/pwned.txt         ABSENT
+/tmp/s.zip             ABSENT
+/tmp/s.b64             ABSENT
+/tmp/r73.out           ABSENT
+/tmp/scr.out           ABSENT
+/tmp/evil.1            ABSENT
+/tmp/bal4.out          ABSENT
+=== /tmp final (empty = clean) ===
+[end]
+=== docroot integrity ===
+/var/www/html/ping.php size=1011 mtime=2025-04-05 11:13:39.000000000 +0000 uid=0
+4f1dcc0a24757fa81ca35ce1f55852e9  /var/www/html/ping.php
+=== balutin home untouched ===
+total 24
+drwx------ 2 balutin balutin 4096 Apr  5  2025 .
+drwxr-xr-x 1 root    root    4096 Apr  5  2025 ..
+-rw-r--r-- 1 balutin balutin  220 Apr  5  2025 .bash_logout
+-rw-r--r-- 1 balutin balutin 3526 Apr  5  2025 .bashrc
+-rw-r--r-- 1 balutin balutin  807 Apr  5  2025 .profile
+-rw-r--r-- 1 balutin balutin  483 Apr  5  2025 secretito.zip
+=== listeners unchanged ===
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode                                                     
+   0: 00000000:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 74059062 1 0000000000000000 100 0 0 10 0                  

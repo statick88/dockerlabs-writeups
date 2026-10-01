@@ -1,0 +1,7 @@
+probe ladder      : 4
+metachar sweep    : 8
+backtick controls : 4
+marker runs       : 2
+sink() calls      : 22 -> 44 requests
+enumeration/misc  : 3
+TOTAL HTTP        : 65

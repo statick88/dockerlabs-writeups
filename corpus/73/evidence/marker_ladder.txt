@@ -1,0 +1,9 @@
+NONCE: CHOCOPING73-4bccb96faa6a
+=== RE-RUN OF MARKER WRITE WITH NONCE INLINED (previous run had an empty nonce: harness defect) ===
+ENCODED_URL: http://172.17.0.8/ping.php?ip=w%5Ch%5Co%5Ca%5Cm%5Ci%3Btouch%20%2Ftmp%2Fopencode-marker-73-CHOCOPING73-4bccb96faa6a
+--- BODY ---
+<pre></pre><pre>www-data
+</pre>
+@@HTTP=200 BYTES=31@@
+=== OOB CHECK: stat the marker ===
+/tmp/opencode-marker-73-CHOCOPING73-4bccb96faa6a 0 bytes mode=644 uid=33

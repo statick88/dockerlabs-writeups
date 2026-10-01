@@ -1,0 +1,15 @@
+total 12
+drwxr-xr-x 2 root root 4096 Apr  5  2025 .
+drwxr-xr-x 3 root root 4096 Apr  5  2025 ..
+-rw-r--r-- 1 root root 1011 Apr  5  2025 ping.php
+--- WHICH ---
+/usr/bin/ping
+ping rc=0
+-rwxr-xr-x 1 root root 90568 Sep 24  2024 /usr/bin/ping
+--- ID ---
+uid=0(root) gid=0(root) groups=0(root)
+--- LISTENERS ---
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode                                                     
+   0: 00000000:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 74059062 1 0000000000000000 100 0 0 10 0                  
+--- UDP ---
+   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops            

