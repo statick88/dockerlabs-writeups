@@ -1,0 +1,4 @@
+uid=1001(peter) gid=1001(peter) groups=1001(peter),100(users)
+6e865442bcaf
+peter
+[exit=0]

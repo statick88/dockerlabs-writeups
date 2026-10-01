@@ -1,0 +1,2 @@
+[sudo] password for peter: Sorry, user peter may not run sudo on 6e865442bcaf.
+1

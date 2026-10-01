@@ -1,0 +1,29 @@
+[http=200] [tunnel_requests_this_run=1]
+#!/usr/bin/env python3
+# spidey_run.py - Spider-Man Python Lab
+
+import os
+import sys
+import json
+import math
+def web_swing():
+    print("🕷️ Spider-Man se balancea por la ciudad.")
+    print("Explorando los tejados y vigilando la ciudad...")
+
+def run_tasks():
+    print("🕸️ Ejecutando tareas del día...")
+    print("Saltos calculados:", math.sqrt(225))
+    data = {"hero": "Spider-Man", "city": "New York"}
+    print("Registro de datos:", json.dumps(data))
+
+def fight_villains():
+    villains = ["Green Goblin", "Doctor Octopus", "Venom"]
+    print("Villanos en la ciudad:", ", ".join(villains))
+    for v in villains:
+        print(f"🕷️ Enfrentando a {v}...")
+
+if __name__ == "__main__":
+    web_swing()
+    run_tasks()
+    fight_villains()
+    print("✅ Spider-Man ha terminado su ronda.")

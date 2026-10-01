@@ -1,0 +1,6 @@
+[http=200] [tunnel_requests_this_run=1]
+Matching Defaults entries for www-data on 6e865442bcaf:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin, use_pty
+
+User www-data may run the following commands on 6e865442bcaf:
+    (ALL) NOPASSWD: /usr/bin/python3 /opt/spidy.py

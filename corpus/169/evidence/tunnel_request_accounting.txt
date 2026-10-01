@@ -1,0 +1,37 @@
+TUNNEL REQUEST ACCOUNTING — lab 169 spiderport
+===============================================
+Tunnel: 127.0.0.1:18080 -> 172.17.0.8:127.0.0.1:8080  (ssh peter@target -L)
+Each rce.py invocation opens its OWN tunnel and makes EXACTLY ONE HTTP request.
+
+RECONSTRUCTED CALL LOG (12 requests total through the tunnel):
+
+  #  script            purpose                                          archived?
+  1  tunnel_probe.py   CONTROL-1  GET /                 internal panel     yes (tunnel_evidence.txt)
+  2  tunnel_probe.py   CONTROL-2  GET /?cmd=id          exec oracle        yes (tunnel_evidence.txt)
+  3  tunnel_probe.py   CONTROL-3  GET /?nosuchparam     no-exec control   yes (tunnel_evidence.txt)
+  4  rce.py            id; hostname                    identity witness   yes (rce_identity.txt)
+  5  rce.py            sudo -n -l                      grant enumeration  yes (rce_sudo_l.txt)
+  6  rce.py            cat /opt/spidy.py               BACKUP            yes (backup_opt_spidy_raw.txt)
+  7  rce.py            cp+install attempt              FIRST ATTEMPT, FAILED  yes (overwritten)
+  8  rce.py            id > /opt/.t1                   write probe        NO  (stdout only)
+  9  rce.py            ls -la /opt/ ; head spidy.py    state check        NO  (stdout only)
+ 10  rce.py            rm + install + sudo python3     PRIVESC, SUCCEEDED yes (privesc_run.txt)
+ 11  rce.py            restore spidy.py + rm artefacts RESTORE           yes (restore_run.txt)
+ 12  rce.py            sudo python3 | tail -2          post-restore sanity NO  (stdout only)
+
+  TOTAL = 12 requests through the tunnel.
+  Archived to files = 8 of 12. Calls 8, 9, 12 printed to stdout only.
+
+  MEASUREMENT NOTE (an instrument defect, recorded deliberately):
+  An automated count taken by grepping the archived evidence files returns 5+3 = 8,
+  which UNDERCOUNTS the true 12. The undercount came from 4 invocations whose
+  output I never redirected to a file. The count of 12 above is reconstructed
+  from the session transcript, not from the artefacts. Lesson: a work count
+  derived from saved evidence counts the evidence you happened to keep, not the
+  work you actually did.
+
+POSTURE
+  No destructive write was left behind. /opt/spidy.py was restored byte-identical
+  (808 bytes, mode 744, owner root:root) and verified with diff against the backup.
+  All probe artefacts (/opt/.t1, /opt/.wtest, /opt/spidy.py.tmp,
+  /tmp/spidy.py.orig.bak) were removed.
