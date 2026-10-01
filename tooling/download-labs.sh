@@ -45,7 +45,18 @@ die()  { log ERR "$*"; exit 1; }
 # ---------------------------------------------------------------- credentials
 
 login() {
-  [[ -n "${DL_COOKIE:-}" ]] && { log INFO "using DL_COOKIE from environment"; return 0; }
+  # DL_COOKIE only skips the login FORM. It has to be written into the jar, or
+  # the requests below send no cookie at all and the platform redirects to /login.
+  if [[ -n "${DL_COOKIE:-}" ]]; then
+    log INFO "seeding the session jar from DL_COOKIE"
+    umask 077
+    {
+      printf '# Netscape HTTP Cookie File\n'
+      printf '.dockerlabs.es\tTRUE\t/\tFALSE\t0\tsession\t%s\n' "$DL_COOKIE"
+    } > "$JAR"
+    [[ -s "$JAR" ]] || die "could not write the session jar from DL_COOKIE"
+    return 0
+  fi
   [[ -s "$JAR" ]] && { log INFO "reusing existing session"; return 0; }
   [[ -n "${DL_USER:-}" && -n "${DL_PASS:-}" ]] || die "set DL_USER and DL_PASS, or pass DL_COOKIE"
 
