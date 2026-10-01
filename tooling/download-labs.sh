@@ -136,7 +136,7 @@ fetch_one() {
     rm -f "$dest"
   fi
 
-  local expected=0 trunc_streak=0
+  local expected=0 trunc_streak=0 corrupt_streak=0
   for (( attempt=1; attempt<=RETRIES; attempt++ )); do
     log INFO "id $id: attempt $attempt/$RETRIES — $fname"
     rm -f "$dest.part"
@@ -178,9 +178,22 @@ fetch_one() {
         continue
       fi
       if (( expected > 0 && size >= expected )); then
-        log ERR "id $id: $fname is COMPLETE at $size/$expected bytes but fails verification — this is corruption, not truncation. Refusing to retry; a cut and a corrupt archive are different faults and a retry that cannot resume fixes neither"
+        # A cut and a corrupt archive are different faults and they need different
+        # responses. A cut arrives SHORT and cannot be resumed, so retrying it
+        # discards ~100 MB per attempt for nothing. A COMPLETE archive that fails
+        # `unzip -tqq` is corrupt, and corruption can arrive in transit — so
+        # exactly one re-fetch is worth attempting. Measured on id 254:
+        # 107,479,040 of 107,479,040 bytes, four attempts, zero successes.
+        corrupt_streak=$(( corrupt_streak + 1 ))
+        if (( corrupt_streak >= 2 )); then
+          log ERR "id $id: $fname is COMPLETE at $size/$expected bytes and fails verification twice — corruption, not truncation, and a re-fetch does not fix it. Giving up"
+          rm -f "$dest"
+          return 4
+        fi
+        log WARN "id $id: $fname is COMPLETE ($size/$expected bytes) but fails verification — corruption, not truncation. One re-fetch to rule out transit damage"
         rm -f "$dest"
-        return 4
+        sleep 5
+        continue
       fi
       log WARN "id $id: $fname downloaded but failed verification — retrying from scratch"
       rm -f "$dest"

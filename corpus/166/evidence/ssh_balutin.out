@@ -1,0 +1,858 @@
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+Exception (client): Error reading SSH protocol banner
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner[Errno 104] Connection reset by peer
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 663, in _read_timeout
+    x = self.__socket.recv(128)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[Errno 104] Connection reset by peer
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2213, in _check_banner
+    buf = self.packetizer.readline(timeout)
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2029, in run
+    self._check_banner()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/search14/.local/lib/python3.14/site-packages/paramiko/transport.py", line 2217, in _check_banner
+    raise SSHException(
+        "Error reading SSH protocol banner" + str(e)
+    )
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+=== SSH user=balutin host=172.17.0.3 ===
+RUNG workers=1   attempts=60   elapsed=162.92s achieved=   0.37 attempts/s outcomes={'auth-fail': 60} median_latency=2.687s hits=0
+RUNG workers=2   attempts=60   elapsed=83.65s achieved=   0.72 attempts/s outcomes={'auth-fail': 60} median_latency=2.689s hits=0
+RUNG workers=4   attempts=60   elapsed=43.37s achieved=   1.38 attempts/s outcomes={'auth-fail': 60} median_latency=2.711s hits=0
+RUNG workers=8   attempts=60   elapsed=26.90s achieved=   2.23 attempts/s outcomes={'auth-fail': 55, 'ERR:SSHException': 5} median_latency=2.697s hits=0
+RUNG workers=16  attempts=60   elapsed=10.88s achieved=   5.52 attempts/s outcomes={'auth-fail': 48, 'ERR:SSHException': 12} median_latency=2.689s hits=0
+RUNG workers=32  attempts=60   elapsed=8.16s achieved=   7.35 attempts/s outcomes={'auth-fail': 40, 'ERR:SSHException': 20} median_latency=2.714s hits=0

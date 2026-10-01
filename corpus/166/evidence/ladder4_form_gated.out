@@ -1,0 +1,12 @@
+=== MODE=form HOST=172.17.0.3 USER=admin GATE=('zzcontrol', 'zz_control_password_166') (keep-alive) ===
+BASELINE serial keep-alive candidates=120 elapsed=0.060s achieved=1987.7 cand/s median=0.0005s p95=0.0009s status={200: 120} oracle-hits=0
+RUNG workers=1    candidates=1200  elapsed=0.687s achieved=  1747.5 cand/s status={200: 1200} bytes={2866: 1200} median_latency=0.0005s hits=0
+RUNG workers=2    candidates=1200  elapsed=0.326s achieved=  3675.9 cand/s status={200: 1200} bytes={2866: 1200} median_latency=0.0005s hits=0
+RUNG workers=4    candidates=1200  elapsed=0.306s achieved=  3920.1 cand/s status={200: 1200} bytes={2866: 1200} median_latency=0.0006s hits=0
+RUNG workers=8    candidates=1200  elapsed=0.268s achieved=  4472.0 cand/s status={200: 1200} bytes={2866: 1200} median_latency=0.0013s hits=0
+RUNG workers=16   candidates=1200  elapsed=0.227s achieved=  5282.9 cand/s status={200: 1200} bytes={2866: 1200} median_latency=0.0012s hits=0
+RUNG workers=32   candidates=1200  elapsed=0.269s achieved=  4462.9 cand/s status={200: 1200} bytes={2866: 1200} median_latency=0.0015s hits=0
+RUNG workers=64   candidates=1200  elapsed=0.320s achieved=  3747.8 cand/s status={200: 1200} bytes={2866: 1200} median_latency=0.0018s hits=0
+RUNG workers=128  candidates=1200  elapsed=0.277s achieved=  4333.2 cand/s status={200: 1200} bytes={2866: 1200} median_latency=0.0014s hits=0
+RUNG workers=256  candidates=1200  elapsed=0.271s achieved=  4434.8 cand/s status={200: 1200} bytes={2866: 1200} median_latency=0.0010s hits=0
+RUNG workers=512  candidates=1200  elapsed=0.314s achieved=  3817.2 cand/s status={200: 1200} bytes={2866: 1200} median_latency=0.0008s hits=0

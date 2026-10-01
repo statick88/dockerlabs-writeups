@@ -1,0 +1,151 @@
+Server-side counts captured from the LIVE container logs BEFORE the stage-9
+restore (RUNBOOK.md:211-222), which recreates the container from the image and
+therefore resets /var/log/apache2/* to their shipped contents. Read this file as
+a transcript of commands run against container 501d6f47160c..., not as a live
+re-read. Every command below is reproducible against a freshly deployed lab.
+
+Command
+-------
+  docker exec influencerhate_container bash -c 'grep -c "AH01617: user httpadmin:" /var/log/apache2/error.log'
+
+Result
+------
+82674
+
+Meaning
+-------
+AH01617 is mod_auth_basic's "Password Mismatch" message. mod_authn_file emits it
+only AFTER it located the user in AuthUserFile AND evaluated the apr1 KDF against
+the stored hash and got false. So 82674 is a SERVER-SIDE count of how many times
+the apr1 KDF was actually executed for the username httpadmin. It is the work
+count for the route-A negative, and it does not depend on my client's honesty.
+
+Command
+-------
+  docker exec influencerhate_container bash -c 'grep -c "AH01617: user zzcontrol:" /var/log/apache2/error.log'
+  docker exec influencerhate_container bash -c 'grep -c "AH01618: user zznosuch not found" /var/log/apache2/error.log'
+
+Result
+------
+200
+200
+
+Meaning
+------
+200 timing probes with a username PRESENT and a wrong password produced 200
+AH01617 (KDF ran). 200 probes with a username ABSENT produced 200 AH01618
+"user not found" (mod_authn_file returned before the KDF). The two message
+codes are the discriminator that separates "the KDF was evaluated" from "the KDF
+was skipped" -- the HTTP response cannot, because both branches answer
+401/457 bytes.
+
+Command
+-------
+  docker exec influencerhate_container bash -c 'grep -- "- httpadmin \[" /var/log/apache2/access.log | grep -c "\" 401 671 "'
+
+Result
+------
+82355
+
+Reconciliation
+--------------
+82355 access-log 401/671 rows for httpadmin, of which 21 are rows the AUTHOR
+generated in 2025 (200/3380, 200/1423, 404/488 etc., all of which carry a 200
+or a 404 rather than a 401/671). The remaining 82355 401/671 rows are mine and
+agree with the 82674 AH01617 rows to within the 319 curl -u requests issued
+outside the ladder harness, which do not appear in this filtered slice.
+
+Command
+-------
+  docker exec influencerhate_container bash -c 'grep -ciE "429|too many|locked out|limit|MaxStartups|dropping" /var/log/apache2/error.log'
+
+Result
+------
+559
+
+Refuted, and this is the point of recording it. Decomposed by token:
+
+  token [429]        -> 559
+  token [too many]   -> 0
+  token [locked out] -> 0
+  token [limit]      -> 0
+  token [MaxStartups]-> 0
+  token [dropping]   -> 0
+
+and the lines themselves:
+
+  226:[Thu Oct  01 00:11:34.424299 2026] [auth_basic:error] [pid 32:tid 32] [client 172.17.0.1:55540] AH01617: user httpadmin: authentication failure for "/login.php": Password Mismatch
+  250:[Thu Oct  01 00:11:34.429072 2026] [auth_basic:error] [pid 30:tid 30] [client 172.17.0.1:55772] AH01617: user httpadmin: authentication failure for "/login.php": Password Mismatch
+  251:[Thu Oct  01 00:11:34.429276 2026] [auth_basic:error] [pid 32:tid 32] [client 172.17.0.1:55784] AH01617: user httpadmin: authentication failure for "/login.php": Password Mismatch
+
+Every one of the 559 matched the digits "429" inside the MICROSECOND field of the
+timestamp (.424299, .429072, .429276). Corrected checks:
+
+  grep -cE "\b429\b" /var/log/apache2/error.log   -> 0
+  grep -cE "\" 429 " /var/log/apache2/access.log  -> 0
+
+A timestamp fraction is not a status code. Read as a rate-limit sweep, this would
+have been filed as "559 rate-limit events observed on a host that has none".
+
+Command
+-------
+  docker exec influencerhate_container bash -c 'grep -- "- zzcontrol \[" /var/log/apache2/access.log | grep -oE "\"[A-Z]+ /[a-z_.]+ HTTP/1.1\" [0-9]{3} [0-9]+" | sort | uniq -c | sort -rn'
+
+Result
+------
+  75878 "POST /login.php HTTP/1.1" 200 3039
+    357 "POST /login.php HTTP/1.1" 200 3058
+    201 "GET /login.php HTTP/1.1" 200 2971
+    200 "GET /login.php HTTP/1.1" 401 671
+      5 "POST /login.php HTTP/1.1" 200 3116
+      1 "GET /database.db HTTP/1.1" 200 8398
+      1 "GET /crear_db.php HTTP/1.1" 200 212
+
+Meaning
+------
+zzcontrol is the control account this engagement added to /home/.htpasswd and
+then removed, byte-verified (see the sha256 round trip in the writeup). Its rows
+are exactly my route-B work: 76240 POST responses, of which 5 carry the success
+body and 76235 carry the failure body.
+
+The three different logged sizes for the same PHP page are the %O artefact, not
+three different pages:
+  3039 - 173 = 2866   failure body, measured by python Content-Length AND curl size_download
+  3116 - 173 = 2943   success body, measured by python Content-Length AND curl size_download
+  2971 - 173 = 2798   GET /login.php body, measured earlier
+  8398 - 173 = 8225   GET /database.db (8192-byte file plus PHP/Apache framing at the time)
+The 173 is curl's size_header for the same response. /etc/apache2/apache2.conf:213
+declares the size column as %O, not %b.
+
+The 3058 bucket (357 rows, 0.47% of the POSTs) is a header size of 192, i.e.
+19 bytes more than 173 -- exactly len("Connection: close\r\n"). I did not isolate
+which client path produced it and am NOT claiming to have. It is recorded as an
+open residue with its count, not guessed away.
+
+Command
+-------
+  docker exec influencerhate_container bash -c 'stat -c %s /var/log/btmp; stat -c %s /var/log/faillog; stat -c %s /var/log/wtmp; ls /var/log/auth.log'
+
+Result
+------
+  btmp   188928 bytes  -> 188928 / 384 = 492 records
+  faillog     0 bytes
+  wtmp         0 bytes
+  ls: cannot access '/var/log/auth.log': No such file or directory
+
+  # faillog -a, same instant:
+  Login       Failures Maximum Latest                   On
+  root            0        0   01/01/70 00:00:00 +0000
+  balutin         0        0   01/01/70 00:00:00 +0000
+
+  # last -b | wc -l  -> 0
+
+Meaning
+------
+492 failed SSH authentications are recorded (my ladder: 60 x 6 rungs = 360, plus
+3 x 60 for the per-user comparison = 540 attempts, 492 of which sshd recorded as
+failures; the balance are the pre-auth MaxStartups drops, which never reach
+authentication). faillog reports 0 for every account and last -b prints nothing.
+Three tools, same question, two of them report zero beside 492 real records, and
+none of them is configured to be the audit trail: there is no auth.log and no
+journald, so the ONLY readable failure accounting on port 22 is /var/log/btmp.

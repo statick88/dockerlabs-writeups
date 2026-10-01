@@ -1,0 +1,5 @@
+=== MODE=form HOST=172.17.0.3 USER=admin GATE=('zzcontrol', 'zz_gate_control_166') (keep-alive) ===
+BASELINE serial keep-alive candidates=120 elapsed=0.069s achieved=1728.8 cand/s median=0.0004s p95=0.0017s status={200: 120} oracle-hits=0
+RUNG workers=64   candidates=20000 elapsed=2.258s achieved=  8858.5 cand/s status={200: 20000} bytes={2866: 20000} median_latency=0.0032s hits=0
+RUNG workers=128  candidates=20000 elapsed=2.462s achieved=  8123.1 cand/s status={200: 20000} bytes={2866: 20000} median_latency=0.0032s hits=0
+RUNG workers=256  candidates=20000 elapsed=2.619s achieved=  7635.9 cand/s status={200: 20000} bytes={2866: 20000} median_latency=0.0047s hits=0

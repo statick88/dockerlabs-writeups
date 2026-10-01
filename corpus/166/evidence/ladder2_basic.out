@@ -1,0 +1,12 @@
+=== MODE=basic HOST=172.17.0.3 USER=httpadmin ===
+BASELINE serial candidates=120 elapsed=0.082s achieved=1457.4 cand/s median=0.0004s p95=0.0023s status={401: 120} oracle-hits=0
+RUNG workers=1    candidates=1200  elapsed=0.885s achieved=  1355.4 cand/s status={401: 1200} bytes={457: 1200} median_latency=0.0004s hits=0
+RUNG workers=2    candidates=1200  elapsed=0.462s achieved=  2598.7 cand/s status={401: 1200} bytes={457: 1200} median_latency=0.0004s hits=0
+RUNG workers=4    candidates=1200  elapsed=0.325s achieved=  3692.0 cand/s status={401: 1200} bytes={457: 1200} median_latency=0.0006s hits=0
+RUNG workers=8    candidates=1200  elapsed=0.292s achieved=  4114.2 cand/s status={401: 1200} bytes={457: 1200} median_latency=0.0007s hits=0
+RUNG workers=16   candidates=1200  elapsed=0.290s achieved=  4142.4 cand/s status={401: 1200} bytes={457: 1200} median_latency=0.0016s hits=0
+RUNG workers=32   candidates=1200  elapsed=0.571s achieved=  2102.7 cand/s status={401: 1200} bytes={457: 1200} median_latency=0.0011s hits=0
+RUNG workers=64   candidates=1200  elapsed=1.993s achieved=   602.2 cand/s status={401: 1200} bytes={457: 1200} median_latency=0.0110s hits=0
+RUNG workers=128  candidates=1200  elapsed=0.238s achieved=  5035.5 cand/s status={401: 1200} bytes={457: 1200} median_latency=0.0009s hits=0
+RUNG workers=256  candidates=1200  elapsed=0.345s achieved=  3474.9 cand/s status={401: 1200} bytes={457: 1200} median_latency=0.0005s hits=0
+RUNG workers=512  candidates=1200  elapsed=0.401s achieved=  2990.2 cand/s status={401: 1200} bytes={457: 1200} median_latency=0.0004s hits=0

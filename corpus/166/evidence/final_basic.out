@@ -1,0 +1,5 @@
+=== MODE=basic HOST=172.17.0.3 USER=httpadmin GATE=None (keep-alive) ===
+BASELINE serial keep-alive candidates=120 elapsed=0.024s achieved=4963.1 cand/s median=0.0002s p95=0.0004s status={401: 120} oracle-hits=0
+RUNG workers=64   candidates=20000 elapsed=1.322s achieved= 15126.2 cand/s status={401: 20000} bytes={457: 20000} median_latency=0.0005s hits=0
+RUNG workers=128  candidates=20000 elapsed=1.488s achieved= 13444.2 cand/s status={401: 20000} bytes={457: 20000} median_latency=0.0008s hits=0
+RUNG workers=256  candidates=20000 elapsed=1.575s achieved= 12700.1 cand/s status={401: 20000} bytes={457: 20000} median_latency=0.0014s hits=0

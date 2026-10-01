@@ -513,3 +513,36 @@ is the `ANY`-versus-`TXT` rule with the polarity flipped: a refusal tells you ab
 the component that refused, and an unverified assumption about the data tells you
 nothing about either. The cheap check is to run the constraint against the records
 you already hold — four rows, and it excludes all four.
+
+## 30. A carriage return inside a table row, from a Python escape
+
+Lab 245's worker reported the cause of a defect I had hit myself twice without
+naming it: writing `\refuta` inside a **non-raw** Python string literal is not the
+six characters `\`, `r`, `e`… — `\r` is a **carriage return**. The row was written
+with one, which split it across two physical lines, and the §24 cell-count check
+then read **4 instead of 6**. The orphaned continuation line looked like prose.
+
+It is the same failure as the orphan fragment I repaired twice: a row that renders
+as a short row, with no error anywhere.
+
+**Rule.** Use raw literals for anything containing a backslash escape you meant
+literally — `r"..."` — and run the cell-count check **after every INDEX edit, not
+only on the row you touched**. Two independent workers converged on this within the
+same batch, and neither noticed until the count disagreed.
+
+## 31. A paraphrased catalogue is a changed class
+
+Lab 166's catalogue says *"fuerza bruta en formulario web de apache y después **otra
+forma de fuerza bruta en formulario de login web**"*. The queue's gap column wrote
+*"then a second **escalation route**"*. The host has **no escalation primitive at
+all**: no `sudo`, no cron, 10 stock setuid with no writable parent, no capabilities,
+`CapEff 0xa80425fb` — the Docker default, not privileged.
+
+This is the neighbour of §28 and it is worse, because both fields now look
+reasonable in isolation. §28 expanded an acronym into a *different protocol*; this
+replaced a *method* with a *different class of attack*.
+
+**Rule.** Do not paraphrase a catalogue entry into a queue field. Copy it, or write
+your own words from the artefact. The gap column's job is to name the class you
+intend to add, and a paraphrase silently changes what you are queueing — and the
+class table is then wrong about a lab nobody has solved yet.
