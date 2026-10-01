@@ -75,7 +75,7 @@
 167|WinFake|facil|source-code inspection as the entry point; the only lab where reading the code IS the first step
 82|E jotapete|facil|Drupal 8.5.0: the unit of trust is the compiled service container, not a list; third platform in the corpus
 83|Grooti|facil|enumeration as the deliverable; the decisive finding is on no service, and the advertised database leg cannot be entered
-254|Gotham|facil|JWT session cookie plus command injection plus password reuse plus a misconfigured binary
+254|Gotham|facil|**NO OBTENIBLE, truncado y el servidor miente sobre Content-Length**: sirve 107,479,040 bytes = 102,5 MiB exactos (limite redondo de proxy) y reporta ESA longitud como completa; las propias entradas del archivo declaran 107,575,879, asi que faltan 96.839 bytes. El `gotham.tar` de dentro diria 337.918.976 sin comprimir
 166|InfluencerHate|facil|brute force on a web form, then a second escalation route
 162|PkgPoison|facil|simple intrusion then privesc by a distinct route
 78|Bypassme|facil|information disclosure, web fuzzing, credential leakage

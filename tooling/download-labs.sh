@@ -108,6 +108,44 @@ resolve_url() {
 
 filename_of() { basename "$1"; }
 
+# ----------------------------------------------------------- archive extent
+# Content-Length is not evidence. Measured on id 254: the platform served
+# 107,479,040 bytes — exactly 102.5 MiB, a round proxy boundary — and reported
+# that truncated length AS the Content-Length. The archive's own last entry
+# declares 107,573,106 compressed bytes starting at offset 2773, so the file
+# should be 107,575,879 bytes and is 96,839 short.
+#
+# So `size == expected` does NOT mean "not truncated" whenever the server may be
+# describing its own cut. The only trustworthy statement is the archive's own
+# declared extent: walk the local headers, sum the data extents, compare with the
+# bytes on disk. Requires a data-descriptor-free zip (no flag 0x0008), which is
+# what the platform serves; anything else returns 0 and the caller skips the test.
+archive_declared_extent() {
+  python3 - "$1" <<'PYX'
+import struct, sys
+try:
+    data = open(sys.argv[1], 'rb').read()
+except Exception:
+    print(0); raise SystemExit
+sig = struct.pack('<I', 0x04034b50)
+pos = 0; end = 0; n = 0
+while True:
+    i = data.find(sig, pos)
+    if i < 0: break
+    try:
+        _, ver, flags, meth, mt, md, crc, csz, usz, nlen, elen = struct.unpack(
+            '<IHHHHHIIIHH', data[i:i+30])
+    except struct.error:
+        break
+    if flags & 0x0008 or flags & 0x0001:
+        print(0); raise SystemExit
+    n += 1
+    end = i + 30 + nlen + elen + csz
+    pos = end
+print(end if n else 0)
+PYX
+}
+
 # ----------------------------------------------------------------- download
 
 fetch_one() {
@@ -166,6 +204,19 @@ fetch_one() {
       # full-length archive that fails verification is corrupt, not cut, and the
       # two need opposite responses: a cut is hopeless, corruption may be worth
       # one more fetch in case the bytes were mangled in transit.
+      # Ask the archive before asking the server. Content-Length can describe the
+      # proxy's own cut (id 254: 107,479,040 bytes = exactly 102.5 MiB, reported
+      # as the full length, while the archive's own last entry declares an extent
+      # of 107,575,879). A file shorter than its own declared extent is truncated
+      # no matter what the headers claimed. The function returns 0 when the archive
+      # uses data descriptors or encryption, and then this test is skipped.
+      local declared; declared="$(archive_declared_extent "$dest")"
+      if (( declared > 0 && size < declared )); then
+        trunc_streak=$(( trunc_streak + 1 ))
+        log ERR "id $id: $fname is TRUNCATED by its own account — $size bytes on disk, its entries declare $declared, so $(( declared - size )) bytes are missing even though the server reported $size as the full length"
+        rm -f "$dest"
+        return 5
+      fi
       if (( expected > 0 && size < expected && size * 100 >= expected * 80 )); then
         trunc_streak=$(( trunc_streak + 1 ))
         log WARN "id $id: $fname truncated by server — got $size of $expected bytes (${trunc_streak}x)"
@@ -176,22 +227,32 @@ fetch_one() {
         fi
         sleep 5
         continue
+        sleep 5
+        continue
       fi
-      if (( expected > 0 && size >= expected )); then
+if (( expected > 0 && size >= expected )); then
         # A cut and a corrupt archive are different faults and they need different
         # responses. A cut arrives SHORT and cannot be resumed, so retrying it
         # discards ~100 MB per attempt for nothing. A COMPLETE archive that fails
         # `unzip -tqq` is corrupt, and corruption can arrive in transit — so
         # exactly one re-fetch is worth attempting. Measured on id 254:
-        # 107,479,040 of 107,479,040 bytes, four attempts, zero successes.
+        # 107,479,040 of 107,479,224 expected... no: 107,479,040 of 107,479,040,
+        # six attempts across two policy versions, every one the same size and the
+        # same failure. That is deterministic, which rules transit out.
+        #
+        # KEEP the file either way. The previous version deleted it, which made the
+        # fault undiagnosable: you cannot ask `unzip -l` where an archive breaks if
+        # the archive no longer exists. A preserved corrupt archive is evidence —
+        # a deleted one is only a log line.
         corrupt_streak=$(( corrupt_streak + 1 ))
+        local keep="$DIST/.corrupt/$fname"
+        mkdir -p "$DIST/.corrupt"
+        mv -f "$dest" "$keep" 2>/dev/null || cp -f "$dest" "$keep" 2>/dev/null
         if (( corrupt_streak >= 2 )); then
-          log ERR "id $id: $fname is COMPLETE at $size/$expected bytes and fails verification twice — corruption, not truncation, and a re-fetch does not fix it. Giving up"
-          rm -f "$dest"
+          log ERR "id $id: $fname is COMPLETE at $size/$expected bytes and fails verification on $corrupt_streak separate downloads — deterministic corruption, not transit damage. Preserved at $keep for diagnosis; giving up"
           return 4
         fi
-        log WARN "id $id: $fname is COMPLETE ($size/$expected bytes) but fails verification — corruption, not truncation. One re-fetch to rule out transit damage"
-        rm -f "$dest"
+        log WARN "id $id: $fname is COMPLETE ($size/$expected bytes) but fails verification — corruption, not truncation. Preserved at $keep; one re-fetch to rule out transit damage"
         sleep 5
         continue
       fi

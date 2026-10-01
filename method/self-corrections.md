@@ -546,3 +546,37 @@ replaced a *method* with a *different class of attack*.
 your own words from the artefact. The gap column's job is to name the class you
 intend to add, and a paraphrase silently changes what you are queueing — and the
 class table is then wrong about a lab nobody has solved yet.
+
+## 32. Content-Length can describe the proxy's own cut
+
+Lab 254 settled as **unobtainable**, and the reason is worth more than the lab
+would have been. The platform served **107,479,040 bytes — exactly 102.5 MiB**, a
+round proxy boundary — and reported *that truncated length* as the
+`Content-Length`. The archive's own last entry declares 107,573,106 compressed
+bytes starting at offset 2773, so the file should be **107,575,879** and is
+**96,839 short**.
+
+My fetcher had been reading `size == expected` as "not truncated", which is
+correct when the server describes the real file and **wrong whenever the server is
+describing its own cut**. Six attempts across two policy versions produced the
+identical size and the identical failure, which is what ruled transit damage out
+and pointed at a boundary rather than a fault.
+
+**Rule.** When an archive fails verification at its full advertised length, **ask the
+archive, not the server.** Walk the local headers, sum the declared data extents,
+and compare that with the bytes on disk:
+
+```
+file shorter than its own declared extent  → truncated, whatever the headers said
+file longer                                → the excess is the central directory
+```
+
+It needs a zip without data descriptors (no flag `0x0008`) and unencrypted, and
+returns 0 when either is present, so it is a test you skip rather than one that
+guesses. The control matters: on a healthy 386 MB archive the declared extent came
+out 187 bytes *below* the file, which is exactly the central directory.
+
+The general shape is §26 again. `Content-Length` is a **claim by the component that
+produced the bytes** about how many bytes it produced. It is not evidence about the
+artefact. So is `exit 0`, so is a 403, and so is a header that says a thing is
+absent.
