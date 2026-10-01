@@ -1,0 +1,1059 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 245 TrailPack &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; TrailPack</p><h1 id="245-trailpack--writeup">245 TrailPack — writeup</h1>
+<blockquote>
+<p><strong>Shipped catalogue description, verbatim from <code>catalog.txt:14</code>:</strong>
+<code>245|TrailPack|medio|Laboratorio para practicar distintas vulnerabilidades web, de tal forma que concatenando pequeñas vulnerabilidades consigamos un gran impacto.</code></p>
+<p>Translation: <em>a lab for practising distinct web vulnerabilities, such that by
+chaining small vulnerabilities you obtain a large impact.</em> The description names
+<strong>no class, no platform and no route</strong> — so there is nothing in it to be
+misattributed. What it <em>does</em> assert is a <strong>chain</strong>, and the chain is the
+deliverable here: which of the four declared bugs is load-bearing for which, and
+which one can be deleted from the report without changing the outcome.</p>
+</blockquote>
+<p><strong>Manifest line (confirmed, not duplicated):</strong> <code>tooling/labs.manifest:83</code>
+<code>245|TrailPack|medio|several web vulnerabilities in one lab</code></p>
+<hr />
+<h2 id="1-platform--from-a-version-bearing-file-before-anything-else">1. Platform — from a version-bearing file, before anything else</h2>
+<p>The queue entry asserts <strong>no platform</strong>, so there is no filename to misread. The
+platform was read from <code>requirements.txt</code> and confirmed against the <strong>running
+interpreter</strong>, not against the file (§21 — measure what the framework consumes):</p>
+<p><code>/app/requirements.txt</code> (verbatim, 4 lines):</p>
+<pre><code>fastapi==0.115.12
+uvicorn[standard]==0.34.2
+jinja2==3.1.6
+python-multipart==0.0.20
+</code></pre>
+<p><code>python3 -c &quot;import fastapi,uvicorn,jinja2,starlette; …&quot;</code> <strong>inside the live
+container</strong>:</p>
+<pre><code>python 3.11.2
+fastapi 0.115.12
+uvicorn 0.34.2
+jinja2 3.1.6
+starlette 0.46.2
+python-multipart 0.0.20
+</code></pre>
+<p>The declared and the consumed versions <strong>agree on all four pins</strong>. <code>starlette</code> is
+pulled transitively and is not pinned — recorded, because it is the layer that
+owns <code>Jinja2Templates</code> and therefore owns the autoescaping decision tested in §7.</p>
+<p><strong>The artefact is a 292-line single-file FastAPI application plus 7 Jinja
+templates.</strong> <code>wc -l /app/main.py</code> → <strong>292</strong>; <code>find /app -type f</code> → <strong>9 files</strong> on a
+cold container and <strong>10</strong> after first start, when
+<code>__pycache__/main.cpython-311.pyc</code> appears. There is no
+CMS, no <code>wp-content</code>, no plugin tree, no <code>vendor/</code>, no ORM, no database process,
+and no <code>requirements</code>-declared web server other than uvicorn. The image's
+<code>Config.Cmd</code> is <code>[&quot;python3&quot;,&quot;-m&quot;,&quot;uvicorn&quot;,&quot;main:app&quot;,&quot;--host&quot;,&quot;0.0.0.0&quot;,&quot;--port&quot;,&quot;8000&quot;,&quot;--log-level&quot;,&quot;warning&quot;]</code>
+with <code>User: balutron</code> and <code>WorkingDir: /app</code>.</p>
+<blockquote>
+<p><strong>Cross-read against sibling 242.</strong> That lab is <em>also</em> a FastAPI app whose
+accounts are keyed by Spanish DNI (<code>71902345A</code> …). This is a <strong>different
+application</strong> — different file names, different route set, different author
+comments (<code>⚠️ VULN-N</code>), no shared code — but the <strong>identifier namespace is the
+same shape</strong>. 242's &quot;existence oracle over a structured identifier&quot; class
+therefore applies here too, and it is carried by VULN-1 below. Rule 8: stated
+explicitly rather than quietly differing.</p>
+</blockquote>
+<h3 id="acronym-check-28">Acronym check (§28)</h3>
+<p>The catalogue description contains <strong>no acronym</strong> and no protocol name, so the
+242 failure — a queue entry re-expanding an abbreviation to the wrong protocol —
+<strong>cannot arise here</strong>. Checked and closed rather than assumed: <code>grep -rIo -i &quot;dns&quot;</code>
+style expansion is not applicable; there is nothing to expand.</p>
+<hr />
+<h2 id="2-surface">2. Surface</h2>
+<p><code>nmap -sV -Pn -p- [net-0-7]</code> (verbatim tail):</p>
+<pre><code>Nmap scan report for [net-0-7]
+Host is up (0.000045s latency).
+Not shown: 65534 closed tcp ports (conn-refused)
+PORT     STATE SERVICE VERSION
+8000/tcp open  http    Uvicorn
+</code></pre>
+<p><strong>A second instrument, because <code>-p-</code> is TCP by definition</strong> (retrieval-hazards,
+row 1): <code>/proc/net/tcp</code> inside the container → <strong>1</strong> data row,
+<code>00000000:1F40 0A</code> (<code>1F40</code> = 8000, state <code>0A</code> = LISTEN), owned by uid 1000.
+<code>/proc/net/udp</code> and <code>/proc/net/udp6</code> → <strong>0 data rows each</strong> (1 header line per
+file, counted). Image <code>Config.ExposedPorts</code> = <code>{&quot;8000/tcp&quot;:{}}</code>. <strong>No UDP surface
+exists</strong> — and it is a property of the target, not a process that failed to start:
+the process serving 8000 was demonstrably up (<code>GET /</code> → <code>200</code>, 19 492 B) for every
+measurement below, so §23 is not in play.</p>
+<h3 id="route-enumeration-with-the-impossible-name-control-planted-first">Route enumeration, with the impossible-name control planted FIRST</h3>
+<p>Lab 87 and lab 188 both produced sweeps that reported phantoms. So the control went
+in <strong>before</strong> the sweep, not after. <strong>16 paths</strong> probed; <code>/zzq7x-not-a-real-path-9f3a</code>
+cannot exist and is the baseline:</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Status</th>
+<th>Bytes</th>
+<th>Content-Type</th>
+<th>Body md5 (12)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/</code></td>
+<td>200</td>
+<td>19 492</td>
+<td><code>text/html</code></td>
+<td><code>f0af8e617361</code></td>
+</tr>
+<tr>
+<td><strong><code>/zzq7x-not-a-real-path-9f3a</code> (control)</strong></td>
+<td><strong>404</strong></td>
+<td><strong>22</strong></td>
+<td><code>application/json</code></td>
+<td><strong><code>689525ee6c81</code></strong></td>
+</tr>
+<tr>
+<td><code>/zzq7x2</code> (2nd control)</td>
+<td>404</td>
+<td>22</td>
+<td><code>application/json</code></td>
+<td><code>689525ee6c81</code></td>
+</tr>
+<tr>
+<td><code>/register</code></td>
+<td>200</td>
+<td>13 322</td>
+<td><code>text/html</code></td>
+<td><code>c79d9f391680</code></td>
+</tr>
+<tr>
+<td><code>/login</code></td>
+<td>200</td>
+<td>11 078</td>
+<td><code>text/html</code></td>
+<td><code>7f6f4502cab1</code></td>
+</tr>
+<tr>
+<td><code>/verify-mfa</code></td>
+<td>307</td>
+<td>0</td>
+<td>—</td>
+<td>→ <code>/login</code></td>
+</tr>
+<tr>
+<td><code>/dashboard</code></td>
+<td>307</td>
+<td>0</td>
+<td>—</td>
+<td>→ <code>/login</code></td>
+</tr>
+<tr>
+<td><code>/accounting</code></td>
+<td>307</td>
+<td>0</td>
+<td>—</td>
+<td>→ <code>/login</code></td>
+</tr>
+<tr>
+<td><code>/quejas</code></td>
+<td>405</td>
+<td>31</td>
+<td><code>application/json</code></td>
+<td><code>2d7d30ea1c6f</code></td>
+</tr>
+<tr>
+<td><code>/api/me</code></td>
+<td>401</td>
+<td>24</td>
+<td><code>application/json</code></td>
+<td><code>9791d290f82b</code></td>
+</tr>
+<tr>
+<td><code>/logout</code></td>
+<td>303</td>
+<td>0</td>
+<td>—</td>
+<td>→ <code>/</code></td>
+</tr>
+<tr>
+<td><code>/static/nope.css</code></td>
+<td>404</td>
+<td>22</td>
+<td><code>application/json</code></td>
+<td><code>689525ee6c81</code></td>
+</tr>
+<tr>
+<td><code>/admin</code></td>
+<td>404</td>
+<td>22</td>
+<td><code>application/json</code></td>
+<td><code>689525ee6c81</code></td>
+</tr>
+<tr>
+<td><code>/docs</code></td>
+<td>404</td>
+<td>22</td>
+<td><code>application/json</code></td>
+<td><code>689525ee6c81</code></td>
+</tr>
+<tr>
+<td><code>/favicon.ico</code></td>
+<td>404</td>
+<td>22</td>
+<td><code>application/json</code></td>
+<td><code>689525ee6c81</code></td>
+</tr>
+<tr>
+<td><code>/openapi.json</code></td>
+<td><strong>200</strong></td>
+<td><strong>4 846</strong></td>
+<td><code>application/json</code></td>
+<td><code>a1005d6c9147</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The control held and it is the reason the sweep is trustworthy.</strong> Two
+impossible names share one 22-byte JSON body, byte-identical to <code>/admin</code>,
+<code>/docs</code>, <code>/favicon.ico</code> and <code>/static/nope.css</code>. <strong>There is no catch-all vhost and
+no phantom 200 in this lab</strong> — 5 of 16 paths are genuinely absent, and the sweep
+says so with a byte count rather than a status alone. This is the lab-87 trap
+<em>not</em> firing, and the reason to say so is that the control was planted first.</p>
+<p><code>/openapi.json</code> is served even though <code>main.py:6</code> sets <code>docs_url=None, redoc_url=None</code> — <code>openapi_url</code> is left at its default. It enumerates <strong>12
+routes</strong>, which is <strong>exactly</strong> the set of <code>@app.&lt;verb&gt;</code> decorators in the
+292-line source (<code>grep -c '^@app\.' /app/main.py</code> → <strong>12</strong>). <strong>Completeness
+cross-checked against the artefact, not assumed</strong>: 12 declared = 12 present,
+0 hidden routes.</p>
+<p>Cross-checked the other direction: every endpoint the templates reference exists.
+<code>grep -rho 'href=&quot;/…&quot;\|action=&quot;/…&quot;\|fetch(…)'</code> over all 7 templates → <strong>17</strong>
+occurrences, <strong>11 distinct</strong> endpoint strings (<code>/</code> ×1, <code>/register</code> ×3 +
+<code>action</code> ×1, <code>/login</code> ×2 + <code>action</code> ×1, <code>/verify-mfa</code> ×1, <code>/quejas</code> ×1,
+<code>/api/me</code> ×1, <code>/accounting</code> ×1, <code>/dashboard</code> ×3, <code>/logout</code> ×2) — <strong>all 11</strong>
+resolve to a declared route. No dead link.</p>
+<hr />
+<h2 id="3-the-class-and-the-independence-question">3. The class, and the independence question</h2>
+<p>The author's own source names four bugs. All four comments, verbatim, with the
+only other <code>VULN-</code> hits being the two extra annotations of VULN-3:</p>
+<pre><code>main.py:68     # ⚠️ VULN-2: acepta IP desde cabeceras controladas por el cliente
+main.py:79     # ⚠️ VULN-3: cookie base64 sin firma
+main.py:122    # ⚠️ VULN-1: mensaje diferenciado revela si el DNI existe (user enumeration)
+main.py:216    # ⚠️ VULN-3: cookie sin firma — httponly=False para que el JS la lea/escriba
+main.py:242    # ⚠️ VULN-4: inyección de comandos — entrada del usuario sin sanitizar en llamada shell
+main.py:275    # ⚠️ VULN-3: rol leído de cookie sin firma — falsificable desde el cliente
+</code></pre>
+<p><strong>Entry criterion for the whole lab:</strong> <em>which request value reaches a sink, and
+what does the sink's decision rest on?</em> Read off the source before any request:
+<code>main.py:245</code> <code>f&quot;echo {queja}&quot;</code> with <code>shell=True</code>; <code>main.py:277</code>
+<code>if info.get(&quot;role&quot;) != &quot;admin&quot;</code> where <code>info</code> came from a <strong>client cookie</strong>;
+<code>main.py:186</code> <code>ip = _client_ip(request)</code> where <code>ip</code> is the <strong>rate-limit key</strong> and
+<code>_client_ip</code> reads <code>X-Forwarded-For</code> first.</p>
+<h3 id="the-dependency-graph-and-what-each-arrow-is-worth">The dependency graph, and what each arrow is worth</h3>
+<pre><code>   VULN-2  X-Forwarded-For is the rate-limit key
+        │  (the ONLY thing that makes a 10 000-value PIN space attackable)
+        ▼
+   MFA brute force  →  SESSIONS[sid]           (main.py:212, the sole writer)
+        │
+        ├──────────────► VULN-4  command injection      /quejas
+        │                 (needs a session; does NOT need admin, does NOT need VULN-3)
+        │
+        └──────────────► VULN-3  unsigned cookie        /accounting
+                          └──► FLAG{…}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Pair</th>
+<th>Does one enable the other?</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>VULN-2 → VULN-3</strong></td>
+<td><strong>Yes, and it is the only way in.</strong> VULN-3 is unreachable without a <code>SESSIONS</code> entry, and <code>SESSIONS</code> is written at exactly one line, <code>main.py:212</code>, reachable only through the MFA check.</td>
+<td><code>grep -n SESSIONS</code> → <strong>6 hits</strong>: declaration <code>:63</code>, two reads <code>:76</code>/<code>:170</code>, <strong>one write <code>:212</code></strong>, one <code>pop</code> <code>:287</code>. The <code>/accounting</code> gate needs <code>sess</code> <em>and then</em> the forged cookie.</td>
+</tr>
+<tr>
+<td><strong>VULN-2 → VULN-4</strong></td>
+<td><strong>Yes, same single door.</strong> <code>/quejas</code> needs only <code>sess</code> (<code>main.py:239-241</code>), but <code>sess</code> still only exists post-MFA.</td>
+<td>Measured: RCE reached with a <strong>self-registered <code>role=user</code></strong> account, no forged cookie. So VULN-4 does <strong>not</strong> need VULN-3.</td>
+</tr>
+<tr>
+<td><strong>VULN-3 → VULN-4</strong></td>
+<td><strong>No. Independent.</strong> Both hang off the same session but neither requires the other.</td>
+<td>Measured in both directions, below.</td>
+</tr>
+<tr>
+<td><strong>VULN-1 → anything</strong></td>
+<td><strong>No. Inert.</strong></td>
+<td>Measured in both directions, below.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="vuln-2-is-quantified-not-asserted">VULN-2 is quantified, not asserted</h3>
+<p>The MFA PIN is 4 digits (<code>main.py:133</code>
+<code>MFA_PINS[dni] = &quot;&quot;.join(random.choices(string.digits, k=4))</code>), so the space is
+<strong>10 000</strong>. The limiter is <code>main.py:199-203</code>: three wrong PINs, then
+<code>blocked_until = now + 60</code>.</p>
+<ul>
+<li><strong>Without the header</strong>, measured on one fixed source IP: attempts 1/2/3 returned
+<code>Código incorrecto. Intentos restantes: 2</code> / <code>1</code> / <code>0</code>; attempt 4 returned the
+blocked page — <code>Acceso suspendido temporalmente</code>, <code>&lt;strong id=&quot;countdown&quot;&gt;59&lt;/strong&gt; segundos.</code>,
+9 265 B, status <strong>200</strong>. Attempt at t+62 s returned <code>Intentos restantes: 2</code>
+again ⇒ the block expires at 60 s exactly.
+⇒ ⌈10 000 / 3⌉ = <strong>3 334</strong> windows × 60 s = <strong>200 040 s = 55.5667 h</strong> of
+wall-clock, per IP, and there is no second IP available without VULN-2.</li>
+<li><strong>With a rotated header</strong>, measured: PIN <code>1845</code> found after <strong>1 846</strong> requests
+in <strong>6.257 s</strong> ⇒ <strong>295.0 req/s</strong> ⇒ the full space in <strong>33.89 s</strong>.</li>
+<li><strong>Speed-up: 5 901.8×.</strong> Median case (5 000 guesses): <strong>16.95 s</strong> versus
+<strong>27.78 h</strong>.</li>
+</ul>
+<p>That is the whole argument for VULN-2 in one line: it converts a 55-hour search
+into a 34-second one, and it is the only difference between them.</p>
+<h3 id="vuln-1-is-inert--measured-not-reasoned">VULN-1 is inert — measured, not reasoned</h3>
+<p><strong>The control that settles it:</strong> the reward was reached on an account I registered
+<strong>myself</strong>, and the enumeration was never used at any point in the successful
+path. Concretely:</p>
+<pre><code>POST /register  dni=55500011K&amp;name=Probe&amp;…   → 303   (account created)
+POST /login     dni=55500011K&amp;password=probe123 → 303 /verify-mfa   (session_id issued)
+&lt;1 846 requests with a rotated X-Forwarded-For&gt;
+POST /verify-mfa pin=1845                     → 303 /dashboard
+GET  /dashboard                               → 200, 16 166 B
+GET  /accounting  (forged role=admin cookie)  → 200, 18 395 B, the reward inside
+</code></pre>
+<p>Registration is open (<code>main.py:109-134</code>), so <strong>an attacker never needs to know
+that a DNI exists</strong> — they mint one. And the enumeration discloses <strong>only
+existence</strong>: <code>main.py:124</code> returns a string, never a password, a PIN, a balance or
+a session. Deleting VULN-1 from the report changes nothing about the outcome.</p>
+<h3 id="the-lab-defect-a-constant-that-no-code-path-reads">The lab defect: a constant that no code path reads</h3>
+<p><code>main.py:57</code></p>
+<pre><code class="language-python">TARGET_DNI = &quot;71960227N&quot;
+</code></pre>
+<p><code>grep -rn &quot;TARGET_DNI&quot; /app</code> over <strong>10 files</strong> returns <strong>exactly one hit</strong> — the
+definition itself (plus the compiled <code>main.cpython-311.pyc</code>). It is a dead
+constant: written, never read, and <strong>71960227N is the DNI of the first shipped
+account</strong>, i.e. the author appears to have left a checker marker that no code
+consumes. This is the &quot;secret that authenticates nothing&quot; shape, in its mildest
+form — a hint for a grader that grades nothing. It is also the fourth thing to
+check after the 87/188 phantom sweeps and the 242 preloaded list, and it is
+reported here as <strong>the lab's problem, not the tester's</strong>.</p>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<h3 id="f1--cwe-639--cwe-204-user-enumeration-on-an-unauthenticated-endpoint">F1 — CWE-639 / CWE-204: user enumeration on an unauthenticated endpoint</h3>
+<p><code>main.py:121-124</code>, verbatim:</p>
+<pre><code class="language-python">    if dni in USERS:
+        # ⚠️ VULN-1: mensaje diferenciado revela si el DNI existe (user enumeration)
+        return templates.TemplateResponse(request, &quot;register.html&quot;,
+            {&quot;error&quot;: &quot;Este NIF ya está registrado. ¿Tienes cuenta? Inicia sesión.&quot;})
+</code></pre>
+<p><strong>Evidence (6 candidates, 1 control class):</strong></p>
+<table>
+<thead>
+<tr>
+<th>DNI</th>
+<th>Status</th>
+<th>Body marker</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>71960227N</code></td>
+<td>200, 13 840 B</td>
+<td>rendered at <code>register.html:21</code> <code>&lt;p class=&quot;text-red-700 text-sm&quot;&gt;{{ error }}&lt;/p&gt;</code> → the served body carries <code>Este NIF ya está registrado. ¿Tienes cuenta? Inicia sesión.</code></td>
+</tr>
+<tr>
+<td><code>71968040M</code></td>
+<td>200</td>
+<td>same</td>
+</tr>
+<tr>
+<td><code>11325016T</code></td>
+<td>200</td>
+<td>same</td>
+</tr>
+<tr>
+<td><code>11352580X</code></td>
+<td>200</td>
+<td>same</td>
+</tr>
+<tr>
+<td><code>00000000A</code></td>
+<td><strong>303</strong></td>
+<td>— (account created)</td>
+</tr>
+<tr>
+<td><code>99999999X</code></td>
+<td><strong>303</strong></td>
+<td>— (account created)</td>
+</tr>
+</tbody>
+</table>
+<p>4 of 4 shipped DNIs distinguishable from 2 of 2 unoccupied ones. No credential,
+no session, no data beyond a boolean — and it is the wrong boolean to give away.</p>
+<p><strong>Impact:</strong> names the four customer accounts of a financial application to an
+unauthenticated caller, and pairs with F6 (weak passwords) as a targeting list.</p>
+<p><strong>Fix:</strong> return one response for every outcome, and make registration
+idempotent-looking (always redirect to <code>/login</code>, send the &quot;already registered&quot;
+notice out-of-band to the address on file).</p>
+<hr />
+<h3 id="f2--cwe-290--cwe-350-authentication-bypass-of-the-mfa-rate-limiter">F2 — CWE-290 / CWE-350: authentication bypass of the MFA rate limiter</h3>
+<p><code>main.py:67-73</code> and <code>main.py:186-188</code>, verbatim:</p>
+<pre><code class="language-python">def _client_ip(request: Request) -&gt; str:
+    # ⚠️ VULN-2: acepta IP desde cabeceras controladas por el cliente
+    for header in (&quot;X-Forwarded-For&quot;, &quot;X-Real-IP&quot;):
+        val = request.headers.get(header, &quot;&quot;)
+        if val:
+            return val.split(&quot;,&quot;)[0].strip()
+    return request.client.host  # type: ignore[union-attr]
+</code></pre>
+<pre><code class="language-python">    ip  = _client_ip(request)
+    now = time.time()
+    rl  = RATE.setdefault(ip, {&quot;count&quot;: 0, &quot;blocked_until&quot;: 0.0})
+</code></pre>
+<p><strong>The control that separates &quot;header ignored&quot; from &quot;header used as the key&quot;</strong> —
+this is the one measurement the finding rests on, because a rotation test alone
+cannot tell a bypass from a server that never counted:</p>
+<table>
+<thead>
+<tr>
+<th>Direction</th>
+<th>Requests</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No header, one fixed IP</td>
+<td>5</td>
+<td>counter decrements <code>2 → 1 → 0</code>, then blocked (9 265 B, countdown <strong>59</strong>)</td>
+</tr>
+<tr>
+<td><strong>Rotating <code>X-Forwarded-For</code></strong></td>
+<td>6</td>
+<td>counter <strong>frozen at <code>2</code> on all 6</strong></td>
+</tr>
+<tr>
+<td><strong>Same header value reused</strong></td>
+<td>4</td>
+<td>counter <strong>decrements <code>2 → 1 → 0</code>, then blocked</strong></td>
+</tr>
+<tr>
+<td>Rotating <code>X-Real-IP</code></td>
+<td>4</td>
+<td>counter <strong>frozen at <code>2</code> on all 4</strong></td>
+</tr>
+<tr>
+<td>Rotating <strong>non-IP</strong> garbage (<code>banana-0…3</code>)</td>
+<td>4</td>
+<td>counter <strong>frozen at <code>2</code> on all 4</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The third row is the load-bearing control: a <em>constant</em> header value still
+throttles, which proves the header <strong>is</strong> the bucket key rather than being
+stripped. The last row proves the value is never validated as an IP — it is an
+arbitrary string, so no amount of parsing discipline on the server side would
+help; only trusting the transport would.</p>
+<p>Comma-list handling confirmed: <code>X-Forwarded-For: not-an-ip, 8.8.8.8</code> is accepted
+(<code>main.py:72</code> <code>val.split(&quot;,&quot;)[0]</code>).</p>
+<p><strong>Impact:</strong> unbounded MFA guessing. 10 000-value space, measured <strong>1 846 requests
+in 6.257 s</strong> with a rotated header versus a computed <strong>55.5667 h</strong> without one.
+Combined with F6 the MFA factor is decorative.</p>
+<p><strong>Fix:</strong> take the client address from <code>request.client.host</code> or, if a proxy is
+genuinely in front, from exactly one header that the <strong>edge</strong> overwrites and
+strips from the inbound request; key the limiter on <code>(dni, address)</code> and a
+time window rather than on address alone; make the lockout progressive per
+account, not per network.</p>
+<hr />
+<h3 id="f3--cwe-565--cwe-347-authorization-decision-taken-from-an-unsigned-client-writable-cookie">F3 — CWE-565 / CWE-347: authorization decision taken from an unsigned, client-writable cookie</h3>
+<p><code>main.py:78-93</code>, <code>main.py:216-217</code> and <code>main.py:275-278</code>, verbatim:</p>
+<pre><code class="language-python">def _make_user_info(user: dict) -&gt; str:
+    # ⚠️ VULN-3: cookie base64 sin firma
+    payload = {&quot;user&quot;: user[&quot;name&quot;], &quot;role&quot;: user[&quot;role&quot;], &quot;email&quot;: user[&quot;email&quot;]}
+    return base64.b64encode(json.dumps(payload).encode()).decode()
+</code></pre>
+<pre><code class="language-python">    # ⚠️ VULN-3: rol leído de cookie sin firma — falsificable desde el cliente
+    info = _read_user_info(request.cookies.get(&quot;user_info&quot;, &quot;&quot;))
+    if info.get(&quot;role&quot;) != &quot;admin&quot;:
+        return RedirectResponse(&quot;/dashboard?error=access_denied&quot;)
+</code></pre>
+<p>Raw <code>[response-cookie-header]</code> off the MFA success (verbatim):</p>
+<pre><code>user_info=&quot;eyJ1c2VyIjogIlxiPk5BTUVQUk9CRTwvYj57ezcqN319IiwgInJvbGUiOiAidXNlciIsICJlbWFpbCI6ICJzQHQuaW8ifQ==&quot;; Path=/; SameSite=lax
+</code></pre>
+<p>— <strong>no <code>HttpOnly</code>, no <code>Secure</code></strong>, and the value is raw base64 with <strong>no MAC, no
+nonce, no expiry</strong>. <code>httponly=False</code> is deliberate and stated twice
+(<code>main.py:93</code>, <code>main.py:216</code>: <em>&quot;httponly=False para que el JS la lea/escriba&quot;</em>);
+the templates write it from the browser at <code>dashboard.html:185-187</code>.</p>
+<p><strong>Four byte-distinguishable cases, one handler</strong> (redirects <strong>not</strong> followed —
+§13):</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Cookies sent</th>
+<th>Status</th>
+<th>Location / bytes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>none</td>
+<td><strong>307</strong></td>
+<td><code>/login</code> (no session at all)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>session_id</code> only</td>
+<td><strong>307</strong></td>
+<td><code>/dashboard?error=access_denied</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>session_id</code> + <strong>genuine</strong> <code>role=user</code> cookie</td>
+<td><strong>307</strong></td>
+<td><code>/dashboard?error=access_denied</code></td>
+</tr>
+<tr>
+<td>3b</td>
+<td><code>session_id</code> + <strong>forged</strong> <code>role=admin</code></td>
+<td><strong>200</strong></td>
+<td>18 395 B, admin panel</td>
+</tr>
+<tr>
+<td>3c</td>
+<td><code>session_id</code> + forged <code>role=&quot;&quot;</code></td>
+<td><strong>307</strong></td>
+<td><code>/dashboard?error=access_denied</code></td>
+</tr>
+<tr>
+<td>3d</td>
+<td><code>session_id</code> + <code>user_info=not-b64-json</code></td>
+<td><strong>307</strong></td>
+<td><code>/dashboard?error=access_denied</code></td>
+</tr>
+</tbody>
+</table>
+<p>Cases 2 and 3 are the <strong>positive control</strong>: the gate is real, it holds for a
+legitimate low-privilege user, and it is byte-identical to the &quot;no cookie&quot; case —
+so a report claiming &quot;no authorization check exists&quot; would be wrong. Case 3d is
+the negative control on the decoder: <code>main.py:86-87</code> <code>except Exception: return {}</code>
+means garbage yields a <strong>refusal</strong>, not an accidental grant.</p>
+<p><strong>Impact:</strong> any authenticated user of any role reads the full customer register —
+every DNI, name, email address and account balance in the system. The <code>password</code>
+field <em>is</em> in the dict handed to the template (<code>main.py:280</code>
+<code>{&quot;users&quot;: list(USERS.values())}</code>) but is <strong>not rendered</strong> (<code>accounting.html:121-125</code>
+prints <code>u.dni</code>, <code>u.email</code>, <code>u.balance</code> and nothing else) — so this is PII
+disclosure, <strong>not</strong> a hash leak. That distinction is stated because the two are
+routinely conflated and only one of them is true here.</p>
+<p><strong>Fix:</strong> sign the cookie (itsdangerous / an HMAC over the payload with a
+server-side key), and — the part that matters more — <strong>stop reading an
+authorization decision out of the client at all.</strong> <code>/accounting</code> should ask
+<code>USERS[sess[&quot;dni&quot;]][&quot;role&quot;]</code>, which it already has in hand at <code>main.py:272</code>. The
+cookie is presentation only; the session is the trust boundary. Set <code>HttpOnly</code>
+on it anyway so it is not a cross-site nuisance.</p>
+<hr />
+<h3 id="f4--cwe-78-os-command-injection-shelltrue-no-sanitiser">F4 — CWE-78: OS command injection, <code>shell=True</code>, no sanitiser</h3>
+<p><code>main.py:237-251</code>, verbatim:</p>
+<pre><code class="language-python">async def quejas_post(request: Request, queja: str = Form(...)):
+    sess = _get_session(request)
+    if not sess:
+        return RedirectResponse(&quot;/login&quot;)
+    # ⚠️ VULN-4: inyección de comandos — entrada del usuario sin sanitizar en llamada shell
+    try:
+        ref = subprocess.check_output(
+            f&quot;echo {queja}&quot;, shell=True, text=True,
+            timeout=5, stderr=subprocess.STDOUT
+        ).strip()
+</code></pre>
+<p><strong>No filter exists at all</strong> — this is lab 168's shape, not lab 234's: there is no
+blocklist to characterise. <strong>Nine probes, two controls (no-session, plain text),
+seven distinct metacharacter classes</strong>, all reflected in-band through
+<code>dashboard.html:168</code> <code>&lt;pre …&gt;{{ queja_result }}&lt;/pre&gt;</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Probe</th>
+<th>Reflected <code>queja_result</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>no session (control)</td>
+<td><strong>307</strong>, no <code>&lt;pre&gt;</code></td>
+</tr>
+<tr>
+<td><code>hola quejaseguida</code> (plain)</td>
+<td><code>hola quejaseguida</code></td>
+</tr>
+<tr>
+<td><code>x;id</code></td>
+<td><code>x</code>⏎<code>uid=1000(balutron) gid=1000(balutron) groups=1000(balutron)</code></td>
+</tr>
+<tr>
+<td><code>x &amp;&amp; id</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td><code>x | id</code></td>
+<td><code>uid=1000(balutron) gid=1000(balutron) groups=1000(balutron)</code></td>
+</tr>
+<tr>
+<td><code>x $(id)</code></td>
+<td><code>x uid=1000(balutron) gid=1000(balutron) groups=1000(balutron)</code></td>
+</tr>
+<tr>
+<td><code>x `id`</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td><code>hola⏎id</code></td>
+<td><code>hola</code>⏎<code>uid=1000(balutron) …</code></td>
+</tr>
+<tr>
+<td><code>x';id;'</code></td>
+<td><code>x;id;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Identity measured <strong>as the identity</strong>, quoted from the payload's own output and
+cross-read against <code>/proc/self/status</code> inside the same primitive:</p>
+<pre><code>uid=1000(balutron) gid=1000(balutron) groups=1000(balutron)
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	1000
+CapEff:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+</code></pre>
+<p><code>uid = euid = 1000</code>, real/effective/saved/fs all <code>1000</code> ⇒ <strong>no setuid transition
+anywhere in this lab</strong> (§7's uid/euid pair, not the word &quot;root&quot;).</p>
+<p><strong>Impact:</strong> RCE as the application user. Reached on an account I registered
+myself with <code>role=user</code> and <strong>no forged cookie</strong>, which is the measurement that
+separates F4 from F3.</p>
+<p><strong>Escalation above <code>uid=1000</code>: not reachable, and measured, not inferred.</strong>
+<code>sudo: not found</code>; <code>crontab: not found</code>; <code>find / -xdev -perm -4000</code> → <strong>10
+binaries, all stock Debian</strong> (<code>passwd chsh gpasswd newgrp chfn mount umount env su</code>); <code>/etc/cron.d</code> holds one root-owned <code>e2scrub_all</code>; <code>CapEff = 0</code>. The ceiling
+of this lab is the application user, and it is the ceiling of the <em>image</em>.</p>
+<p><strong>Fix:</strong> <code>subprocess.run([&quot;echo&quot;, queja], …)</code> with <code>shell=False</code>, or drop the
+shell entirely — <code>echo</code> of user text needs no process at all.</p>
+<hr />
+<h3 id="f5--cwe-208--cwe-916-unsalted-single-round-sha-256-for-passwords">F5 — CWE-208 / CWE-916: unsalted single-round SHA-256 for passwords</h3>
+<p><code>main.py:13-14</code>, verbatim:</p>
+<pre><code class="language-python">def hash_pw(pw: str) -&gt; str:
+    return hashlib.sha256(pw.encode()).hexdigest()
+</code></pre>
+<p>No salt, no work factor, no KDF. A GPU does ~10¹⁰ SHA-256/s, so the entire
+4-account table is a rounding error. <strong>Not declared by the author</strong> — no
+<code>VULN-</code> comment — and reported because it is the multiplier on F1 and F2.</p>
+<p>Compounding it, and <strong>this part is source-visible and matters more than the
+algorithm</strong>: the four shipped passwords are in cleartext in the artefact,
+<code>main.py:23-48</code> — <code>hash_pw(&quot;chocolate&quot;)</code>, <code>hash_pw(&quot;barcelona&quot;)</code>,
+<code>hash_pw(&quot;123456&quot;)</code>, <code>hash_pw(&quot;password&quot;)</code> — and the four MFA PINs likewise,
+<code>main.py:50-55</code> (<code>4829</code>, <code>2847</code>, <code>9163</code>, <code>5512</code>). Those constants are <strong>not
+readable over HTTP by any route</strong> (<code>grep</code> for a template that renders them: <strong>0</strong>
+hits in 7 templates), so this is <strong>CWE-798 in the source</strong>, not a served leak —
+lab 102's distinction, applied in the same direction.</p>
+<p><strong>Fix:</strong> Argon2id or bcrypt with a per-user salt; move the seed accounts and seed
+PINs out of the module into a seeding step that does not run in production.</p>
+<hr />
+<h3 id="f6--cwe-521-registration-accepts-an-empty-password">F6 — CWE-521: registration accepts an empty password</h3>
+<p><code>main.py:109-116</code> declares <code>password: str = Form(...)</code>. A <strong>missing</strong> field is
+rejected — <code>POST /login {&quot;dni&quot;: …}</code> (no <code>password</code>) → <strong>422</strong>, 93 B — but an
+<strong>empty</strong> field is not, and <code>main.py:129</code> stores <code>hash_pw(&quot;&quot;)</code>.</p>
+<pre><code>POST /register dni=77700001R&amp;…&amp;password=   → 303   (account created)
+POST /login     dni=77700001R&amp;password=    → 303 /verify-mfa, session_id issued
+</code></pre>
+<p>2 probes, 1 control (the 422). <strong>Scope stated honestly: this is not an account
+takeover</strong>, because <code>main.py:121</code> refuses an occupied DNI and <code>/register</code> is the
+only writer of <code>USERS[dni][&quot;password&quot;]</code> — so an attacker cannot set a victim's
+password this way. It is a missing input-requirement control that becomes a
+takeover the moment any second password-writing path exists.</p>
+<p><strong>Fix:</strong> <code>password: str = Form(..., min_length=12)</code>; reject empty and
+whitespace-only at the schema, not in the handler.</p>
+<hr />
+<h3 id="f7--cwe-352-minor-logout-is-a-state-changing-get">F7 — CWE-352 (minor): logout is a state-changing <code>GET</code></h3>
+<p><code>main.py:284-291</code>. <code>@app.get(&quot;/logout&quot;)</code> calls <code>SESSIONS.pop(sid)</code> and
+<code>PENDING.pop(sid)</code>. A <code>GET</code> that destroys server-side state is reachable by any
+image tag, and <code>SameSite=lax</code> on <code>session_id</code> does <strong>not</strong> protect it — lax blocks
+cross-site <em>subresource</em> requests, and a top-level navigation is still sent.</p>
+<p><strong>This one is an INFERENCE from the <code>[response-cookie-header]</code> attribute and the decorator, not
+a measurement</strong> — <code>curl</code> does not enforce SameSite, so no cross-origin request was
+executed. It is filed under NOT tested as well as here.</p>
+<p><strong>Fix:</strong> make it <code>POST</code> with a CSRF token.</p>
+<hr />
+<h2 id="5-controls-that-held">5. Controls that held</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves the detector works</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Impossible-name path control</strong> (planted <strong>before</strong> the sweep)</td>
+<td><code>/zzq7x-not-a-real-path-9f3a</code> and <code>/zzq7x2</code></td>
+<td>404, 22 B, md5 <code>689525ee6c81</code> — identical to <code>/admin</code>, <code>/docs</code>, <code>/favicon.ico</code>. <strong>No catch-all, no phantom 200.</strong></td>
+</tr>
+<tr>
+<td><strong>MFA rate limiter</strong></td>
+<td>Same header value <strong>reused</strong> (not rotated)</td>
+<td>Counter decrements <code>2 → 1 → 0</code> then blocks at 60 s ⇒ the limiter is real, and the rotation result is a bypass and not a disabled filter</td>
+</tr>
+<tr>
+<td><strong>MFA success path</strong></td>
+<td>Correct PIN <code>1845</code></td>
+<td><code>303 → /dashboard</code>, then <code>GET /dashboard</code> <code>200</code>/16 166 B. The oracle <strong>fired</strong>; it was not inferred from silence</td>
+</tr>
+<tr>
+<td><strong><code>/accounting</code> role gate</strong></td>
+<td>Genuine <code>role=user</code> cookie</td>
+<td><code>307 → /dashboard?error=access_denied</code>, byte-identical to the no-cookie case ⇒ the gate exists and holds; F3 is a bypass of a real gate, not the absence of one</td>
+</tr>
+<tr>
+<td><strong>Cookie decoder</strong></td>
+<td><code>user_info=not-b64-json</code></td>
+<td><code>307</code> refusal (<code>except Exception: return {}</code>), never an accidental grant</td>
+</tr>
+<tr>
+<td><strong>DNI normalisation on register</strong></td>
+<td>3 variants: <code>&quot;  71960227n  &quot;</code>, <code>&quot;71960227N&quot;</code>, <code>&quot;71960227n&quot;</code></td>
+<td><strong>3 of 3</strong> refused with the enumeration message ⇒ <code>main.py:117</code> <code>dni.strip().upper()</code> blocks DNI squatting</td>
+</tr>
+<tr>
+<td><strong><code>/login</code> does not discriminate the failing field</strong></td>
+<td>3 cases: right-DNI/wrong-pass, wrong-DNI/right-pass</td>
+<td><strong>3 of 3 byte-identical</strong> 11 554 B, same <code>NIF/DNI o contraseña no válidos.</code> ⇒ no username oracle on the <em>login</em> path (the leak is on <em>register</em>, F1)</td>
+</tr>
+<tr>
+<td><strong>Session token entropy</strong></td>
+<td><code>main.py:156</code> <code>secrets.token_hex(32)</code></td>
+<td>64 hex chars observed twice, both distinct ⇒ not guessable, and not the weak link</td>
+</tr>
+<tr>
+<td><strong>Jinja autoescape</strong></td>
+<td><code>queja</code> = <code>'&lt;script&gt;alert(1)&lt;/script&gt;'</code> and <code>'&lt;img src=x onerror=alert(1)&gt;'</code>, plain-text control <code>ok</code></td>
+<td>Control reflects <code>ok</code> verbatim; both payloads return <code>&amp;lt;script&amp;gt;…</code> / <code>&amp;lt;img …&amp;gt;</code> ⇒ <strong>no XSS sink</strong>. `grep -rn 'safe|</td>
+</tr>
+<tr>
+<td><strong>No SSTI</strong></td>
+<td>Register with <code>name = &lt;b&gt;NAMEPROBE&lt;/b&gt;{{7*7}}</code>, then read the dashboard</td>
+<td>Greeting renders <code>&amp;lt;b&amp;gt;NAMEPROBE&amp;lt;/b&amp;gt;{{7*7}}</code> — the value <strong>is</strong> reflected (positive control, the escape is visible in the same string) and the template expression stays <strong>literal</strong>, never evaluated to <code>49</code> ⇒ stored values are not re-parsed as templates</td>
+</tr>
+<tr>
+<td><strong>Cookie attributes on the session</strong></td>
+<td><code>[response-cookie-header]: session_id=…; HttpOnly; Path=/; SameSite=lax</code></td>
+<td><code>HttpOnly</code> present on the session cookie — so the <em>session</em> is not the client-writable surface; <code>user_info</code> is (F3)</td>
+</tr>
+<tr>
+<td><strong>Password field not rendered</strong></td>
+<td><code>accounting.html:121-125</code> vs <code>main.py:280</code></td>
+<td>The dict carries <code>password</code>; the template prints <code>dni</code>, <code>email</code>, <code>balance</code> only ⇒ <strong>PII disclosure, not hash disclosure</strong></td>
+</tr>
+<tr>
+<td><strong><code>openapi.json</code> vs source</strong></td>
+<td>12 routes declared, <code>grep -c '^@app\.'</code> = 12 decorators</td>
+<td>Complete agreement ⇒ the 404s in the sweep are absences, not blind spots</td>
+</tr>
+<tr>
+<td><strong>Process alive before recording an absence</strong> (§23)</td>
+<td><code>/proc/net/tcp</code> shows 1 LISTEN on <code>1F40</code>; <code>GET /</code> <code>200</code>/19 492 B throughout</td>
+<td>The UDP and route absences are properties of the target, not of a process that failed to start</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="6-reward">6. Reward</h2>
+<p><strong><code>FLAG{cl13nt_s1d3_r0l3_1s_n0_s3cur1ty}</code></strong> — recovered on the target, over HTTP,
+on the <code>/accounting</code> page (18 395 B body; the token is at line 134 of the
+rendered response, at <code>accounting.html:69</code> in the template).</p>
+<p>Reached by: register a throwaway account → login → brute-force the 4-digit MFA
+PIN with a rotated <code>X-Forwarded-For</code> (F2) → forge the <code>role=admin</code> cookie (F3) →
+<code>GET /accounting</code>.</p>
+<p><strong>The sweep that establishes there is exactly one, with a positive control and a
+work count.</strong> Per §26 the search ran <strong>inside the container</strong> so that no probe
+script of mine was in the corpus, and a uniquely-marked file was planted first so
+the detector was proven live before its silence was believed:</p>
+<pre><code>STATE_A_canary_present_hits=1     /app/tp245-canary.txt      ← control GREEN
+STATE_B_canary_removed_hits=1     /app/templates/accounting.html
+final:  files_walked 8557  bytes_read 188399814  unreadable 13  flag_files 1
+</code></pre>
+<p><strong>Both hits were read before being reported.</strong> The first was <strong>my own canary</strong> —
+the §26 failure mode, entered deliberately and caught by the control, not by luck.
+The second was read: it is a live <code>&lt;div&gt;</code> inside <code>accounting.html</code>, not a comment
+and not a CSS class. The literal <code>&lt;!-- API Key (flag) --&gt;</code> at <code>accounting.html:60</code>
+is a <strong>separate, self-closing</strong> comment that spans only its own line; the <code>&lt;div&gt;</code>
+at <code>:61-76</code> that renders the token is live markup, which is why the token appears
+in the served body.</p>
+<p>Token-shape sweep over the same 188 MB returned 20 distinct <code>[A-Za-z0-9_]{3,12}{</code>
+openers, top 5: <code>ENV{</code> 221, <code>opqrstuvwxyz{</code> 197, <code>config{</code> 111, <code>codes{</code> 92,
+<code>python{</code> 83 — all library/runtime syntax, none a reward.</p>
+<p><code>bc</code> is not installed in the image, so the first byte count came back <strong>blank</strong>;
+per §19 that is <strong>untested, not zero</strong>, and the figure above is the recomputed
+one (<code>/proc</code>-mounted pseudo-filesystems excluded: they make <code>os.walk</code> unbounded).</p>
+<hr />
+<h2 id="7-chain-with-identity-measured-at-every-hop">7. Chain, with identity measured at every hop</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>unauthenticated</td>
+<td><code>POST /register</code> mints an account (open registration)</td>
+<td>no identity asserted</td>
+</tr>
+<tr>
+<td>1</td>
+<td>unauthenticated</td>
+<td><code>POST /login</code> → <code>PENDING[sid]</code>, 4-digit MFA armed</td>
+<td><code>session_id</code> = 64 hex, <code>HttpOnly</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>unauthenticated</td>
+<td><strong>F2</strong> — rotate <code>X-Forwarded-For</code>; 1 846 of 10 000 PINs</td>
+<td>no identity asserted</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>role=user</code> session</td>
+<td><code>POST /verify-mfa</code> → <code>SESSIONS[sid]</code></td>
+<td>session-bound; <code>role=user</code> cookie genuine</td>
+</tr>
+<tr>
+<td>4a</td>
+<td><code>role=user</code> session</td>
+<td><strong>F4</strong> — <code>POST /quejas</code> <code>; id</code></td>
+<td><code>uid=1000(balutron) gid=1000(balutron) groups=1000(balutron)</code>, <code>Uid: 1000 1000 1000 1000</code>, <code>CapEff: 0</code></td>
+</tr>
+<tr>
+<td>4b</td>
+<td>→ admin (no new execution)</td>
+<td><strong>F3</strong> — forge <code>role=admin</code></td>
+<td>no new execution identity; the escalation is a <strong>cookie</strong>, not a hop</td>
+</tr>
+</tbody>
+</table>
+<p>There is <strong>no setuid transition in this lab</strong>. <code>uid = euid = 1000</code> at every hop,
+and the image contains no route to anything higher.</p>
+<hr />
+<h2 id="8-not-tested">8. NOT tested</h2>
+<ul>
+<li><strong>Cross-origin request forgery, measured.</strong> No browser was involved, so the
+<code>SameSite=lax</code> reading in F7 is an inference from the attribute, not a result.
+F7 is filed as minor on that basis.</li>
+<li><strong>Attribute-breakout XSS</strong> (<code>&quot;' onmouseover='alert(1)</code>): the payload reached the
+shell and returned <code>error</code> — my own quoting was malformed, so the <strong>shell</strong>
+failed, not a filter. <strong>1 probe, untested</strong>; the two tag-context payloads above
+are the ones actually measured.</li>
+<li><strong>Escalation above <code>uid=1000</code></strong> — measured <em>absent</em> (<code>sudo</code> absent, <code>crontab</code>
+absent, 10 stock setuid binaries, <code>CapEff=0</code>), not attempted as a positive
+exploit. There is nothing to attempt.</li>
+<li><strong>Password cracking against the leaked-looking dict.</strong> <code>/accounting</code> hands the
+template a dict containing <code>password</code>, and the template does not print it. No
+cracking was attempted because there is nothing to crack from over HTTP. The
+<strong>source-visible</strong> plaintext (<code>main.py:23-48</code>) is a source fact, not a cracked
+result.</li>
+<li><strong>Blind SQLi / command-injection channels.</strong> None exist: every sink here is
+in-band by construction (<code>main.py:245</code> output is rendered at
+<code>dashboard.html:168</code>). No OOB collaborator was used, deliberately.</li>
+<li><strong><code>PENDING</code> session leak.</strong> <code>main.py:157</code> inserts and only <code>:211</code>/<code>:288</code> delete;
+abandoned logins are never reaped and there is no TTL. Observed in the source,
+<strong>not measured</strong> as unbounded growth.</li>
+<li><strong><code>/api/me</code> as an IDOR surface.</strong> No request parameter names a user anywhere in
+the 13 routes (<code>openapi.json</code>), so there is no ownership predicate to violate —
+lab 85's discriminator has no entry point here. Structural, not probed.</li>
+<li><strong>A DNS/virtual-host surface.</strong> One container, one port, one <code>Host</code>. No vhost
+control was run because there is nothing to discriminate; the route-level
+impossible-name control in §2 is the substitute that does apply.</li>
+</ul>
+<hr />
+<h2 id="9-discarded-with-a-reason">9. Discarded with a reason</h2>
+<ul>
+<li><strong>&quot;The admin link is hidden, so there is authorization.&quot;</strong> Discarded:
+<code>dashboard.html:190</code> is a client-side <code>if (data.role === 'admin')</code> on a
+<code>classList</code> toggle, over a cookie the client also writes at <code>dashboard.html:187</code>.
+Three-layer client-side gating on one unsigned value. The server-side gate is
+the one in <code>main.py:277</code>, and F3 measures it failing.</li>
+<li><strong>&quot;The cookie is base64, therefore it is encoded, therefore it is opaque.&quot;</strong>
+Discarded: <code>main.py:83-87</code> decodes it with <code>json.loads</code> and hands the dict
+straight to an <code>==</code> comparison. Encoding is not a control; the value is
+attacker-supplied by construction.</li>
+<li><strong>&quot;The MFA limiter is broken because a correct PIN works.&quot;</strong> Discarded: a
+correct PIN <em>should</em> work. The limiter's question is what happens on <strong>wrong</strong>
+input, and the reused-header control answers it in the direction that shows the
+limiter intact.</li>
+<li><strong>&quot;A 403-shaped response on <code>/dashboard</code> or <code>/accounting</code> is a WAF.&quot;</strong>
+Discarded: they are <code>307</code> with <code>Location: /login</code> and 0 bytes — application
+redirects from <code>main.py:226</code> / <code>main.py:274</code>. There is no WAF component in the
+image (<code>Config.ExposedPorts</code> = 8000/tcp only; uvicorn is the server).</li>
+<li><strong>&quot;A 200 with a <code>&lt;pre&gt;</code> block means the injection was filtered.&quot;</strong> Not
+applicable and deliberately not claimed: there is no filter. The <code>200</code> bodies
+here differ by <strong>bytes</strong>, which is why the discriminator was the reflected
+string and not the status.</li>
+</ul>
+<hr />
+<h2 id="10-instrumentation-defects--mine-and-one-of-them-would-have-cost-a-finding">10. Instrumentation defects — mine, and one of them would have cost a finding</h2>
+<ol>
+<li>
+<p><strong>A cookie jar that was never wired to the request.</strong> I built a fresh
+<code>HTTPCookieProcessor</code> opener per MFA attempt but seeded the session cookie
+into a <strong>different</strong> jar, so <strong>10 000 requests went out with no
+<code>session_id</code> cookie at all</strong>. Output: no hit, no error, no counter — the loop
+simply ended. Read naively that is &quot;the PIN space resists 10 000 guesses&quot;,
+which would have <strong>deleted F2's impact claim</strong>, or invited the wrong
+conclusion that the limiter is stronger than measured. It was caught because
+the same script had already produced a hit through the <code>harness.post</code> path in
+an earlier run, and the two disagreed. <strong>Work count that exposed it: 10 000
+requests, 0 authenticated.</strong> This is §14 with a different costume — a harness
+that did nothing and exited clean.</p>
+</li>
+<li>
+<p><strong><code>pkill -f /app/tp.py</code> killed the shell running it</strong>, because the pattern
+matched the killer's own command line. Every command in that compound
+statement was lost, and the sweep script silently reverted to a previous
+version (<code>md5 bb84895…</code> where I had written <code>f3dae78…</code>). Caught by printing
+the md5 on both sides — <strong>the file-transfer integrity check is what caught
+it</strong>, not the run's exit status.</p>
+</li>
+<li>
+<p><strong><code>os.walk(&quot;/&quot;)</code> over <code>/proc</code> and <code>/sys</code>.</strong> The first sweep produced <strong>0 bytes
+of output after 60 s</strong> while still running (<code>pgrep</code> returned 2, then 1 — the
+<code>1</code> being the <code>pgrep</code> itself, which is exactly the §16 shape: a control that
+reports success while measuring nothing). The second version excludes the
+pseudo-filesystems and returned in ~8 s with a real count.</p>
+</li>
+<li>
+<p><strong><code>bc</code> is not installed</strong>, so a <code>find … -printf '%s\n' | paste -sd+ | bc</code>
+byte count returned <strong>empty</strong>. Per §19 that is untested, not zero, and it was
+recomputed with <code>awk</code>/Python rather than reported as 0.</p>
+</li>
+<li>
+<p><strong>The enumeration oracle mutates the namespace — my own controls were
+consumed by my own first use.</strong> <code>00000000A</code> and <code>99999999X</code> were chosen as
+<em>cannot-exist</em> controls for F1; <code>/register</code> <strong>creates</strong> accounts, so both
+existed from the second probe onward. This is lab 242's defect reproduced by
+my own sweep: a control drawn from the namespace being enumerated is not
+idempotent. The four DNIs reported as &quot;real&quot; are the ones that existed
+<strong>before</strong> any of my requests; the two reported as &quot;absent&quot; were absent and
+then created by me. Both facts are in the F1 table rather than smoothed over.</p>
+</li>
+<li>
+<p><strong>My own artefact was a reward hit.</strong> <code>/app/tp245-canary.txt</code> came back as
+<code>flag_files: 1</code> on the first clean sweep. Found by the planted control, which
+is the only reason it was recognised rather than filed as a second reward
+(lab 82's <code>.ui-icon-flag{</code>, lab 168's probe script, lab 242's preloaded
+<code>dnis_encontrados.txt</code> — three times over).</p>
+</li>
+<li>
+<p><strong>One earlier XSS payload measured the shell, not the browser.</strong>
+<code>queja=&lt;script&gt;alert(1)&lt;/script&gt;</code> returned <code>error</code> because <code>&lt;script&gt;</code> is a
+shell <strong>redirect</strong> from a nonexistent file. Read as &quot;blocked&quot;, it would have
+been a false control. Re-run shell-quoted, it returned
+<code>&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;</code> — the opposite verdict from the same
+string.</p>
+</li>
+<li>
+<p><strong>A citation I had already written down pointed at the wrong file.</strong> The F1
+evidence table said the enumeration message renders at
+<code>register.html:98</code>. Line 98 is <code>&lt;/button&gt;</code>. The <code>98</code> was the line number <strong>in
+the response body I had saved to disk</strong>, and I attributed it to the template.
+This is the corpus's own CRITICAL #5 shape — <em>a citation pointing at a file's
+docblock instead of the code it claimed</em> — and it was caught <strong>before it
+shipped</strong>, not by re-reading: I extracted all 43 <code>file:line</code> citations from
+the draft into a script that <code>sed -n &quot;${n}p&quot;</code>s each one and fails loudly.
+43 of 43 now verify. The corrected citation is <code>register.html:21</code>
+<code>&lt;p class=&quot;text-red-700 text-sm&quot;&gt;{{ error }}&lt;/p&gt;</code>, with the rendered string
+measured in the response.</p>
+<p>The two count errors the same pass caught are recorded here for the same
+reason: I had written <strong>13</strong> routes where <code>openapi.json</code> declares <strong>12</strong> and
+<code>grep -c '^@app\.'</code> counts <strong>12</strong>, and <strong>8</strong> files under <code>/app</code> where a cold
+container has <strong>9</strong>. Both were read-off-the-screen numbers, not counted ones.
+<em>A count in a report is a claim about a measurement; recompute it.</em></p>
+</li>
+</ol>
+<hr />
+<h2 id="11-restore">11. Restore</h2>
+<pre><code>docker rm -f trailpack_container &amp;&amp; docker run -d --name trailpack_container trailpack:latest
+</code></pre>
+<p>Verified <strong>positively</strong>, not by absence of errors:</p>
+<ul>
+<li><code>id</code> inside the fresh container → <code>uid=1000(balutron) gid=1000(balutron) groups=1000(balutron)</code></li>
+<li><code>GET /</code> → <strong>200</strong>; <code>GET /accounting</code> → <strong>307 → /login</strong> (the shipped
+unauthenticated behaviour)</li>
+<li><code>ls /app</code> → exactly <code>__pycache__  main.py  requirements.txt  templates</code> — the
+four uploaded sweep scripts (<code>tp.py</code>, <code>tp2.py</code>, <code>tp3.py</code>, <code>sweep.out</code>,
+<code>sweep2.out</code>, <code>s3.out</code>, <code>tp245-canary.txt</code>) are <strong>gone</strong>, because they were
+written by <code>uid=1000</code> into the container's writable layer and the container was
+<strong>recreated from the image</strong>, not reverted.</li>
+<li>All four probe accounts (<code>55500011K</code>, <code>SSTI{{7*7}}X</code>, <code>{{7*7}}</code>, <code>77700001R</code>)
+confirmed <strong>gone</strong>: each <code>POST /register</code> returned <strong>303 (created)</strong> on the
+restored instance, which is only true of a namespace that no longer held them.
+The container was then recreated once more so it is left exactly as shipped.</li>
+</ul>
+<p>No artefacts were left outside <code>corpus/245/</code> and <code>/tmp/[tool]/tp245/</code>; no
+volume, image or container belonging to another principal was touched.</p>
+<hr />
+<h2 id="12-cross-reads-and-what-this-lab-adds-to-the-methodology">12. Cross-reads and what this lab adds to the methodology</h2>
+<ul>
+<li><strong>Against lab 243 (the independence question).</strong> 243's two bugs are
+<strong>independent</strong> — the admin logs in with no injection at all. 245's four are
+<strong>not independent, and the shape is the mirror image</strong>: three of them are
+genuinely independent <em>given a session</em>, and one of the four
+(<strong>VULN-2</strong>) is the single load-bearing bug that all of them hang from.
+Lab 78 asked which item to delete; here the answer is unambiguous and it is the
+<strong>informational</strong> item. <em>A multi-bug lab has three shapes, not two: independent
+(243), ordered-with-a-dead-tail (78), and gateway-dependent with an inert head
+(245).</em> The third is the one a &quot;fix each bug in turn&quot; remediation plan gets
+most wrong, because F1 looks like a bug and is not one, while F2 looks like a
+hardening nit and is the whole lab.</li>
+<li><strong>Against lab 218 / 234 / 84 / 168 (filter classes).</strong> This lab is a fifth
+point on the same axis and the simplest of them: <strong>there is no filter</strong>.
+<code>main.py:244-245</code> interpolates straight into a shell string. The four filter
+classes in the corpus are a ladder of <em>what the filter is made of</em>; 245 sits
+below all of them, and its entry criterion is therefore the <em>absence</em> of any
+code between the form field and <code>shell=True</code> — which is a one-line read.</li>
+<li><strong>Against lab 242 (structured-identifier existence oracles).</strong> Same namespace
+shape, different mechanism: 242's oracle is a dedicated endpoint returning two
+byte-distinct sizes; here it is an incidental <strong>side effect of a differentiated
+error string</strong> at <code>main.py:124</code>. That is the weaker and more common form — an
+oracle nobody designed, which survives every refactor that keeps the two
+branches' messages distinct.</li>
+<li><strong>Against lab 112 / 220 / 282 / 83 (lab-design defects).</strong> A sixth instance,
+and the mildest so far: <code>main.py:57</code> <code>TARGET_DNI = &quot;71960227N&quot;</code> is a <strong>dead
+constant</strong>, defined and never read across 10 files. The class is worth naming
+because it is the <em>inverse</em> of the others — they advertise a path that does not
+run; this advertises a target that nothing checks.</li>
+<li><strong>New generalisation the corpus did not have.</strong> <em>A rate limiter keyed on a
+client-supplied address is not a limiter, and the control that proves it is the
+<strong>reused</strong> header value, not the rotated one.</em> The reused value shows the
+bucket exists; the rotation shows it is addressable. Both are required, and the
+corpus's existing &quot;positive control first&quot; rule does not by itself tell you to
+run the <em>non</em>-treatment as the control.</li>
+<li><strong>Second confirmation of §26 in one engagement</strong> — my own canary file was the
+first reward hit, exactly as in 82, 168 and 242.</li>
+</ul>
+<hr />
+<h2 id="13-one-line-summary">13. One-line summary</h2>
+<p>Four declared bugs; <strong>three are real and independent given a session, one is a
+gateway without which none of them is reachable, and one — the user
+enumeration — is inert and is the finding I would delete from a report without
+changing its outcome</strong>; <code>uid=1000(balutron)</code> throughout with <code>CapEff=0</code> and no
+setuid transition anywhere; <code>FLAG{cl13nt_s1d3_r0l3_1s_n0_s3cur1ty}</code> recovered over
+HTTP; and a seventh, undeclared finding (empty-password registration) plus a dead
+constant at <code>main.py:57</code> that is the lab's own, not the tester's.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

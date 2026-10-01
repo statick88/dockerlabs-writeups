@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 186 Tokenaso &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Tokenaso</p><h1 id="tokenaso--dockerlabs-lab-186-twelfth-lab-solved">TOKENASO — DockerLabs lab 186 (twelfth lab solved)</h1>
+<p><strong>Class:</strong> PHP password-reset token forgery + check-then-act race (token double-spend), on an
+identity portal that stores its state in SQLite and JSON files.
+<strong>Reward:</strong> none present in the image. See §9 — reported as a derived absence, not asserted.</p>
+<hr />
+<h2 id="0-self-correction-stated-first">0. Self-correction, stated first</h2>
+<p>Two of my instruments were wrong before any finding was recorded, and both would have
+produced a <em>confident wrong answer</em> if I had trusted them. Both are the shapes already
+catalogued in <code>decision-making.md</code>, and both are new instances of them.</p>
+<p><strong>0.1 — A winner oracle that returned <code>True</code> for success and failure alike.</strong>
+My first race harness decided &quot;did this reset win?&quot; by probing <code>/login.php</code> and comparing
+the HTTP status. <code>urllib</code> follows <code>302</code> redirects, so a successful login (302 →
+<code>dashboard.php</code> → 200) and a failed login (200, the re-rendered form) <strong>both</strong> returned
+<code>200</code>. The probe reported every candidate as a winner and, worse, the harness printed
+<code>final_pw=None</code> because of a <em>separate</em> inconsistency. I only caught it because the count
+disagreed with the winner list. Fixed by making the decider <code>bcrypt.checkpw</code> against the
+hash the application actually stored, and by proving that decider <strong>rejects a known-bad
+input first</strong>:</p>
+<pre><code>detector self-test: known-bad -&gt; False (detector can fail). OK
+</code></pre>
+<p>This is <code>decision-making.md:50</code> — the check was shaped so the interesting answer and the
+boring answer produced the same output. Same defect, third engagement running.</p>
+<p><strong>0.2 — A file-lock poller reading a path that does not exist.</strong>
+To test the application's own locking, I spawned a thread polling
+<code>/var/www/html/emails/lock_&lt;user&gt;.txt</code> on the <strong>host</strong>. The file lives inside the
+container; the host has no <code>/var/www/html</code> at all. The poller read <code>OSError</code> forever and
+reported <code>distinct_pids_in_lockfile=0</code> — a clean, believable, <strong>structurally incapable</strong>
+result. It looked exactly like &quot;the lock is never contended&quot;. The lock file is under
+<code>DocumentRoot</code>, so the correct channel is HTTP. Re-run that way, the same detector
+immediately produced a hit:</p>
+<pre><code>round 3 | n=30 ... | lock_pids_seen=['52']
+</code></pre>
+<p>A negative result from a detector that was never connected to the thing it measures is not
+a negative result. This is the §&quot;defects in your own instrumentation&quot; obligation
+(<code>decision-making.md:171</code>) and the sticky-<code>/tmp</code> family (<code>decision-making.md:57</code>): the
+run returned an answer, well-formed, one step behind the truth.</p>
+<p><strong>0.3 — A &quot;clear inbox&quot; detector that could not fail.</strong>
+<code>emails.php</code> only prints <em>&quot;Bandeja limpiada&quot;</em> when a file existed to delete, so that
+banner cannot distinguish <em>cleared</em> from <em>there was nothing there</em>. I asserted on the
+banner and it aborted on an empty inbox. Replaced with a count check against a known
+baseline (<code>clear → 0</code>, <code>1 mint → 1 row</code>, <code>2 serial mints → 2 rows</code>, <code>delete removes exactly 1</code>). The banner is <code>decision-making.md:73</code> verbatim.</p>
+<p><strong>0.4 — A response reader that assumed one JSON shape.</strong>
+<code>check-emails-storage.php</code> serialises <code>all_emails</code> as <code>[]</code> when empty and <code>{...}</code> when
+populated, because PHP renders an empty associative array as a JSON array. My reader
+called <code>.get()</code> on a list and crashed. Fixed by handling both. (The shape instability is
+itself a small API defect, CWE-436, noted in §4.6.)</p>
+<p><strong>0.5 — A container I had already contaminated.</strong>
+My first race overwrote the lab's baseline <code>victim</code> password, and the harness correctly
+refused to continue (<code>AssertionError: baseline login credential changed</code>). The correct
+response was to destroy and recreate the container from the image, not to undo the change
+one field at a time — and the refusal is itself the proof that the detector was live.</p>
+<hr />
+<h2 id="1-recon">1. Recon</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-12]
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.14 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+Not shown: 65533 closed tcp ports (conn-refused)
+</code></pre>
+<ul>
+<li><strong>OS:</strong> Ubuntu 24.04.3 LTS (<code>/etc/os-release</code>), confirmed from inside.</li>
+<li><strong>Stack:</strong> Apache 2.4.58 + PHP (mod_php/prefork) + SQLite. No framework, no ORM.</li>
+<li><strong>App:</strong> &quot;SecureAuth Pro&quot;, a Spanish-language corporate identity portal. DocumentRoot
+<code>/var/www/html</code>; <code>&lt;Directory /var/www/&gt;</code> at <code>apache2.conf:170-174</code> carries
+<code>Options Indexes FollowSymLinks</code> and <code>Require all granted</code>, so the whole tree is
+browsable and every non-PHP file is downloadable.</li>
+<li><strong>Execution identity (measured, not assumed — <code>decision-making.md:143</code>):</strong>
+<code>uid=0(root)</code> is <code>docker exec</code>'s identity, <strong>not</strong> the web tier's. The web tier is
+<code>www-data:www-data</code>; <code>/var/www/html/emails</code> is <code>drwxr-xr-x www-data www-data</code>, so
+<code>www-data</code> owns the files it races over. I did <strong>not</strong> obtain a shell in the web tier,
+so this is read from the image and from file ownership, not from a primitive — stated
+as such.</li>
+<li><strong>UDP:</strong> <code>nmap -sU</code> needs root and was not run. <code>EXPOSE</code> in the image lists no UDP
+port. Coverage gap declared, not closed (<code>decision-making.md:76</code>).</li>
+</ul>
+<p><strong>The catalogue description was wrong, as in all eleven previous labs.</strong> It promised
+&quot;race Condition, exposición de credenciales y criptografía&quot;. Race: real, and the core.
+Credential exposure: real, and broader than described. <strong>Cryptography: there is none in
+the target</strong> — no TLS, no encryption at rest, no signature, no KDF. The only
+&quot;crypto-looking&quot; construct is <code>hash('sha256', …)</code>, and its weakness is <em>predictability</em>,
+not its algorithm. The description named a class the lab does not teach.</p>
+<p>The lab <em>does</em> annotate itself, violating its own design requirement
+(<code>decision-making.md:138</code>): <code>config.php:89</code> reads <code>VULNERABILIDAD INTENCIONAL</code>, and
+<code>:82</code>, <code>:137</code>, <code>:159</code> each name what they broke. I read them and then derived the chain
+independently, because per <code>decision-making.md:131-135</code> the labelled set is a strict
+subset of the real one — and here it demonstrably is: the annotations name the race and
+say nothing about the unauthenticated database download, the session fixation, the
+directory listing, the dead <code>admin_token</code>, or the broken <code>fix_db.php</code>.</p>
+<hr />
+<h2 id="2-source-read-before-attacking">2. Source read before attacking</h2>
+<p><code>config.php</code> is the whole lab. Four functions carry the state machine:</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Line</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>generateResetToken</code></td>
+<td><code>config.php:83</code></td>
+<td>mints the reset token</td>
+</tr>
+<tr>
+<td><code>verifyResetToken</code></td>
+<td><code>config.php:108</code></td>
+<td>the <strong>check</strong></td>
+</tr>
+<tr>
+<td><code>markTokenAsUsed</code></td>
+<td><code>config.php:120</code></td>
+<td>the <strong>act</strong></td>
+</tr>
+<tr>
+<td><code>saveEmailToInbox</code></td>
+<td><code>config.php:127</code></td>
+<td>claims a lock, has none that works</td>
+</tr>
+</tbody>
+</table>
+<p>The race is a textbook check-then-act spanning two separate <code>PDO</code> statements with no
+transaction between them:</p>
+<pre><code class="language-php">// config.php:92,95  — token = H(time_segment . salt), 10-second granularity
+$time_segment = floor(time() / 10);
+$token = hash('sha256', $time_segment . 'weak_secret_salt');
+
+// config.php:114-116  — CHECK
+$stmt = $pdo-&gt;prepare(&quot;SELECT * FROM reset_tokens WHERE username = ? AND token = ? AND used = 0&quot;);
+$stmt-&gt;execute([$username, $token]);
+return $stmt-&gt;fetch(PDO::FETCH_ASSOC);
+
+// reset-password.php:25-30  — ~36 ms of bcrypt, then the password write, then the ACT
+$hashed_password = password_hash($new_password, PASSWORD_DEFAULT);
+$stmt = $pdo-&gt;prepare(&quot;UPDATE users SET password = ? WHERE username = ?&quot;);
+$stmt-&gt;execute([$hashed_password, $username]);
+markTokenAsUsed($token_data['id']);
+</code></pre>
+<p>The window is not a sliver of incidental timing. <strong><code>password_hash()</code> sits between the
+check and the act</strong>, so the window is one bcrypt evaluation wide <em>by construction</em>. That
+is what makes it measurable rather than lucky — see §6.</p>
+<hr />
+<h2 id="3-finding-a--predictable-reset-token-the-actual-root-cause">3. Finding A — predictable reset token (the actual root cause)</h2>
+<p><strong>CWE-330</strong> (use of insufficiently random values) / <strong>CWE-640</strong> (weak password recovery
+mechanism).</p>
+<p><strong>Evidence — prediction, not observation.</strong> I computed
+<code>sha256(str(int(time/10)) + &quot;weak_secret_salt&quot;)</code> locally and compared it to the token the
+application stored. Byte-identical, first attempt:</p>
+<pre><code>predicted_now 246c743efde1bbbc914c10bd221b3ac9cc0bceec325f08ad8633cc4b5fcbc1f8
+actual (from check-emails-storage.php)
+             246c743efde1bbbc914c10bd221b3ac9cc0bceec325f08ad8633cc4b5fcbc1f8
+</code></pre>
+<p><strong>Impact.</strong> Complete unauthenticated takeover of the <code>admin</code> account, single request, no
+concurrency, no leaked inbox, no database download. The salt is a string literal in
+world-readable source, so the entire token space is 10 guesses wide (or 1, given the
+clock).</p>
+<p><strong>Root cause.</strong> A security token derived by hashing a <em>guessable</em> input with a
+<em>hardcoded, source-resident</em> salt. There is no <code>random_bytes</code>, no CSPRNG, no per-token
+salt, and no server-side secret. <code>config.php:89-92</code> even documents the weakening: the
+original granularity was 60 s and the lab changed it to 10 s. Granularity was never the
+defect; <strong>the absence of entropy was</strong>, and the comment invites the reader to think
+otherwise — the §7 &quot;reassuring comment&quot; pattern (<code>decision-making.md:133</code>).</p>
+<p><strong>Remediation.</strong> <code>bin2hex(random_bytes(32))</code> as the token, stored hashed
+(<code>password_hash</code>), compared with <code>hash_equals</code>. Time-segment derivation is acceptable
+<em>only</em> with an HMAC keyed by a server secret that never leaves the host, and even then
+the 10 s window is a replay surface.</p>
+<hr />
+<h2 id="4-findings-bg">4. Findings B–G</h2>
+<h3 id="41-b--token-double-spend-race-cwe-362-cwe-367">4.1 B — token double-spend race (CWE-362, CWE-367)</h3>
+<p>The chain in §6. Impact: a credential documented as <em>single-use</em> can be spent N times, and
+an attacker who keeps firing <strong>prevents the legitimate owner from using it at all</strong>
+(5/5 rounds, §6.3). Root cause: the <code>used</code> flag is a read-modify-write across two
+autocommit statements with no transaction, no <code>SELECT … FOR UPDATE</code>, and no conditional
+<code>UPDATE … WHERE used = 0</code>. Remediation: make the consume atomic —
+<code>UPDATE reset_tokens SET used=1 WHERE id=? AND used=0</code> and require <code>rowCount()===1</code>, or
+wrap check-and-consume in a single transaction with <code>BEGIN IMMEDIATE</code>.</p>
+<h3 id="42-c--the-applications-lock-is-not-a-lock-cwe-367-cwe-362">4.2 C — the application's lock is not a lock (CWE-367, CWE-362)</h3>
+<pre><code class="language-php">// config.php:142-147 — the comment says &quot;evitar condiciones de carrera&quot;
+while (file_exists($lock_file) &amp;&amp; $waited &lt; $max_wait) { usleep(100000); $waited += 0.1; }
+file_put_contents($lock_file, getmypid());
+</code></pre>
+<p><code>file_exists</code> then <code>file_put_contents</code> is a check-then-act on the filesystem with no
+<code>O_EXCL</code>, no <code>flock()</code>, no <code>fopen(…, 'x')</code>. Two workers both observe absence and both
+enter. Worse, the wait <strong>times out and proceeds anyway</strong>, so after 3 s the code enters the
+critical section <em>knowing</em> the lock is held. The comment names the property the code does
+not have.</p>
+<p><strong>Honest measurement, reported as measured:</strong> at n=30 concurrent mints I observed
+<strong>0 lost updates</strong> (120 ACKs, 120 durable rows), and 10 concurrent distinct-id deletes on
+the completely unlocked <code>emails.php:20-27</code> read-modify-write also lost <strong>0</strong> (10 ACKs,
+0 rows remaining, expected 0). I am reporting that, not a race win. Two reasons it may be
+unexploitable at this concurrency: (a) the nominal wait loop <em>does</em> serialize in practice
+because the gap between <code>file_exists</code> and the write is microseconds; (b) the <code>array_slice</code>
+cap at 50 truncates, so a high fan-out would produce a <em>false</em> loss signal, which is why
+I reset the inbox to zero between rounds and kept n below the cap. <strong>The right reading:
+the lock is unsound by construction and I failed to convert that into an observable loss
+at n=30. A larger n is the experiment I did not run.</strong></p>
+<h3 id="43-d--session-fixation-cwe-384">4.3 D — session fixation (CWE-384)</h3>
+<p><code>config.php:3-18</code> reads <code>PHPSESSID</code> out of the <code>Cookie</code> header and calls
+<code>session_id($session_id)</code> <strong>before</strong> <code>session_start()</code>. <code>login.php</code> never calls
+<code>session_regenerate_id()</code> — the only call in the codebase is in <code>forceNewSession()</code>
+(<code>config.php:241</code>), which nothing invokes on the login path.</p>
+<p>Proven with a positive control and a negative control:</p>
+<pre><code>1. POSITIVE CONTROL: pre-login, /session-test.php echoes the attacker's chosen id: True
+2. login as victim WITH that cookie -&gt; 302, PHPSESSID after login = ['attackerchosensessionid0000000test']
+3. attacker reuses the id: GET /dashboard.php 200 sees_admin=True
+                            GET /emails.php    200   (victim inbox reachable)
+                            GET /admin.php     200   sees_user_table=True
+4. NEGATIVE CONTROL: random unused id -&gt; /admin.php 302   (correctly rejected)
+</code></pre>
+<p>Impact: full account takeover of whoever logs in next, no credential required. This is
+independent of Findings A and B and would survive fixing both. Remediate with
+<code>session_regenerate_id(true)</code> <strong>immediately after</strong> the credential check, and stop
+honouring a client-supplied session id.</p>
+<h3 id="44-e--unauthenticated-disclosure-endpoints-cwe-306-cwe-200">4.4 E — unauthenticated disclosure endpoints (CWE-306, CWE-200)</h3>
+<p>Six scripts carry no authentication at all. Two are load-bearing for the chain and are
+therefore independent findings in their own right (<code>decision-making.md:120</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Anonymous</th>
+<th>Exposes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/check-emails-storage.php</code></td>
+<td>200</td>
+<td><strong>every user's</strong> reset token and full reset URL</td>
+</tr>
+<tr>
+<td><code>/database.sqlite</code></td>
+<td>200, 20480 B</td>
+<td>both bcrypt hashes, all users, roles, all tokens</td>
+</tr>
+<tr>
+<td><code>/database.sqlite.bak</code></td>
+<td>200, 20480 B</td>
+<td>same, the backup copy</td>
+</tr>
+<tr>
+<td><code>/emails/</code></td>
+<td>200</td>
+<td>Apache index listing every inbox file</td>
+</tr>
+<tr>
+<td><code>/get-token.php</code>, <code>/get-session.php</code></td>
+<td>200</td>
+<td>server-side session id + CSRF token, <code>Access-Control-Allow-Origin: *</code></td>
+</tr>
+<tr>
+<td><code>/session-test.php</code></td>
+<td>200</td>
+<td>full <code>$_SESSION</code> and <code>$_COOKIE</code></td>
+</tr>
+<tr>
+<td><code>/reset-db.php</code></td>
+<td>200</td>
+<td><strong>drops and recreates both tables</strong> — unauthenticated destructive</td>
+</tr>
+</tbody>
+</table>
+<p>Literal, anonymous, no cookie sent:</p>
+<pre><code>$ curl -s http://[net-0-12]/database.sqlite | sqlite3  # via python
+(1,'diseo','$2y$10$VA9NZes7JP2rmEOrTztby.HzzpWTcu5h66dkOS1lUwuNI4lQMxrr2','diseo@ctf.com','user')
+(2,'victim','$2y$10$LnTOhlAdz9wOeql1yE8EP.lOE13kk.d2BtpGLre0tU4SbdqWHiuha','victim@ctf.com','admin')
+
+$ curl -s http://[net-0-12]/check-emails-storage.php
+&quot;token&quot;: &quot;2d471f508705784ada0a2cb3bbcad51edcb235b57d1596e3641949037c24&quot;,
+&quot;reset_url&quot;: &quot;http://[net-0-12]//reset-password.php?token=2d471f50870...&amp;username=...&quot;
+</code></pre>
+<p><strong>Root cause is placement, not the handlers.</strong> <code>database.sqlite</code> lives <em>inside</em>
+<code>DocumentRoot</code> and <code>apache2.conf:171</code> sets <code>Options Indexes</code>, so no PHP guard applies to
+a non-PHP file — the MIME map decides it is a download, exactly the Elevator shape
+(<code>infrastructure.md:869</code>). Remediate by moving all state outside the webroot and adding
+<code>&lt;FilesMatch &quot;\.(sqlite|json|bak)$&quot;&gt; Require all denied &lt;/FilesMatch&gt;</code>; do not rely on
+the handlers.</p>
+<h3 id="45-f--hardcoded-credential-that-is-never-consumed-cwe-798-cwe-321">4.5 F — hardcoded credential that is never consumed (CWE-798, CWE-321)</h3>
+<pre><code class="language-php">// login.php:21
+$admin_cookie_value = base64_encode('P@ssw0rd!User4dm1n2025!#-');
+setcookie('admin_token', $admin_cookie_value, [...]);
+</code></pre>
+<p>Server-issued on every admin login, 30-day lifetime, <code>HttpOnly</code>, <code>SameSite=Strict</code>. This
+is the diagnostic trichotomy of <code>decision-making.md:19</code> applied exactly, and all three
+legs have different answers:</p>
+<ul>
+<li><strong>Reachable</strong> — yes, <code>200</code> on <code>/login.php</code> as <code>victim</code>, <code>[response-cookie-header]: admin_token=…</code>.</li>
+<li><strong>Disclosed</strong> — a real value, base64 of a hardcoded secret, in source.</li>
+<li><strong>Decisive</strong> — <strong>no.</strong> <code>grep -rn &quot;admin_token&quot; /var/www/html/</code> returns exactly one hit,
+the <code>setcookie</code> that mints it. Nothing reads it. Sent alone, it buys nothing:</li>
+</ul>
+<pre><code>5. admin_token alone -&gt; /dashboard.php 302   (rejected)
+   admin_token alone -&gt; /admin.php     302   (rejected)
+</code></pre>
+<p><strong>This is the Elevator finding inverted.</strong> There, two of three config directives were inert
+while the operative one carried no comment. Here the artifact is not inert — it is
+<em>minted and never checked</em> — and the lab's own <code>setcookie</code> with <code>HttpOnly</code> and
+<code>SameSite=Strict</code> reads as a deliberate, hardened control. A reviewer skimming for
+&quot;hardcoded secret&quot; files this as Critical; the honest severity is <strong>Informational</strong>, with
+one real caveat: the cookie is a static, identical value for every admin, so if <em>any</em>
+future code path ever compares it, every admin is one leaked cookie from every other.
+The correct fix is to delete it, not to rotate it. Reporting the name as an exposure
+without the decisive leg would be the manufactured finding <code>decision-making.md:19</code>
+describes.</p>
+<h3 id="46-g--supporting-defects">4.6 G — supporting defects</h3>
+<ul>
+<li><strong>CWE-662, improper locking / no busy timeout.</strong> Under concurrency SQLite returns
+<code>SQLSTATE[HY000]: General error: 5 database is locked</code> and the app 500s. 7 occurrences
+in <code>error.log</code> from one 30-way burst. <code>PDO</code> is constructed with no
+<code>busy_timeout</code>/<code>ATTR_TIMEOUT</code>. This is a real availability defect and it is also the
+<em>only</em> thing that ever limited my race fan-out.</li>
+<li><strong>CWE-436, interpretation conflict.</strong> <code>all_emails</code> serialises as <code>[]</code> or <code>{}</code>
+depending on emptiness (PHP empty-array ambiguity), so any client must branch on the
+response shape. Cost me a crash; will cost a real client a type error.</li>
+<li><strong>CWE-662, broken documented step.</strong> <code>fix_db.php</code> is shipped in the webroot as a repair
+tool. It dies before doing anything:
+<code>❌ Error: SQLSTATE[HY000]: General error: 1 Cannot add a column with non-constant default</code>
+(SQLite forbids <code>ALTER TABLE … ADD COLUMN … DEFAULT CURRENT_TIMESTAMP</code>). It therefore
+never reaches its <code>print_r($users)</code> dump — the disclosure it was written to produce
+does not exist through this path, and does exist through <code>/database.sqlite</code> instead. Per
+<code>decision-making.md:137</code> this is reported as a finding in its own right, separate from
+the disclosure it failed to deliver. It is also unauthenticated and it mutates schema.</li>
+<li><strong>CWE-862, missing authorization on <code>reset-db.php</code></strong> — unauthenticated <code>DROP TABLE</code>.</li>
+<li><strong>CWE-352, no CSRF</strong> on <code>reset-password.php</code> (POST) — low impact here only because the
+token is the real gate; would matter once the token is fixed.</li>
+</ul>
+<hr />
+<h2 id="5-controls-that-held-reported-with-the-same-prominence-as-the-bugs">5. Controls that held (reported with the same prominence as the bugs)</h2>
+<ol>
+<li><strong>The <code>used</code> flag works — serially.</strong> Replaying a spent token immediately, with no
+concurrency, was rejected <strong>10/10 rounds</strong>. The single-use property is genuinely
+implemented; only its atomicity is missing. This is the control that makes the race
+result mean something: the difference between 10/10 rejection and 23/400 acceptance is
+<em>concurrency and nothing else</em>.</li>
+<li><strong>Authorization on <code>admin.php</code> / <code>emails.php</code> / <code>dashboard.php</code> is real.</strong> Anonymous
+requests get <code>302 → login.php</code>; a random unused session id gets <code>302</code>. Measured with a
+no-redirect opener precisely so that the success and the failure could not produce the
+same output.</li>
+<li><strong>CSRF on <code>forgot-password.php</code> is enforced.</strong> A POST with a wrong token returns
+<em>&quot;Token de seguridad inválido&quot;</em> and mints nothing.</li>
+<li><strong>Password storage is correct</strong> — <code>password_hash(PASSWORD_DEFAULT)</code> (bcrypt cost 10).
+No plaintext, no fast hash. The weakness is the reset <em>token</em>, never the password hash.</li>
+<li><strong>SQL is parameterised everywhere</strong> — every <code>$pdo-&gt;prepare</code> uses bound parameters. No
+injection found in any handler.</li>
+<li><strong>Output is escaped</strong> — <code>htmlspecialchars</code> on every interpolation in the templates. No
+XSS found.</li>
+<li><strong>Session cookies</strong> — <code>PHPSESSID</code> is <code>path=/</code>, and the app never sets
+<code>session.use_strict_mode</code>. (The fixation in 4.3 is a missing <em>regeneration</em>, not a
+lax cookie flag.)</li>
+<li><strong>SSH is genuinely locked out.</strong> Port 22 is open and sshd is running, but there is no
+<code>authorized_keys</code> anywhere on the filesystem, <code>[lab-home]/admin</code> is <code>0750</code>, and the lab ships
+no SSH credential. A control that held by omission.</li>
+</ol>
+<hr />
+<h2 id="6-concurrency--what-was-measured-how-many-times-and-what-the-measurement-cannot-say">6. Concurrency — what was measured, how many times, and what the measurement cannot say</h2>
+<p>This is the section the methodology was missing, so it is reported in full.</p>
+<h3 id="61-what-is-racy-and-the-three-variants">6.1 What is racy, and the three variants</h3>
+<p><code>decision-making.md</code> named three shapes. This lab contains two of them:</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Location</th>
+<th>Oracle used</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>check-then-act</strong> (read <code>used=0</code>, then set it)</td>
+<td><code>reset-password.php:11</code> → <code>:30</code> via <code>config.php:114</code> / <code>:120</code></td>
+<td>app's success string <strong>and</strong> <code>bcrypt.checkpw</code> against the stored hash</td>
+</tr>
+<tr>
+<td><strong>TOCTOU on a file</strong> (exists, then create)</td>
+<td><code>config.php:142-147</code>; also unlocked at <code>emails.php:20-27</code></td>
+<td>ACKs issued vs. durable rows counted</td>
+</tr>
+<tr>
+<td>read-then-write</td>
+<td>same two, structurally</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h3 id="62-the-window-measured-rather-than-guessed">6.2 The window, measured rather than guessed</h3>
+<p>The window is bounded from outside by two numbers:</p>
+<ul>
+<li><strong>Serial span</strong> of one uncontended <code>reset-password.php</code> POST, i.e. the full
+check→write→consume path, over 10 rounds:
+<code>min=118.6 ms  median=127.3 ms  max=129.7 ms</code></li>
+<li><strong>The component that sits inside it</strong>: <code>password_hash(…, PASSWORD_DEFAULT)</code> on this
+host = <code>bcrypt cost10 avg: 35.9 ms</code> (5 iterations, measured in-container with the same
+interpreter).</li>
+</ul>
+<p>So the window is on the order of the bcrypt cost — it is <em>in the code</em>, not in the
+network, and not in luck. That is the whole reason this lab is exploitable rather than
+theoretical: an attacker who fires continuously will land inside a 36 ms window on the
+first or second attempt, every time.</p>
+<p><strong>Rates, with the fan-out and the round count stated:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Run</th>
+<th>Fan-out</th>
+<th>Posts</th>
+<th>App said &quot;success&quot;</th>
+<th>Rate</th>
+<th>Rounds with ≥2 successes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>window.py B1</code></td>
+<td>30</td>
+<td>240</td>
+<td>15</td>
+<td><strong>6.25 %</strong></td>
+<td>5/6</td>
+</tr>
+<tr>
+<td><code>window.py</code> (10 rounds)</td>
+<td>40</td>
+<td>400</td>
+<td>23</td>
+<td><strong>5.75 %</strong></td>
+<td>8/10</td>
+</tr>
+<tr>
+<td><code>chain.py</code> (predicted token, no leak used)</td>
+<td>30</td>
+<td>120</td>
+<td>14</td>
+<td>11.7 %</td>
+<td>4/4 admin reached</td>
+</tr>
+<tr>
+<td><code>spray.py</code> (continuous spray vs. legitimate owner)</td>
+<td>11/round</td>
+<td>55</td>
+<td>5</td>
+<td>9.1 %</td>
+<td><strong>5/5 attacker won</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Every success was independently confirmed: after each round the stored bcrypt hash was
+fetched and each candidate tested with <code>bcrypt.checkpw</code>. Every round produced exactly one
+matching password — the <strong>last writer wins</strong>, which is the correct semantics to expect and
+a third confirmation the race is real and not a reporting artefact:</p>
+<pre><code>### RACE: 23/400 posts reported success = 5.75%; 8/10 rounds had &gt;=2 successes
+### passwords_that_actually_authenticated=['B1-0-2','B1-1-5','B1-2-3','B1-3-1','B1-4-6','B1-5-4']
+### control: serial replay of a spent token was rejected in 10/10 rounds
+</code></pre>
+<h3 id="63-the-impact-form-that-matters">6.3 The impact form that matters</h3>
+<p>A one-shot burst proves a window exists. The form that proves <strong>impact</strong> is an attacker
+who keeps firing while the legitimate owner tries to use the token:</p>
+<pre><code>round 0 | attacker_posts=11 attacker_ok=1 owner_ok=False | final=ATTACKER_WON
+round 1 | attacker_posts=11 attacker_ok=1 owner_ok=False | final=ATTACKER_WON
+round 2 | attacker_posts=11 attacker_ok=1 owner_ok=False | final=ATTACKER_WON
+round 3 | attacker_posts=11 attacker_ok=1 owner_ok=False | final=ATTACKER_WON
+round 4 | attacker_posts=11 attacker_ok=1 owner_ok=False | final=ATTACKER_WON
+### attacker won 5/5 rounds AFTER the owner had already consumed the token
+</code></pre>
+<p><code>owner_ok=False</code> is the important half: the attacker does not merely <em>also</em> win, the
+legitimate user is <strong>locked out of their own password reset</strong>. A single-use credential
+becomes a persistent denial of recovery plus an account takeover.</p>
+<h3 id="64-what-this-measurement-cannot-prove">6.4 What this measurement cannot prove</h3>
+<p>Stated plainly, because a race report that overclaims is the failure mode this section
+exists to prevent:</p>
+<ul>
+<li><strong>A negative result here would have needed N large.</strong> I did not need one for Finding B —
+the race fired in 8/10 rounds — but had it fired once, &quot;it worked once&quot; would still have
+been a weak claim. The design principle stands: <em>a race is not disproved by a lost
+race.</em></li>
+<li><strong>The file-lock race (4.2) did not fire at n=30.</strong> 0 lost updates in 120 ACKs, and 0 in
+the unlocked delete path. I report that as a <strong>negative result at one concurrency</strong>,
+not as &quot;no race exists&quot;. The lock is unsound by inspection; I failed to demonstrate the
+loss. n=200 was not run.</li>
+<li><strong>My fan-out is bounded by Apache's workers and by CWE-662.</strong> 30–40 concurrent PHP
+processes is what <code>prefork</code> gives me; a determined attacker with more sockets is a
+different experiment. The 5.75 % figure is a property of <em>my</em> client, not a bound on
+the vulnerability.</li>
+<li><strong>All timings are from a loopback-adjacent bridge on one host</strong>, unpatched, otherwise
+idle. The window figure is an upper bound on a quiet system; loaded, it is larger.</li>
+<li><strong>Single-sample control:</strong> the lockfile poller caught one PID (<code>52</code>) once. That proves
+the detector <em>can</em> fire; it does not characterise contention.</li>
+</ul>
+<h3 id="65-isolation-of-the-harness-the-sticky-tmp-hazard">6.5 Isolation of the harness (the sticky-<code>/tmp</code> hazard)</h3>
+<p>Because a concurrency harness is exactly the workload that exposes a shared-directory
+fault, this run was contained deliberately:</p>
+<ul>
+<li>Fresh directory per attempt, named uniquely: <code>/tmp/[tool]/t186/race_a1/</code>. Verified
+empty of other activity before use (<code>ps aux | grep -c &quot;[r]ace_a1&quot;</code> → <code>0</code>).</li>
+<li><strong>No shared state file at all.</strong> State lives in the container's own SQLite/JSON, reached
+over HTTP. There is no <code>/tmp</code> artefact for a previous identity to leave behind, which
+removes the class of failure rather than testing for it.</li>
+<li><strong>A nonce is carried through every candidate password</strong> (<code>B1-0-2</code>, <code>TAKEOVER-victim-3-1</code>)
+and the winner is identified by matching the <em>stored hash</em>. Any winning password is
+therefore attributable to <em>this</em> run and to <em>this</em> identity — the witness is created in
+this run, by the identity under test (<code>decision-making.md:59</code>).</li>
+<li><strong>The container was destroyed and recreated from the image</strong> between measurement
+phases, never patched in place, because the phases mutate the very state being
+measured. The positive control for that restoration is in §0.5: the baseline-credential
+assertion fired on a contaminated container and refused to run.</li>
+</ul>
+<hr />
+<h2 id="7-the-chain-in-order-with-justification-for-each-step">7. The chain, in order, with justification for each step</h2>
+<p><strong>Chosen chain — predicted token + race, deliberately not using either leak.</strong> Using
+<code>/database.sqlite</code> or <code>/check-emails-storage.php</code> would have reached the same place in two
+requests and taught nothing about the concurrency the lab exists to teach. So Finding A's
+prediction and Finding B's race are the <em>only</em> inputs:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Step</th>
+<th>Why here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>GET /forgot-password.php</code> with <code>Accept: application/json</code></td>
+<td>The only endpoint that hands out a CSRF token + session id without credentials. Discovered in source (<code>forgot-password.php:85-89</code>, <code>get-token.php</code>).</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>POST</code> <code>username=victim</code> + CSRF</td>
+<td>Mints a token. Needs no credential — the endpoint is unauthenticated <em>by design</em> for a reset flow.</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Compute</strong> <code>sha256(floor(time/10)+'weak_secret_salt')</code></td>
+<td>Finding A. The token is <em>predicted</em>, not read. If the prediction is wrong the chain dies here, so it is self-validating.</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>30–40 concurrent</strong> POSTs to <code>reset-password.php</code> with that token, distinct passwords</td>
+<td>Finding B. Needs only that ≥2 workers pass the <code>used=0</code> check before either writes <code>used=1</code>.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Confirm the winner with <code>bcrypt.checkpw</code> against the stored hash</td>
+<td>The app's own success string is not trusted; §0.1.</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>POST /login.php</code> with the winner, <strong>no-redirect opener</strong></td>
+<td>302 means authenticated.</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>GET /admin.php</code></td>
+<td>The gate is <code>$_SESSION['role'] === 'admin'</code> (<code>admin.php:15</code>), now satisfied legitimately. Full user table.</td>
+</tr>
+</tbody>
+</table>
+<pre><code>detector self-test (pre-race, correct password): admin_reachable=True (admin.php 200, table_rendered=True)
+round 0 | token=predicted | posts=30 ok=3 | admin_reached=True TAKEOVER-victim-0-3
+round 1 | token=predicted | posts=30 ok=4 | admin_reached=True TAKEOVER-victim-1-3
+round 2 | token=predicted | posts=30 ok=5 | admin_reached=True TAKEOVER-victim-2-0
+round 3 | token=predicted | posts=30 ok=2 | admin_reached=True TAKEOVER-victim-3-1
+### admin panel reached in 4/4 rounds with ONLY a predicted token + a race
+</code></pre>
+<p><strong>Shorter, equally valid chain (recorded so the next reader does not have to rediscover
+it):</strong> download <code>/database.sqlite</code> → read <code>victim</code>'s bcrypt hash → crack the shipped
+default → log in. That is one request and it depends on Finding E, not on the race. Both
+are reported; the second is listed as a shortcut, not as the result.</p>
+<p><strong>Not used in the chain, and why:</strong> session fixation (4.3) reaches <code>admin.php</code> on its own
+in three requests with no credential and no concurrency — arguably the shortest path in
+the lab. It is filed as an independent finding rather than folded in, because it is a
+separate defect with a separate fix, and merging it would hide both
+(<code>decision-making.md:79</code>).</p>
+<hr />
+<h2 id="8-design-observation-about-the-lab">8. Design observation about the lab</h2>
+<p>The lab teaches one thing well and undermines it three ways.</p>
+<p><strong>Well:</strong> putting <code>password_hash()</code> between the check and the act is an elegant,
+self-demonstrating design. The vulnerable window is not an artefact of network timing or
+a sleep — it is a <em>named, measurable, expensive operation the author chose to place
+there</em>. A student can be handed the code and told &quot;count your successes&quot;, and the number
+they get is a property of the program. That is better than most race-condition training,
+which is usually a coin flip.</p>
+<p><strong>Undermined, in the same file:</strong></p>
+<ol>
+<li><strong>The self-documentation removes the exercise.</strong> <code>config.php:89</code> says
+<code>VULNERABILIDAD INTENCIONAL</code>; <code>:82</code> names the token; <code>:137</code> claims the lock. A learner
+greps, gets a confident answer, and never derives. This is the design requirement
+<code>decision-making.md:138</code> states for lab authors — hide the annotation, keep the
+trigger — and this lab inverts it. Worse, the annotations are <strong>incomplete</strong>: they
+point at the race and are silent on the unauthenticated database download, the session
+fixation, the directory listing, and the dead <code>admin_token</code>. So the labelling produces
+both harms at once: it stops the derivation, and it still under-reports.</li>
+<li><strong>The one comment that describes the fix is the inert one.</strong> <code>config.php:137</code> says
+<em>&quot;Usar bloqueo de archivo para evitar condiciones de carrera&quot;</em> — and the code it
+describes does not achieve that. This is <code>decision-making.md:84</code> again: the fragment
+that names the exact behaviour is the one every reader selects, and here it is also the
+one that is false. A learner who trusts it learns nothing.</li>
+<li><strong>The intended &quot;cryptography&quot; content is absent.</strong> The catalogue promises it. There is
+no TLS, no encryption at rest, no signature, no KDF. Naming a class the lab does not
+teach is the mirror of naming a technology the lab does not contain
+(<code>decision-making.md:139</code>).</li>
+</ol>
+<p><strong>And a fairness bug worth reporting as a finding:</strong> <code>fix_db.php</code> is shipped as a working
+repair tool and cannot run. Its <code>ALTER TABLE … DEFAULT CURRENT_TIMESTAMP</code> is rejected by
+SQLite, so it 500s before printing anything. A learner told the app has a repair endpoint
+will conclude the app is broken. The intended escalation <em>was</em> real — it just lives at
+<code>/database.sqlite</code> instead.</p>
+<hr />
+<h2 id="9-reward">9. Reward</h2>
+<p><strong>No reward is present.</strong> Reported as a derived absence, with the search stated.</p>
+<pre><code>$ docker run --rm --entrypoint sh tokenaso:latest -c \
+  'grep -rniE &quot;flag\{|ctf\{|reward|tokenaso&quot; / --include=&quot;*.php&quot; --include=&quot;*.html&quot; \
+   --include=&quot;*.txt&quot; --include=&quot;*.json&quot; --include=&quot;*.sh&quot; --include=&quot;*.md&quot; 2&gt;/dev/null \
+   | grep -viE &quot;^/(usr|proc|sys|var/lib|etc/ssl)&quot;
+(no output)
+$ find / -xdev -iname &quot;*flag*&quot; -o -iname &quot;*reward*&quot; -o -iname &quot;*secret*&quot;
+(no output outside /usr, /proc, /sys, /var/lib)
+$ grep -rniE &quot;flag|reward&quot; /var/www/html/*.php /opt /root /home /usr/local
+(no output)
+</code></pre>
+<p>The exposure surface was read end to end: 18 PHP files, <code>database.sqlite</code> and its
+<code>.bak</code>, the <code>emails/</code> directory, the Apache config, and <code>/root</code>. The admin panel, the
+dashboard, and the notification centre were all reached with full admin privilege
+(§7, step 7) and none of them renders a reward.</p>
+<p><strong>This is the correct outcome, not a failure to solve.</strong> DockerLabs grants its reward
+server-side, on the platform, keyed to the solved-lab state — it is not shipped inside the
+container, and nothing in the image emits it. This is the fifth lab in the series with no
+in-image reward. The substantive result is the chain and the numbers in §6.</p>
+<hr />
+<h2 id="10-tested--not-tested--not-testable">10. Tested / not tested / not testable</h2>
+<p><strong>Tested.</strong> Token prediction (byte-identical, first attempt). Token double-spend
+(400 posts, 10 rounds, two fan-outs). Persistent spray vs. legitimate owner (5/5).
+End-to-end admin takeover via predicted token (4/4). Session fixation (positive +
+negative control). Unauthenticated disclosure on 7 endpoints. <code>database.sqlite</code>
+exfiltration. Directory listing. <code>reset-db.php</code> unauthenticated destruction.
+<code>fix_db.php</code> failure. <code>database is locked</code> under load. <code>admin_token</code> decisiveness.
+Serial single-use enforcement (10/10). SQLi sweep — parameterised throughout. XSS sweep —
+<code>htmlspecialchars</code> throughout.</p>
+<p><strong>Not tested (time/scale).</strong> n&gt;40 fan-out (bounded by Apache <code>prefork</code> workers and by
+CWE-662). n=200 for the file-lock race. Concurrent <code>reset-db.php</code> + resets (destructive
+interference). Cookie-attribute analysis of <code>PHPSESSID</code> beyond <code>path</code> (no <code>session.*</code>
+directives set in <code>apache2.conf</code>/<code>php.ini</code>, so defaults apply). Whether the 50-row
+<code>array_slice</code> cap can itself be driven to destroy a user's notification history.</p>
+<p><strong>Not testable in this environment.</strong> <code>nmap -sU</code> (needs root) — no UDP coverage obtained;
+<code>EXPOSE</code> lists none, but that is a manifest, not a scan. SSH authentication (no
+credential exists in the image). TLS (none configured). <code>php.ini</code> session settings beyond
+what <code>phpinfo</code>-free inspection reveals.</p>
+<hr />
+<h2 id="11-what-is-genuinely-new-here-and-where-it-belongs">11. What is genuinely new here, and where it belongs</h2>
+<p>Cross-referenced against the three candidate sections before writing anything. The bar set
+by the last two engagements was one cross-ref and one clause, so this is deliberately
+small — and the concurrency section is <strong>proposed, not created</strong>.</p>
+<p><strong>New for <code>api_web.md</code> (web/API):</strong></p>
+<ul>
+<li>The <strong>check-then-act / double-spend</strong> family with a <em>measurement</em> recipe, not a
+technique list: measure the window by timing the operation the author placed between
+the check and the act; confirm the winner against the state the server actually stored,
+never against a status code a redirect-following client flattens; and state the
+fan-out and round count with the rate.</li>
+<li>The <strong>replay-after-consumption</strong> impact form, which is the one that separates a race from
+a curiosity: a continuous sprayer both wins <em>and</em> denies the legitimate owner recovery.
+<code>owner_ok=False</code> alongside <code>attacker_ok=True</code> is the measurement to report.</li>
+<li><strong>&quot;A control that worked serially and failed concurrently is a finding, and the serial
+control is what gives the concurrent number meaning.&quot;</strong> 10/10 serial rejection vs. 23/400
+concurrent acceptance is a contrast, and a lone success rate is not evidence.</li>
+</ul>
+<p><strong>New for <code>decision-making.md</code> (transversal), one clause on the existing
+&quot;control that cannot fail&quot; rule:</strong> a detector pointed at a path or endpoint that does not
+exist <strong>returns a clean, believable negative</strong> — indistinguishable from &quot;the condition
+does not occur&quot;. Mine read a host path the container did not share and reported
+<code>distinct_pids_in_lockfile=0</code>. Extend the existing rule with: <em>prove the negative detector
+is connected by forcing a positive through it first.</em> It is already half-present as &quot;a
+control that cannot fail&quot;, but nothing there covers a detector that is merely
+<strong>disconnected</strong>.</p>
+<p><strong>Deliberately not proposed:</strong> a new <code>sections/concurrency.md</code>. The lab's concurrency
+findings are all web/API (PHP reset flow, JSON file store, Apache-served artefacts), so
+<code>api_web.md</code> is the correct home and forcing an eleventh section would fragment a class
+that has no non-web instance yet. If a non-web concurrency lab appears — a double-spend
+against a queue, a coupon race in a billing daemon, a TOCTOU on a device file — that is
+the trigger to propose the section, and it should be proposed then.</p>
+<p><strong>Not proposed either:</strong> the Elevator &quot;inert directive&quot; pattern is already in
+<code>decision-making.md:84</code> and §4.5 is a third instance (a cookie that is minted and never
+read) — reinforcement of an existing rule, so it needs no new text.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

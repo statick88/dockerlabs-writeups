@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 113 Road_To_Olympus &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Road_To_Olympus</p><h1 id="road-to-olympus--dockerlabs-lab-113-difficult">ROAD TO OLYMPUS — DockerLabs lab 113 (Difficult)</h1>
+<p><strong>Target:</strong> three hosts, deployed as three separate images
+<strong>Date:</strong> 2026-09-28
+<strong>Reward obtained:</strong> <strong>none exists.</strong> No <code>FLAG{}</code>, no reward text, no completion token on any of the three hosts. Demonstrated by exhaustive search in §6 — reported as an absence, not invented.
+<strong>Lab verdict:</strong> three-host pivoting engagement fully traversed. Root on hosts 1 and 2; host 3 reached, its writable surface obtained and proven, its credential-gated surface not.
+<strong>The transferable result:</strong> the transport decision criterion and its verification discriminator, in §10. The lab itself is a thin wrapper around them.</p>
+<hr />
+<h2 id="1-autocorrección-read-this-first">1. Autocorrección (read this first)</h2>
+<p>Five times in this engagement I asserted something and measurement contradicted it. Three of the five produced clean, believable answers that were wrong, and two of those would have been reported as findings.</p>
+<h3 id="11-i-built-a-reverse-tunnel-watched-it-register-a-session-and-it-routed-nothing">1.1 I built a reverse tunnel, watched it register a session, and it routed nothing</h3>
+<p>The most important error in the engagement, and the reason §10 exists.</p>
+<p>To make Zeus (<code>30.30.30.0/24</code>) reachable I put a <code>chisel server</code> on <strong>Poseidon</strong> and ran a <code>chisel client</code> on <strong>Hades</strong> asking for <code>R:socks</code>. The logs were perfect:</p>
+<pre><code>2026/09/28 14:57:24 server: session#1: tun: proxy#R:127.0.0.1:1080=&gt;socks: Listening
+</code></pre>
+<p>A session, a SOCKS remote, a &quot;Listening&quot; line. It read exactly like a working tunnel. It routed nothing.</p>
+<p><code>R:</code> means <strong>reverse</strong>: the <em>server</em> listens and the traffic is proxied <em>through the client</em>. So that SOCKS listener was bound on <strong>Poseidon's loopback</strong>, not on my host. My existing proxy at <code>127.0.0.1:1080</code> gained no route to Zeus. Probing Zeus through it returned <code>OPEN: []</code> — which is byte-for-byte what &quot;Zeus is down&quot; looks like, and byte-for-byte what &quot;my tunnel is wrong&quot; looks like.</p>
+<p>The correction was to invert the arrangement: <code>chisel server</code> on <strong>my</strong> host, <code>chisel client</code> on the far end. Now the listener lands where I can use it:</p>
+<pre><code>$ curl --socks5-hostname 127.0.0.1:1081 http://30.30.30.2/ -o /dev/null -w 'HTTP %{http_code}\n'
+HTTP 200
+</code></pre>
+<p><strong>The rule this produced:</strong> a registered tunnel session is a claim about the <em>control plane</em>, not a measurement of the <em>data plane</em>. See §10.3.</p>
+<h3 id="12-my-yescrypt-oracle-returned-a-confident-negative-for-every-input-including-wrong-ones">1.2 My yescrypt oracle returned a confident negative for every input, including wrong ones</h3>
+<p>I needed to test password candidates against Poseidon's and Zeus's <code>$y$j9T$</code> hashes. My first oracle used the salt string as it appeared in <code>/etc/shadow</code>, and every candidate returned <code>False</code>:</p>
+<pre><code>b'P0seid\xc3\xb3n2022!'  match=False
+b'cerbero'               match=False
+</code></pre>
+<p>A uniform negative across eight candidates is the signature of a <em>dead</em> detector, not of eight wrong passwords. Checking the same candidate against Hades — where I already knew the answer — should have returned <code>True</code>, and returned <code>False</code> too. The oracle was broken, not the passwords.</p>
+<p>The bug: my self-test salt was the wrong length, and glibc's yescrypt returns <code>*0</code> for a salt it rejects, which I had not checked for. With a correctly-sized 22-character salt the oracle went live immediately:</p>
+<pre><code>ORACLE LIVE: True
+b'P0seid\xc3\xb3n2022!'  match=True
+</code></pre>
+<p><strong>I had already recorded &quot;the documented password does not work&quot; as a finding.</strong> It was an artefact of my own harness. This is the fourth appearance across the series of a detector pointed at something that cannot succeed, and the second appearance of it producing a <em>negative</em> dressed as a conclusion.</p>
+<h3 id="13-i-read-a-base32-password-hint-as-authoritative-and-it-was-an-encoding-decoy">1.3 I read a base32 &quot;password hint&quot; as authoritative and it was an encoding decoy</h3>
+<p>Hades' index template carries, in an HTML comment, what is presented as the real SSH password:</p>
+<pre><code>JZKECZ2NPJAWOTT2JVTU42SVM5HGU23HJZVFCZ22NJGWOTTNKVTU26SJM5GXUQLHJV5ESZ2NPJEWOTLKIU6Q====
+</code></pre>
+<p>Decoded base32 → base64 → bytes:</p>
+<pre><code>50 30 73 65 69 64 f3 6e 32 30 32 32 21
+</code></pre>
+<p>which reads as <code>P0seid</code> + <code>0xf3</code> + <code>n2022!</code>. The <code>0xf3</code> is Latin-1 <code>ó</code>. The visible password table on the same site gives <code>P0seidón2022!</code> — and that one, sent as <strong>UTF-8</strong> (<code>0xc3 0xb3</code>), is what the hash actually matches:</p>
+<pre><code>503073656964c3b36e3230323221  match=True
+</code></pre>
+<p>The hint is a trap that only fires if you decode it and believe the result. The correct procedure was to treat the hint as a <em>candidate generator</em> and settle it against the hash — which is what §1.2 finally forced me to do. <strong>A hint that decodes cleanly is not thereby correct.</strong></p>
+<h3 id="14-three-port-in-use-errors-i-attributed-to-the-target">1.4 Three &quot;port in use&quot; errors I attributed to the target</h3>
+<p>The hop-2 client refused to start with <code>Server cannot listen on R:1445=&gt;30.30.30.2:445</code>, and the same for <code>R:1021</code>, then <code>R:2222</code>. I initially read that as the tunnel rejecting the remote. It was not: port <strong>2222 was already bound on my own workstation</strong> by a process I could not see (no PID exposed to an unprivileged <code>ss</code>), and the other failures were stale chisel clients of my own still holding listeners. Three separate causes, one symptom, and in all three cases the instrument was the problem.</p>
+<p>The generalisable error: I attributed an error to the far side of a tunnel before confirming the near side was clean. <code>ss</code> on the <em>originating</em> host is the cheap check and I skipped it twice.</p>
+<h3 id="15-i-misread-chisels-socks5-reply-and-briefly-believed-smb-was-dead">1.5 I misread chisel's SOCKS5 reply and briefly believed SMB was dead</h3>
+<p>My scanner read 4 bytes after the SOCKS <code>CONNECT</code> reply. Chisel prepends a 4-byte marker (its server port, <code>0x031e1e1e</code>) before the bound address, so every banner came back as <code>b'\x1e\x1e\x1e\x03\x92\xec'</code> — garbage that looked like a protocol refusing me. Reading 10 bytes gave <code>220 (vsFTPd 3.0.5)</code> and <code>SSH-2.0-OpenSSH_8.9p1</code> immediately.</p>
+<p>This is the &quot;silence indicts your framing, not the target&quot; case applied to a SOCKS layer instead of a protocol: I had invented a framing from a partial read, then treated the resulting gibberish as evidence about Samba.</p>
+<hr />
+<h2 id="2-real-surface-per-host">2. Real surface, per host</h2>
+<p>The name and the catalogue entry are both wrong about the tooling. The landing page describes <strong>Ligolo-ng</strong> in detail; the status line for the lab says <strong>Chisel</strong>; <strong>neither is installed on any host</strong>. The pivot required me to supply the transport myself.</p>
+<h3 id="host-1--hades-1010102--2020203">Host 1 — Hades (<code>10.10.10.2</code> / <code>20.20.20.3</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Element</th>
+<th>Value</th>
+<th>Established by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Ubuntu 24.04 LTS</td>
+<td><code>/etc/os-release</code></td>
+</tr>
+<tr>
+<td>Ports</td>
+<td><code>22/tcp</code> OpenSSH 9.6p1, <code>80/tcp</code> Werkzeug 3.0.4 / Python 3.12.3</td>
+<td><code>nmap -sV -Pn -p-</code></td>
+</tr>
+<tr>
+<td>Web app</td>
+<td>Flask, 18 lines, <strong>static content only</strong> — no injection, no auth, no forms</td>
+<td><code>app/app.py</code> read in full</td>
+</tr>
+<tr>
+<td>App identity</td>
+<td>runs as <strong><code>root</code></strong> (pid 17)</td>
+<td><code>ps aux</code></td>
+</tr>
+<tr>
+<td>Accounts</td>
+<td><code>cerbero</code> (uid 1001), in group <code>27(sudo)</code></td>
+<td><code>id</code></td>
+</tr>
+<tr>
+<td>Privilege</td>
+<td><code>cerbero</code> → <code>(ALL : ALL) ALL</code>, own password</td>
+<td><code>sudo -l</code></td>
+</tr>
+<tr>
+<td>Layout defect</td>
+<td>route <code>/saltar</code> calls <code>render_template(&quot;saltar.html&quot;)</code> but the file lives at <code>static/html/saltar.html</code>, not <code>templates/</code> → the route 500s</td>
+<td>source vs directory listing</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The web app is not the entry point.</strong> It is a lab manual rendered as HTML. Its only security-relevant content is the base32 decoy of §1.3. The real entry is SSH.</p>
+<h3 id="host-2--poseidon-2020202--3030303">Host 2 — Poseidon (<code>20.20.20.2</code> / <code>30.30.30.3</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Element</th>
+<th>Value</th>
+<th>Established by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Debian GNU/Linux 11 (bullseye)</td>
+<td><code>/etc/os-release</code></td>
+</tr>
+<tr>
+<td>Ports</td>
+<td><code>22/tcp</code> OpenSSH, <code>80/tcp</code> Apache/2.4.54 (Debian)</td>
+<td><code>nmap -sV</code>, <code>Server:</code> header</td>
+</tr>
+<tr>
+<td>Interpreter</td>
+<td>PHP 7.4.33 CLI</td>
+<td><code>php -v</code></td>
+</tr>
+<tr>
+<td>App</td>
+<td><code>/var/www/html/database.php</code> — <code>PDO::query()</code> on raw POST input</td>
+<td>source read in full</td>
+</tr>
+<tr>
+<td>DB</td>
+<td>SQLite <code>/var/www/html/dioses.db</code> (root-owned, in the docroot)</td>
+<td>source + query</td>
+</tr>
+<tr>
+<td><strong>Webroot</strong></td>
+<td><strong><code>drwxrwxrwx</code> (0777), <code>www-data:www-data</code></strong></td>
+<td><code>ls -la /var/www/html</code></td>
+</tr>
+<tr>
+<td>Accounts</td>
+<td><code>megalodon</code> (uid 1000), in group <code>27(sudo)</code>, <code>(ALL:ALL) ALL</code></td>
+<td><code>id</code>, <code>sudo -l</code></td>
+</tr>
+<tr>
+<td>Tooling</td>
+<td>no python3, nc, socat; has curl, perl, gcc</td>
+<td><code>command -v</code></td>
+</tr>
+</tbody>
+</table>
+<p>Full TCP scan performed through the tunnel: <code>1-65535</code> → only <code>22</code> and <code>80</code>.</p>
+<h3 id="host-3--zeus-3030302">Host 3 — Zeus (<code>30.30.30.2</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Element</th>
+<th>Value</th>
+<th>Established by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Ubuntu 22.04.4 LTS</td>
+<td><code>/etc/os-release</code></td>
+</tr>
+<tr>
+<td>Ports</td>
+<td><code>21</code> vsFTPd 3.0.5, <code>22</code> OpenSSH 8.9p1, <code>80</code> Apache/2.4.52, <code>139</code>/<code>445</code> Samba</td>
+<td>banner reads</td>
+</tr>
+<tr>
+<td>Accounts</td>
+<td><code>rayito</code> (1000), <code>hercules</code> (1001); hashes <code>$y$j9T$</code> yescrypt, <strong>not recovered</strong></td>
+<td><code>/etc/shadow</code></td>
+</tr>
+<tr>
+<td><strong>Sudoers</strong></td>
+<td><strong><code>rayito ALL=(ALL) NOPASSWD: ALL</code></strong></td>
+<td><code>/etc/sudoers</code></td>
+</tr>
+<tr>
+<td>Samba</td>
+<td><code>[shared] path=/samba/shared writable=yes guest ok=yes read only=no</code>, dir mode <code>drwxrwxrwx</code></td>
+<td><code>smb.conf</code>, <code>ls</code></td>
+</tr>
+<tr>
+<td>FTP</td>
+<td><code>anonymous_enable=NO</code>, <code>local_root=[lab-home]/hercules</code>, <code>userlist_enable=YES</code></td>
+<td><code>vsftpd.conf</code>, live <code>530</code></td>
+</tr>
+<tr>
+<td>Webroot</td>
+<td><code>drwxr-xr-x root:root</code>, <strong>stock Ubuntu default page</strong>, not writable</td>
+<td><code>ls</code>, 10671 bytes of default HTML</td>
+</tr>
+<tr>
+<td>Anomaly</td>
+<td><code>/start.sh</code> invokes <code>./smb_request.sh</code> — <strong>the file does not exist</strong></td>
+<td><code>find / -name smb_request*</code> → nothing</td>
+</tr>
+<tr>
+<td>Anomaly</td>
+<td><code>[lab-home]/hercules/muerte_a_kratos.exe</code> is <strong><code>ELF 64-bit ... not stripped</code></strong>, not a PE</td>
+<td><code>file</code></td>
+</tr>
+</tbody>
+</table>
+<p>Full TCP scan from Poseidon: <code>1-65535</code> → only <code>21, 22, 80, 139, 445</code>.</p>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<h3 id="31-unfiltered-sql-execution--cwe-89">3.1 Unfiltered SQL execution — CWE-89</h3>
+<p><code>database.php</code> passes the <code>buscar</code> POST parameter straight into <code>PDO::query()</code>:</p>
+<pre><code class="language-php">$stmt = $conexion-&gt;query($buscar);
+</code></pre>
+<p>The only guard is a keyword blacklist:</p>
+<pre><code class="language-php">$blacklist = array('USERS', 'PASSWORDS', 'VERSION', 'UNION', 'INSERT', 'UPDATE', 'DELETE');
+</code></pre>
+<p><strong>The blacklist names tables that do not exist.</strong> The credential tables are <code>usuarios</code> and <code>contrasena</code>:</p>
+<pre><code class="language-sql">CREATE TABLE usuarios (id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre_usuario TEXT NOT NULL UNIQUE, email TEXT UNIQUE);
+CREATE TABLE contrasena (id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_usuario INTEGER NOT NULL, contrasena_hash TEXT NOT NULL UNIQUE, ...);
+</code></pre>
+<p><code>USERS</code> does not match <code>usuarios</code>; <code>PASSWORDS</code> does not match <code>contrasena</code>. The filter is a <strong>strict subset of what it appears to protect</strong> — it blocks the English words an attacker would guess and none of the Spanish words the schema actually uses.</p>
+<p><strong>Evidence, executed through the tunnel:</strong></p>
+<pre><code>$ curl --socks5-hostname 127.0.0.1:1080 -X POST http://20.20.20.2/database.php \
+       --data-urlencode 'buscar=SELECT * FROM usuarios'
+1 | Poseidon | poseidon@olimpo.deux
+2 | megalodon | megalodon@olimpo.deux
+
+$ curl ... --data-urlencode 'buscar=SELECT * FROM contrasena'
+1 | 1 | $sha1$oceanos$QqFgxFPmqRex1ZKFCZ2ONJKWOTTNKFTU46SBM5ZKFCZ2ONJKWOTTNKFTU4GQPdkh3nQSWp3I=
+2 | 2 | $sha1$hahahaha$JZKFCZ2ONJKWOTTNKFTU46SBM5HG2TLHJV5ECZ2NPJEWOTL2IFTU26SFM5GXU23HJVVEKPI=
+</code></pre>
+<p><code>sqlite_master</code> enumeration returns the full schema, and the <code>SELECT sql</code> column returns every <code>CREATE TABLE</code> statement, so the schema is fully readable.</p>
+<p><strong>Impact:</strong> unauthenticated read of the entire database including the credential table, and arbitrary query execution. Also unauthenticated <em>write</em> — the blacklist blocks <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code> as keywords, so those specific verbs are filtered, but nothing prevents <code>PRAGMA</code>, <code>ATTACH</code>, or <code>ALTER</code>. The docroot being <code>0777</code> (CWE-732) means the SQLite file itself is replaceable by any local user.</p>
+<p><strong>Root cause:</strong> the filter validates a <em>representation</em> — a set of English substrings — rather than authorising the operation. A blacklist cannot enumerate what it does not know exists, and the author wrote the filter against the table names they expected, not the ones they shipped. The same shape as <code>decision-making.md</code> §1, pointed at a filter instead of a parameter.</p>
+<p><strong>Remediation:</strong> use bound parameters. If arbitrary queries are a feature, expose them as a named, allow-listed set of prepared statements; if they are not, the <code>buscar</code> parameter is a search term and belongs in a <code>LIKE</code> clause with a bound value, never in a statement. Additionally remove the <code>0777</code> on the docroot and move <code>dioses.db</code> outside it.</p>
+<h3 id="32-world-writable-web-application-directory--cwe-732">3.2 World-writable web application directory — CWE-732</h3>
+<pre><code>drwxrwxrwx 2 www-data www-data 4096 Aug 28  2024 /var/www/html
+-rw-r--r-- 1 www-data www-data 1990 Aug 14  2024 database.php
+-rw-r--r-- 1 root     root    40960 Aug 28  2024 dioses.db
+</code></pre>
+<p>The directory is <code>0777</code> while the files inside are <code>0644</code>. Any local account on Poseidon — not only <code>www-data</code> — can create, replace or delete a PHP file in the document root, which Apache then executes. <code>dioses.db</code> is root-owned but sits inside the writable directory, so it can be replaced by rename even though it cannot be edited in place.</p>
+<p>Not used in this chain (I reached the database over HTTP, not by writing a file), reported as an independent finding because it is the same <em>class</em> as the primitive the lab hands out for free on host 3.</p>
+<p><strong>Root cause:</strong> directory permissions left at the image-build default.
+<strong>Remediation:</strong> <code>0755</code> on the docroot, <code>0640</code> on the database, database file relocated outside the document root.</p>
+<h3 id="33-passwordless-full-root-in-sudoers--cwe-250--cwe-269">3.3 Passwordless full root in sudoers — CWE-250 / CWE-269</h3>
+<p><code>/etc/sudoers</code> on Zeus:</p>
+<pre><code>rayito ALL=(ALL) NOPASSWD: ALL
+</code></pre>
+<p>Any authentication as <code>rayito</code> is immediately root with no second factor and no password reuse requirement. <code>hercules</code> is not in sudoers, so the two accounts have materially different privilege for no stated reason.</p>
+<p><strong>Not used in this chain</strong>, because I could not authenticate as <code>rayito</code> at all (§4.1). It is reported because it is the escalation that <em>would</em> follow from the one credential I failed to recover, and an assessor fixing only the credential problem would inherit it unchanged.</p>
+<p><strong>Remediation:</strong> drop the <code>NOPASSWD: ALL</code> line; grant only the specific commands required, with a password.</p>
+<h3 id="34-unauthenticated-readwrite-smb-share--cwe-306--cwe-732--cwe-284">3.4 Unauthenticated read/write SMB share — CWE-306 / CWE-732 / CWE-284</h3>
+<pre><code>[shared]
+    path = /samba/shared
+    writable = yes
+    browsable = yes
+    guest ok = yes
+    read only = no
+</code></pre>
+<p><code>map to guest = bad user</code> means any account that fails authentication is retried as guest. Combined with <code>guest ok = yes</code> and <code>read only = no</code>, an anonymous client gets a writable share. Proven over the wire, through the two-hop tunnel, from my workstation:</p>
+<pre><code>$ smbclient //127.0.0.1/shared -p 1445 -N -c &quot;put /w/webshell.php webshell.php&quot;
+putting file /w/webshell.php as \webshell.php (10.7 kb/s) (average 10.7 kb/s)
+
+$ ls -la /samba/shared/     # on Zeus
+-rwxr--r-- 1 nobody nogroup   22 Sep 28 15:15 webshell.php
+</code></pre>
+<p><strong>Impact:</strong> anonymous write to a filesystem served by the target. It did not reach the webroot (§4.2), so the impact here is <em>write to a non-executed directory</em> — which is still a persistence and staging primitive, and a foothold if anything else on the host later consumes that path.</p>
+<p><strong>Root cause:</strong> three permissive directives combined; each is individually defensible for a shared folder, and the combination is the bug.
+<strong>Remediation:</strong> remove <code>guest ok = yes</code>; set <code>read only = yes</code> unless the share genuinely needs anonymous writes; drop <code>map to guest = bad user</code>, which silently converts &quot;wrong password&quot; into &quot;anonymous access&quot; and destroys the distinction an administrator is trying to enforce.</p>
+<h3 id="35-a-shipped-file-calls-a-script-that-does-not-exist--cwe-1104-incomplete--broken-deployment">3.5 A shipped file calls a script that does not exist — CWE-1104 (incomplete / broken deployment)</h3>
+<p><code>/start.sh</code> on Zeus, verbatim:</p>
+<pre><code class="language-bash">./smb_request.sh &amp;
+</code></pre>
+<p><code>find / -name &quot;smb_request*&quot;</code> returns nothing. The startup script forks a non-existent file every boot; the shell reports <code>./smb_request.sh: No such file or directory</code> to the container log and continues, so the failure is invisible from the outside — every listed service comes up healthy.</p>
+<p>The builder's own history explains it:</p>
+<pre><code>$ cat /root/.bash_history
+passwd hercules
+ls
+cd home
+ls
+cd rayito/
+ls
+cd ..
+cd hercules/
+ls
+cd
+ls
+cd /
+ls
+rm -rf smb_request.sh
+cat start.sh
+...
+</code></pre>
+<p><code>rm -rf smb_request.sh</code> was run <strong>after</strong> <code>start.sh</code> was written, and the reference was never removed. This is almost certainly the lab's intended trigger — a script that watches the share and does something when a file appears — and it is <strong>absent from the shipped image</strong>.</p>
+<p><strong>Impact on the engagement:</strong> the intended final step of the third host cannot execute. Reported as a finding in its own right, separately from the escalation, because the target is wrong in both directions at once: it hides a working primitive (the writable share) behind a documented step that cannot run.</p>
+<p><strong>Remediation:</strong> either ship <code>smb_request.sh</code> or delete its invocation; add a <code>set -e</code>-style guard so a missing file aborts startup rather than being logged and ignored.</p>
+<h3 id="36-a-binary-named-exe-that-is-neither-a-windows-binary-nor-a-reward--cwe-497-inappropriate-binary-naming--cwe-506">3.6 A binary named <code>.exe</code> that is neither a Windows binary nor a reward — CWE-497 (inappropriate binary naming) / CWE-506</h3>
+<p><code>[lab-home]/hercules/muerte_a_kratos.exe</code>:</p>
+<pre><code>ELF 64-bit LSB pie executable, x86-64, dynamically linked, not stripped, for GNU/Linux 3.2.0
+</code></pre>
+<p>Disassembly of <code>main</code> shows: <code>time(0)</code> → <code>srand</code> → <code>fopen(&quot;kratos.txt&quot;,&quot;w&quot;)</code> → a loop of 10 iterations writing a base32 header line then 9 random 32-hex-char lines → <code>fclose</code> → <code>fork</code> → in the child <code>execlp(&quot;bash&quot;, &quot;bash&quot;, &quot;-c&quot;, &quot;echo 'Happy Hacking, here is nothing...'&quot;, NULL)</code>.</p>
+<p>The <code>.rodata</code> strings are unambiguous:</p>
+<pre><code>kratos.txt
+No se pudo abrir el archivo
+echo 'Happy Hacking, here is nothing...'
+bash
+</code></pre>
+<p>Executed on the target:</p>
+<pre><code>$ ./muerte_a_kratos.exe
+Happy Hacking, here is nothing...
+RC=0
+$ head -3 kratos.txt
+AGUAbABlAGMAdAByAG8AYwB1AHQANABjADEAMABuACE=
+b3e5c438984ac375948e3678d5716851
+b3688a0124be72306ce9252fa900151d
+</code></pre>
+<p>The values are <code>rand()</code> output seeded from <code>time(0)</code> — <strong>regenerated on every run, identical in no two runs, and carrying no information</strong>. The program is a decoy, and its own literal output string says so.</p>
+<p>Two lessons: the extension is not the format (<code>file</code> settles it in one command), and a decoy that <em>executes</em> and <em>writes a file</em> is more convincing than one that refuses — the <code>RC=0</code> and the freshly written <code>kratos.txt</code> are what make it read as a success.</p>
+<hr />
+<h2 id="4-controls-that-held-reported-with-the-same-prominence-as-the-bugs-that-fired">4. Controls that held (reported with the same prominence as the bugs that fired)</h2>
+<h3 id="41-ssh-on-zeus--credential-wall-held">4.1 SSH on Zeus — credential wall held</h3>
+<p>Four candidate pairs across both accounts, all rejected:</p>
+<pre><code>rayito/rayito: denied      hercules/hercules: denied
+rayito/Templ02019!: denied hercules/Templ02019!: denied
+</code></pre>
+<p><strong>Control positive:</strong> the identical code path, identical SOCKS transport, was run against Poseidon with a known-good credential and returned <code>uid=1000(megalodon)</code>. The negative is therefore about the credentials, not about the tunnel or my harness. The <code>$y$j9T$</code> yescrypt hashes for <code>rayito</code> and <code>hercules</code> were not recovered, and §4.1's <code>NOPASSWD</code> escalation is consequently unreachable in this run.</p>
+<h3 id="42-anonymous-ftp-refused--cwe--control-held">4.2 Anonymous FTP refused — CWE-... control held</h3>
+<pre><code>$ USER anonymous
+530 Permission denied.
+$ PASS test@test.com
+503 Login with USER first.
+$ SYST / PWD / LIST
+530 Please login with USER and PASS.
+</code></pre>
+<p><code>vsftpd.conf</code> states why: <code>anonymous_enable=NO</code>, plus <code>userlist_enable=YES</code>. The banner is served before authentication, so the service is discoverable, but no content is.</p>
+<h3 id="43-samba-share-traversal-refused">4.3 Samba share traversal refused</h3>
+<pre><code>$ smbclient //127.0.0.1/shared -p 1445 -N -c &quot;cd /; ls; cd ../; ls&quot;
+  webshell.php      A   22   Mon Sep 28 15:15:54 2026
+  p.txt             A   30   Mon Sep 28 15:13:05 2026
+  webshell.php      A   22   Mon Sep 28 15:15:54 2026
+  p.txt             A   30   Mon Sep 28 15:13:05 2026
+</code></pre>
+<p><code>cd ../</code> returns the same two files. The share is chrooted, so the anonymous write of §3.4 cannot be aimed elsewhere.</p>
+<h3 id="44-smb-write-does-not-reach-the-webroot--and-the-negative-is-proven-not-assumed">4.4 SMB write does not reach the webroot — and the negative is proven, not assumed</h3>
+<p>This is the negative result most worth stating carefully, because &quot;the webshell 404'd&quot; is exactly the shape of claim that can be a broken detector.</p>
+<p>I did not infer the boundary from the 404. I proved both halves:</p>
+<p><em>positive control</em> — the write <strong>succeeded</strong>, so the channel is connected:</p>
+<pre><code>putting file /w/webshell.php as \webshell.php (10.7 kb/s) (average 10.7 kb/s)
+$ ls -la /samba/shared/
+-rwxr--r-- 1 nobody nogroup   22 Sep 28 15:15 webshell.php
+</code></pre>
+<p><em>negative</em> — the web server still does not serve it:</p>
+<pre><code>$ curl --socks5-hostname 127.0.0.1:1081 http://30.30.30.2/webshell.php -w 'HTTP %{http_code}'
+HTTP 404
+$ ls -la /var/www/html/     # on Zeus — unchanged
+-rw-r--r-- 1 root root 10671 Aug 26  2024 index.html
+</code></pre>
+<p>The write lands in <code>/samba/shared</code> and the docroot is a different directory with different ownership. The 404 is a statement about the filesystem, not about my detector.</p>
+<hr />
+<h2 id="5-chain-in-order-with-each-jump-justified">5. Chain, in order, with each jump justified</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>From → To</th>
+<th>Action</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>my host → Hades</td>
+<td><code>nmap -sV -Pn -p- 10.10.10.2</code></td>
+<td>Entry. Port 80 is a static Flask app with no input; SSH is the only dynamic surface.</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Hades</td>
+<td>Read <code>app.py</code> in full (18 lines) before probing</td>
+<td>Established there is no injection sink, so the web tier is not the entry.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Hades</td>
+<td>Recover the SSH password via the base32 comment, then <strong>verify it against <code>/etc/shadow</code></strong></td>
+<td>The decoded hint was wrong (§1.3). The hash is the authority.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Hades</td>
+<td><code>id</code> → <code>uid=1001(cerbero)</code>, group <code>27(sudo)</code></td>
+<td>Execution identity measured, never assumed.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Hades</td>
+<td><code>sudo -l</code> with own password → <code>(ALL : ALL) ALL</code></td>
+<td>Root. <code>id</code> again → <code>uid=0(root)</code>.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>my host → Poseidon</td>
+<td>Probe <code>20.20.20.2</code> directly: <strong>refused</strong>. From Hades: <code>22</code> and <code>80</code> open</td>
+<td>Establishes that the hop is required <em>and</em> that the segmentation is real. Measured from both sides before any tunnel.</td>
+</tr>
+<tr>
+<td>6</td>
+<td>—</td>
+<td>Decide transport: reverse SOCKS, <code>chisel server</code> here / <code>chisel client</code> on Hades</td>
+<td>Full criterion in §10.</td>
+</tr>
+<tr>
+<td>7</td>
+<td>—</td>
+<td><strong>Discriminator:</strong> <code>curl --socks5 127.0.0.1:1080 http://20.20.20.2/</code> → <code>HTTP 200</code></td>
+<td>Not &quot;the port is open&quot;. A third party's request traversing the tunnel.</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Poseidon</td>
+<td><code>nmap</code>-equivalent full TCP scan through the SOCKS: <code>1-65535</code> → <code>22, 80</code></td>
+<td>Confirm the surface is small enough to reason about.</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Poseidon</td>
+<td>Read <code>database.php</code> and <code>dioses.sql</code> before attacking</td>
+<td>The sink and the schema, both before the first probe.</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Poseidon</td>
+<td><code>SELECT * FROM usuarios</code> / <code>FROM contrasena</code></td>
+<td>The blacklist names tables that do not exist (§3.1).</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Poseidon</td>
+<td><code>megalodon</code> / <code>Templ02019!</code> → <code>id</code> → <code>uid=1000</code>, sudo group → <code>uid=0</code></td>
+<td>The DB hash was <code>$sha1$</code> and not the SSH credential; the yescrypt hash was, and the documented password matched it.</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Poseidon → Zeus</td>
+<td>Probe <code>30.30.30.2</code> from Poseidon: <code>21, 22, 80, 139, 445</code></td>
+<td>Zeus is a <em>different</em> surface. Assuming host 2's shape here would have missed FTP and SMB entirely.</td>
+</tr>
+<tr>
+<td>13</td>
+<td>—</td>
+<td>Second hop: <code>chisel server</code> here (port 9002), <code>chisel client</code> on Poseidon, reached via a forward from Hades</td>
+<td>Chained because Poseidon cannot reach my host directly (macvlan isolation).</td>
+</tr>
+<tr>
+<td>14</td>
+<td>—</td>
+<td><strong>Discriminator:</strong> <code>curl --socks5-hostname 127.0.0.1:1081 http://30.30.30.2/</code> → <code>HTTP 200</code>, <strong>and</strong> Zeus' <code>access.log</code> records the peer as <code>30.30.30.3</code></td>
+<td>Second half is the attribution control: it proves the request originated from Poseidon's leg, not from a local artifact.</td>
+</tr>
+<tr>
+<td>15</td>
+<td>Zeus</td>
+<td>Per-service reverse forward <code>R:1445:30.30.30.2:445</code>; <code>smbclient -N</code></td>
+<td>Chosen over SOCKS because SMB needs its own stateful multi-packet session and the tooling wants a real TCP peer.</td>
+</tr>
+<tr>
+<td>16</td>
+<td>Zeus</td>
+<td><code>smbclient -L</code> → <code>shared</code> visible with no credentials</td>
+<td>Anonymous enumeration.</td>
+</tr>
+<tr>
+<td>17</td>
+<td>Zeus</td>
+<td><code>put</code> a file, then read <code>/samba/shared/</code> <strong>on the target</strong> to confirm</td>
+<td>Write primitive, proven by a nonce-style witness created in this run (§4.4).</td>
+</tr>
+<tr>
+<td>18</td>
+<td>Zeus</td>
+<td>Attempt the escalation: write <code>webshell.php</code> → <code>HTTP 404</code></td>
+<td>The lab's obvious move, and it does not work. The boundary held.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The two SSH hops are the same bug twice.</strong> <code>cerbero</code> and <code>megalodon</code> each have <code>(ALL:ALL) ALL</code> and each reuses their own login password for <code>sudo</code>. Neither account needed a second credential. Reported as one finding class in §3 with two independent instances, because the fix is identical and the instances are structurally identical — but they are two hosts and two separate sudoers entries.</p>
+<hr />
+<h2 id="6-reward--literal">6. Reward — literal</h2>
+<p><strong>There is no reward.</strong> This is reported as an absence, with the search that establishes it.</p>
+<pre><code># On all three hosts:
+$ grep -rliE 'flag\{|CTF\{' / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev
+(no output on any host)
+
+$ grep -rliE 'flag|ctf\{' / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev --exclude-dir=usr
+(only /var/lib/dpkg/status and package metadata — no application content)
+</code></pre>
+<p>Additional places checked, all negative: every table in the Poseidon SQLite database via <code>sqlite_master</code> and <code>SELECT sql</code>; <code>/root/</code>, <code>[lab-home]/*</code>, <code>/samba/shared</code>, <code>/srv/ftp</code>, <code>/var/www/html</code> on all three hosts; the Hades app directory and templates; <code>/root/.bash_history</code> on Zeus.</p>
+<p>The one artefact that looks like a reward is the decoy of §3.6, and it is self-labelling: <code>echo 'Happy Hacking, here is nothing...'</code>. Its <code>kratos.txt</code> output is <code>rand()</code> seeded from <code>time(0)</code>, so it differs on every execution and encodes nothing.</p>
+<p>Six previous labs in this series also had no reward. In each case the correct output was the same: state the absence, show the search, do not manufacture a value.</p>
+<hr />
+<h2 id="7-tested--not-tested--could-not-test">7. Tested / not tested / could not test</h2>
+<p><strong>Tested</strong></p>
+<ul>
+<li>Full TCP <code>1-65535</code> on all three hosts (Hades and Poseidon from my host / through the tunnel; Zeus from Poseidon, and again through the hop-2 tunnel). No UDP scan was attempted on any host — see the gap below.</li>
+<li>Source read in full on every reachable host before attacking: Hades <code>app.py</code> + templates, Poseidon <code>database.php</code> + <code>dioses.sql</code> + <code>smb.conf</code>/<code>vsftpd.conf</code>/<code>sudoers</code>, Zeus <code>start.sh</code> + <code>smb.conf</code> + <code>vsftpd.conf</code> + the ELF's disassembly.</li>
+<li>The SQLi blacklist tested both by keyword (<code>UNION</code>, <code>VERSION</code> → rejected as designed) and by real table name (<code>usuarios</code>, <code>contrasena</code> → returned data).</li>
+<li>SMB: anonymous list, anonymous write, <code>cd ../</code> traversal, webroot reachability — each with a positive control.</li>
+<li>The yescrypt oracle, once repaired, against Hades (<code>True</code> expected, <code>True</code> obtained) before being used on Poseidon and Zeus.</li>
+<li>Binary reversal: <code>file</code>, <code>strings</code>, <code>objdump -d</code> of <code>main</code>, and execution on the target.</li>
+</ul>
+<p><strong>Not tested</strong></p>
+<ul>
+<li>Credential recovery for <code>rayito</code> and <code>hercules</code> beyond 35 targeted candidates. The <code>$y$j9T$</code> yescrypt parameters (<code>j9T</code> = 7 rounds) are strong; a full dictionary or mask attack was out of scope for a pivoting lab and was not attempted.</li>
+<li>Whether the SMB share is consumed by anything on Zeus, given that <code>smb_request.sh</code> is absent (§3.5). With the watcher missing, nothing appears to.</li>
+<li>HTTP-level testing of anything on Zeus beyond <code>/</code> and <code>/webshell.php</code>. The docroot holds a single stock default page, so there is no application surface.</li>
+<li>Whether the <code>0777</code> docroot on Poseidon was intended as a hint toward a planted webshell. I reached the database directly, so the write primitive was never needed.</li>
+</ul>
+<p><strong>Could not test — declared as a gap, not a closed door</strong></p>
+<ul>
+<li><strong>No UDP scan on any of the three hosts.</strong> <code>nmap -p-</code> is TCP. Every host publishes an SSH service and the operational design suggests a management plane, but I have <strong>no evidence either way</strong> about UDP. This is coverage I did not perform, and it is recorded as such rather than as a finding.</li>
+<li><code>nmap --proxy socks5://</code> failed on this build (<code>libnsock proxy_node_new(): Invalid protocol in proxy specification string</code>), so all tunneled scanning was done with a purpose-written SOCKS5 client. The client's own reach was proven before use (§5 steps 7 and 14), but it is not nmap and does not carry nmap's version-detection scripts; service versions on Poseidon and Zeus come from banner reads and <code>Server:</code> headers, not full <code>-sV</code> probes.</li>
+<li>SMB version and dialect enumeration was not completed. The anonymous <code>smbclient -L</code> succeeded, which is the functional result that mattered, but the negotiated dialect and Samba version are unmeasured.</li>
+<li>Whether the Hades <code>/saltar</code> route's 500 is a live defect or masked by an exception handler was not resolved; the source shows <code>render_template</code> on a file that is not in <code>templates/</code>, which is sufficient to explain it.</li>
+</ul>
+<hr />
+<h2 id="8-not-proven-versus-discarded-with-a-reason">8. Not proven, versus discarded with a reason</h2>
+<p>These are separated deliberately, because &quot;I did not do it&quot; and &quot;I did it and it failed&quot; carry different information.</p>
+<p><strong>Not proven</strong></p>
+<ul>
+<li>Whether <code>rayito</code> or <code>hercules</code> is the intended Zeus credential, and whether the <code>NOPASSWD: ALL</code> line is reachable in the lab's intended solution. It almost certainly is — the line is unconditional and <code>rayito</code> is a normal login — but I did not get there.</li>
+<li>Whether the Poseidon <code>$sha1$</code> hashes in <code>contrasena</code> correspond to any real credential. The documented <code>Templ02019!</code> matched the <strong>yescrypt</strong> shadow hash, not the <code>$sha1$</code> one; the two are different schemes for what is presumably the same account, and only one is live for SSH. I did not determine what the <code>$sha1$</code> values protect, if anything.</li>
+</ul>
+<p><strong>Discarded, with the reason</strong></p>
+<ul>
+<li><strong>Ligolo-ng as the intended transport</strong> — described at length by the target's own landing page, but not installed on any host, and not needed once a SOCKS layer exists. <em>Discarded on availability, not on merit.</em></li>
+<li><strong>Chisel as the &quot;intended&quot; tool</strong> — named in the lab's status line, also not installed. Supplied by me; treated as a means, not as the lesson.</li>
+<li><strong>Anonymous FTP on Zeus</strong> — <code>anonymous_enable=NO</code> in config, and <code>530</code> on the wire. <em>Control held</em>, not a gap.</li>
+<li><strong>Traversing out of the Samba share</strong> — <code>cd ../</code> returns the same listing. <em>Control held.</em></li>
+<li><strong>Reaching the webroot through the share</strong> — the share is <code>/samba/shared</code>, the docroot is <code>/var/www/html</code>; the write succeeded and the fetch 404'd. <em>Control held, proven with a positive (§4.4).</em></li>
+<li><strong>Cracking the Zeus yescrypt hashes with the lab's own documented passwords</strong> — tested the documented Poseidon password and the account-name patterns against both Zeus hashes. No match. The hashes are not derived from any value published on any of the three hosts.</li>
+</ul>
+<hr />
+<h2 id="9-what-this-lab-is-actually-about">9. What this lab is actually about</h2>
+<p>The lab is a thin wrapper. Its three bugs (unfiltered SQL behind a blacklist that names the wrong tables, a <code>0777</code> docroot, an anonymous writable share) are unremarkable, and one of its three hosts is unreachable without a credential I could not recover. What the lab supplies that is genuinely hard to improvise is the <strong>transport decision</strong> and — much more importantly — <strong>the way that decision is verified</strong>.</p>
+<p>Three things it gets right that a technician working from memory gets wrong:</p>
+<ol>
+<li><strong>The name and the documentation both lie about the tooling.</strong> The page teaches Ligolo-ng. The status line says Chisel. Neither is installed. A learner who trusts the page and has no chisel is stuck at the first hop, and a learner who has chisel but reaches for the wrong <em>mode</em> gets a tunnel that registers a session and routes nothing — which is §1.1, and it cost me a full cycle and nearly produced a &quot;Zeus is unreachable&quot; conclusion written into a report.</li>
+<li><strong>The chain punishes assuming the next host resembles the last.</strong> Poseidon is Apache + PHP + SQLi + a <code>0777</code> docroot. Zeus is Apache + FTP + <strong>SMB</strong> + SSH, and its interesting primitive is not injection at all. The share is what a lab of this shape would call the entry, and it is invisible if you carry Poseidon's model of &quot;web app = the surface&quot; across the hop. §5 step 12 exists for this reason.</li>
+<li><strong>The obvious final move does not work.</strong> The writable share does not reach the webroot, and the script that was presumably going to consume it was <code>rm</code>'d by the builder before the image shipped. The lab's happy path is broken in the build, and the thing it would have unlocked is a decoy anyway.</li>
+</ol>
+<p>The design lesson for an author is in §3.5 and §3.6 together: the lab ships three self-labelling artefacts — a base32 &quot;password&quot; that is off by an encoding, a <code>.exe</code> that is an ELF printing &quot;here is nothing&quot;, and a startup line for a script that no longer exists. Each is individually detectable, but a learner has to notice that <em>decoding cleanly</em> is not the same as <em>being right</em> three separate times. That is a good exercise. It is a poor exercise if the intended solution is only reachable through one of them, and here it is not.</p>
+<hr />
+<h2 id="10-pivoting-the-decision-criterion-per-transport-and-the-discriminator">10. Pivoting: the decision criterion, per transport, and the discriminator</h2>
+<p>This is the part of the lab worth publishing, because it is the class the rest of the methodology has no oracle for. Everything below was exercised on this engagement, including the parts that went wrong.</p>
+<h3 id="101-the-one-question-that-separates-the-transports">10.1 The one question that separates the transports</h3>
+<blockquote>
+<p><strong>Where does the legitimate connection originate?</strong></p>
+</blockquote>
+<p>Not &quot;which tool do I have&quot; and not &quot;which is fastest&quot;. Every mode exists to place a listener on one side and an origin on the other, and the mode is determined by which of those two the <em>target</em> must be.</p>
+<table>
+<thead>
+<tr>
+<th>Question you are answering</th>
+<th>Mode</th>
+<th>Direction</th>
+<th>Who originates</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Must host A reach a port of host B?</td>
+<td><code>ssh -L</code>, <code>chisel</code> local forward (<code>&lt;lport&gt;:&lt;rhost&gt;:&lt;rport&gt;</code>), <code>socat</code></td>
+<td>forward</td>
+<td>A's side</td>
+</tr>
+<tr>
+<td>Must someone <em>outside</em> reach a port on A?</td>
+<td><code>ssh -R</code>, <code>chisel R:</code> reverse</td>
+<td>reverse</td>
+<td>the far end, through A</td>
+</tr>
+<tr>
+<td>Must my tools reach an arbitrary unknown port surface, with raw <code>connect()</code> and no per-port setup?</td>
+<td>SOCKS5 / <code>chisel R:socks</code></td>
+<td>reverse + dynamic</td>
+<td>the far end, on demand</td>
+</tr>
+<tr>
+<td>Must the <em>whole segment</em> be routable, including UDP and ICMP, and tool invocation must be unchanged?</td>
+<td>TUN device (ligolo, <code>wg</code>)</td>
+<td>tun</td>
+<td>the far end, transparently</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Why SOCKS and not a per-port forward, here.</strong> Zeus' port surface was unknown at the moment I had to commit to a transport. A forward gives one port; I would have had to rebuild the tunnel for every port I discovered, and the discovery itself needs a port. SOCKS terminates arbitrary <code>connect()</code> at the far end, so one tunnel serves <code>nmap</code>, <code>ssh</code>, <code>curl</code> and <code>smbclient</code> unchanged. That is the whole argument, and it is a question about the <em>target's</em> state, not about the tool.</p>
+<p><strong>Why not ligolo despite the target's own recommendation.</strong> A TUN device is the right answer when the segment must appear as a real interface — when the tooling you will run assumes a local NIC, when you need UDP or ICMP, or when you want routing to &quot;just work&quot;. It also requires elevated privileges locally (a TUN device), which is a real cost in a containerised or unprivileged operator environment. For a TCP-only engagement over a known segmentation, SOCKS is strictly less invasive. I note the lab's page is <em>not</em> wrong that ligolo is the better tool for pivoting generally — it is wrong that it is present.</p>
+<h3 id="102-the-information-each-transport-needs-before-it-can-work">10.2 The information each transport needs before it can work</h3>
+<p>This is the part that produces the silent failure, and the two transports fail in opposite ways:</p>
+<ul>
+<li><strong>A reverse tunnel needs a port on my side that the far end can reach.</strong> If it cannot dial me, the client retries forever and logs <code>connect: connection refused</code> — an error at least, and a safe one. Poseidon could not reach my host directly (macvlan isolation) and could not resolve <code>10.10.10.1</code>; that is why hop 2 needed an intermediate forward from Hades.</li>
+<li><strong>A forward needs the destination to be reachable from wherever the connection is terminated.</strong> If I forward <code>1080 → 20.20.20.2:22</code> but the proxy cannot see <code>20.20.20.2</code>, the listener opens and every connection to it fails. <strong>The port is open and nothing arrives.</strong> This is the dangerous case: it is indistinguishable from a target that is down.</li>
+<li><strong>A SOCKS needs both of the above, plus a client that speaks SOCKS.</strong> <code>nmap --proxy socks5://</code> is not universally supported (<code>libnsock proxy_node_new(): Invalid protocol in proxy specification string</code> on this build), and <code>proxychains4</code> was not installed. A SOCKS you cannot point a tool at is a SOCKS you do not have.</li>
+<li><strong>Chained hops need each intermediate to relay for the next</strong>, and the relay must be declared <em>by the hop below it</em>, not assumed. Hop 2 worked because Hades' hop-1 client carried an extra forward (<code>19002:10.10.10.1:9002</code>), which is a different remote on an existing session — not a second independent tunnel.</li>
+</ul>
+<h3 id="103-the-discriminator-prove-traffic-crosses-not-that-a-port-exists">10.3 The discriminator: prove traffic crosses, not that a port exists</h3>
+<p><strong>A tunnel session is a claim about the control plane. It is not a measurement of the data plane.</strong> This is the single most useful thing to state about pivoting, and it is what §1.1 cost me.</p>
+<p>Three levels of evidence, weakest to strongest:</p>
+<ol>
+<li><strong>The client logged <code>Connected</code>.</strong> Says the websocket to the server is up. Says nothing about routing. The wrong arrangement in §1.1 produced a <em>registered session with a &quot;Listening&quot; SOCKS</em> and still routed nothing.</li>
+<li><strong>A port is open locally.</strong> Says the listener bound. Says nothing about where traffic goes when it arrives.</li>
+<li><strong>A third party answered through the tunnel, and I can attribute its answer to the far end.</strong> This is the only one that counts.</li>
+</ol>
+<p>For (3) on this engagement, per hop:</p>
+<pre><code># hop 1 — did Poseidon answer, through Hades?
+$ curl --socks5-hostname 127.0.0.1:1080 http://20.20.20.2/ -o /dev/null -w 'HTTP %{http_code}\n'
+HTTP 200
+
+# hop 2 — did Zeus answer, through Poseidon?
+$ curl --socks5-hostname 127.0.0.1:1081 http://30.30.30.2/ -o /dev/null -w 'HTTP %{http_code}\n'
+HTTP 200
+</code></pre>
+<p>And the attribution half — the request did not merely <em>succeed</em>, it succeeded <strong>as Poseidon</strong>:</p>
+<pre><code>$ tail -3 /var/log/apache2/access.log     # on Zeus
+30.30.30.3 - - [28/Sep/2026:15:04:26 +0000] &quot;GET / HTTP/1.1&quot; 200 10926 &quot;-&quot; &quot;curl/8.18.0&quot;
+</code></pre>
+<p><code>30.30.30.3</code> is Poseidon's leg. My workstation is <code>10.10.10.1</code> and has no route to <code>30.30.30.0/24</code> at all — so this log line is proof that the bytes came through Poseidon, and it would have read differently if a local artefact had answered. That is a witness created by the component under test, carrying information the <code>HTTP 200</code> did not.</p>
+<p>A second, cheaper discriminator I used and recommend: <strong>compare against the known-good path.</strong> Running the identical tool, with the identical credentials, against a host I <em>can</em> reach, and getting the expected answer, converts every subsequent negative into a statement about the target. That is how the Zeus SSH rejection in §4.1 is trustworthy rather than a guess.</p>
+<h3 id="104-the-error-of-not-pivoting-and-the-error-of-pivoting-too-far">10.4 The error of not pivoting, and the error of pivoting too far</h3>
+<p>Both are scope decisions, and both are made <em>before</em> the tunnel goes up, not after.</p>
+<ul>
+<li><strong>Not pivoting is the default.</strong> Each new segment is a new scope question. In a real engagement, reaching a host that was not in the written scope is an incident regardless of how it was reached — the fact that a tunnel made it convenient is an aggravating detail, not a mitigation.</li>
+<li><strong>Pivoting too far is the failure mode of a tool that makes it easy.</strong> Once a SOCKS exists, <code>nmap -p-</code> on the next range is one keystroke and requires no decision. The range graph here is three hosts and three networks; a tunnel that has been handed a SOCKS will happily scan whatever else the far end can see, and the report then contains findings about systems the client never agreed to be tested.</li>
+<li><strong>The correct artifact is the scope graph, and it is declared before the tunnel is built.</strong> For this engagement:</li>
+</ul>
+<pre><code>        [ operator workstation ]
+                 10.10.10.1
+                      |
+                 pivoting1 (10.10.10.0/24)
+                      |
+                 HADES 10.10.10.2  ── hop 1: reverse SOCKS ──►
+                 20.20.20.3  ◄── macvlan, internal ──┐
+                      |                             │
+                 pivoting2 (20.20.20.0/24)          │
+                      |                             │
+                 POSEIDON 20.20.20.2 ── hop 2: reverse SOCKS via a forward from Hades ──►
+                 30.30.30.3  ◄── macvlan, internal ──┘
+                      |
+                 pivoting3 (30.30.30.0/24)
+                      |
+                 ZEUS 30.30.30.2
+</code></pre>
+<p>Three hosts, two hops, one declared perimeter at each macvlan boundary. The second and third networks are <code>--internal</code>, so no host on them has a route off the lab. <strong>The reachability graph is the finding; the tunnels are the means.</strong> A report whose summary is &quot;I ran chisel with these flags&quot; has reported the method and nothing else; a report that says &quot;Hades and Poseidon were in scope, Zeus was not directly routable and became reachable only through a second hop, and here is the chain of decisions that made it reachable&quot; has reported the engagement.</p>
+<h3 id="105-chisel-syntax-notes-that-cost-time">10.5 Chisel syntax notes that cost time</h3>
+<p>Recorded because they are version-specific and the errors are unhelpful:</p>
+<ul>
+<li><code>F:</code> and <code>L:</code> prefixes are <strong>invalid</strong> in chisel 1.10.1 — <code>Invalid remote</code>. A local forward is written bare: <code>&lt;localport&gt;:&lt;remotehost&gt;:&lt;remoteport&gt;</code>, e.g. <code>19002:10.10.10.1:9002</code>.</li>
+<li><code>R:</code> binds the listener on the <strong>server</strong>. This is the §1.1 trap and it is the most important line in this subsection.</li>
+<li>Two reverse remotes on one server need distinct local ports: <code>R:socks</code> (defaults to <code>1080</code>) and <code>R:127.0.0.1:1081:socks</code> for the second hop. A second hop requesting a bare <code>R:socks</code> collides with the first and the client logs <code>Server cannot listen on R:127.0.0.1:1080=&gt;socks</code>.</li>
+<li>Reverse remotes below port 1024 are refused by an unprivileged server, and a port already in use <strong>on your own host</strong> produces the same <code>Server cannot listen</code> message as a genuine remote failure. Check <code>ss</code> locally before blaming the far side.</li>
+<li>The SOCKS5 <code>CONNECT</code> reply is 10 bytes, not 4: chisel puts a 4-byte marker (its own server port) where <code>BND.ADDR</code> would be. A 4-byte read yields banners like <code>b'\x1e\x1e\x1e\x03\x92\xec'</code>, which look like a hostile protocol and are entirely your own framing error (§1.5).</li>
+</ul>
+<hr />
+<h2 id="11-restoration">11. Restoration</h2>
+<p>All three containers were destroyed and recreated from the images, and the network topology rebuilt:</p>
+<pre><code>$ docker rm -f 1_hades_container 2_poseidon_container 3_zeus_container
+$ for n in pivoting1 pivoting2 pivoting3; do docker network rm $n; done
+$ docker network create --subnet=10.10.10.0/24 pivoting1
+$ docker network create -d macvlan --subnet=20.20.20.0/24 --gateway=20.20.20.1 \
+      --internal --opt macvlan_mode=bridge pivoting2
+$ docker network create -d macvlan --subnet=30.30.30.0/24 --gateway=30.30.30.1 \
+      --internal --opt macvlan_mode=bridge pivoting3
+$ docker run -d --network=pivoting1 --name 1_hades_container 1_hades:latest
+$ docker run -d --network=pivoting2 --name 2_poseidon_container 2_poseidon:latest
+$ docker run -d --network=pivoting3 --name 3_zeus_container 3_zeus:latest
+$ docker network connect pivoting2 1_hades_container
+$ docker network connect pivoting3 2_poseidon_container
+</code></pre>
+<p>Verified after rebuild:</p>
+<pre><code>1_hades_container    -&gt; pivoting1=10.10.10.2  pivoting2=20.20.20.3
+2_poseidon_container -&gt; pivoting2=20.20.20.2  pivoting3=30.30.30.3
+3_zeus_container     -&gt; pivoting3=30.30.30.2
+</code></pre>
+<p>All three <code>Up</code>, all four original services listening on Zeus, and the segmentation still enforced from the operator's position (a direct probe of <code>20.20.20.2</code> and <code>30.30.30.2</code> from the workstation is refused without a tunnel). The only residue from the engagement is the two files written through the guest share during §4.4, which are removed by the container recreation.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

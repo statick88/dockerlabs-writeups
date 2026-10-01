@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>A tool that found nothing and a tool that never looked &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="index.html">DockerLabs corpus</a><nav><a href="index.html" class="on">Root cause</a><a href="evidence.html">Evidence</a><a href="corrections.html">Corrections</a><a href="hazards.html">Hazards</a><a href="labs.html">Labs</a><a href="resolved.html">Resolutions</a></nav></header>
+<main>
+<h1>A tool that found nothing and a tool that never looked
+produce identical output.</h1>
+
+<p>Across 62 resolved engagements the dominant failure was never a
+missing technique. It was a measurement that was wrong, producing output that
+was indistinguishable from a result. Every case below shipped well-formed
+output. Not one of them errored.</p>
+
+<div class="tiles">
+  <div class="tile"><span class="n">62</span><span class="l">engagements
+  resolved</span></div>
+  <div class="tile"><span class="n">34</span><span class="l">instrument
+  defects catalogued</span></div>
+  <div class="tile"><span class="n">13</span><span class="l">retrieval
+  hazards catalogued</span></div>
+  <div class="tile emph"><span class="n">0</span><span class="l">looked like an
+  error</span></div>
+</div>
+
+<h2 id="why-it-matters">Why this matters more than a missing technique</h2>
+
+<p>A missing technique is <strong>visible</strong>. The run stops, the report
+says <em>not attempted</em>, and the gap is in the coverage list where somebody
+will read it. A broken measurement is <strong>invisible</strong>. It produces a
+complete, well-formed, plausible answer, and the answer is wrong in the
+direction that makes the engagement look finished.</p>
+
+<p>Of the nine instruments the corpus tallies, six would have
+<strong>deleted a finding that existed</strong> and three would have
+<strong>invented one</strong>. A negative result is the only output nobody
+cross-checks &mdash; which is exactly why the defect has to be ruled out from
+outside the output.</p>
+
+<h2 id="three-questions">The three questions every negative must answer</h2>
+
+<table>
+<thead><tr><th>#</th><th>Question</th><th>If unanswered</th>
+<th>Discriminator</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Did the tool work?</td>
+<td>An oracle that cannot fire reports absence</td>
+<td>Force a positive through it, <strong>before</strong> believing any
+negative</td></tr>
+<tr><td>2</td><td>Did it look where it needed to?</td>
+<td>A blind spot reads as an absent service</td>
+<td>A work count: rows, bytes, candidates, addresses</td></tr>
+<tr><td>3</td><td>Is the failure the target&rsquo;s and not mine?</td>
+<td>Real findings get deleted and filed as clean</td>
+<td>Change one variable, or probe a known-good reference</td></tr>
+</tbody>
+</table>
+
+<blockquote class="callout">
+<p><strong>They are ordered, not interchangeable.</strong> A green positive
+control with a zero work count still fails &mdash; the control may have fired
+on a code path the target never takes.</p>
+</blockquote>
+
+<h2 id="quick-path">Quick path</h2>
+
+<ol>
+<li><strong>Read <a href="corrections.html">the 34 corrections</a>.</strong>
+The failures that recur, cheapest first. Every entry names the lab that
+produced it.</li>
+<li><strong>Check your instrument against
+<a href="hazards.html">the 13 retrieval hazards</strong>.</strong> These
+are <em>correct</em> instruments pointed at the wrong question &mdash; the class
+that still returns a clean negative.</li>
+<li><strong>Run the three questions above before writing any negative.</strong>
+All three, in order, with the discriminator attached.</li>
+<li><strong>Then look up the lab.</strong> The
+<a href="labs.html">index</a> carries the class and the discriminator that
+settled it; <a href="resolved.html">the resolution map</a> says which single
+measurement closed each one.</li>
+</ol>
+
+<h2 id="next-step">Next step</h2>
+
+<p>If you are about to write the words <em>not present</em>, <em>no
+results</em>, or <em>not exploitable</em>, stop and read
+<a href="evidence.html">the evidence discipline</a> first. That page is the
+long form of the sentence at the top of this one.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

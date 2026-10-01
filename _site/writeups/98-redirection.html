@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 98 Redirection &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Redirection</p><h1 id="98-redirection--writeup">98 Redirection — writeup</h1>
+<p><strong>Class gap this engagement fills.</strong> Open redirect is <strong>absent from the methodology entirely</strong>.
+No lab in the corpus had ever treated it. This is its first evidence, so the writeup has to
+define the class from scratch in a form that generalises past this lab — including the
+calibration that makes the rule usable: <strong>what an open redirect is worth when nothing
+consumes it.</strong> Everything below is read off the artefact, cited <code>file:line</code>, and separated
+into Findings / Controls that held / Instrumentation defects.</p>
+<p>Lab 98 is three deliberately distinct vulnerable handlers, not one. The design is the
+teaching material: the same bug class implemented three ways, with three different
+validators, and each validator is bypassable in a way that reveals <em>what kind</em> of validator
+it was.</p>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-8]
+Nmap scan report for [net-0-8])
+Host is up (0.000047s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.2p1 Debian 2+deb12u3 (protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.62 ((Debian))
+</code></pre>
+<p><strong>Stack, from the artefact — not from memory.</strong> Apache httpd 2.4.62
+(<code>/var/log/apache2/error.log:1</code> <code>AH00163</code>), PHP 8.2.26
+(<code>/etc/apache2/mods-enabled/php8.2.load</code>, <code>php -v</code>), OpenSSH 9.2p1 Debian 2+deb12u3.
+PID 1 = <code>/bin/sh -c service apache2 start &amp;&amp; service ssh start &amp;&amp; tail -f /dev/null</code>
+(<code>ps aux</code>) — two services, no supervisor, no init system.</p>
+<p><strong>Topology, read not run.</strong> <code>auto_deploy.sh:131</code> is a single
+<code>docker run -d --name $CONTAINER_NAME $IMAGE_NAME</code> on the default bridge. No compose, no
+<code>macvlan</code>, no <code>--internal</code>, no second host. One container, two ports. (<code>auto_deploy.sh:145</code>
+is the <code>while true</code>; it was read, never executed.)</p>
+<p><strong>What TCP cannot see — measured.</strong> <code>cat /proc/net/tcp</code> returned 2 data rows
+(<code>00000000:0050</code> = 80, <code>00000000:0016</code> = 22), both <code>st 0A</code> = LISTEN. <code>cat /proc/net/udp</code>
+read in full: <strong>0 data rows</strong>, header only. <code>docker inspect .Config.ExposedPorts</code> = <code>null</code>.
+No UDP surface. Negative carries its work count.</p>
+<p><strong>Docroot inventory — complete, 7 files.</strong> <code>/var/www/html</code> holds
+<code>index.html</code> plus <code>laboratorio{1,2,3}/{index.html,redirect.php}</code>. Total PHP: <strong>49 lines</strong>
+(<code>wc -l</code> on the three <code>redirect.php</code> = 12 + 17 + 20). The whole attack surface is 49 lines
+of PHP, which is why this writeup can cite every line that matters.</p>
+<p><strong>Every route that emits a <code>Location</code>.</strong> This was searched, not assumed:</p>
+<pre><code>$ grep -rniE &quot;RewriteRule|Redirect|RedirectMatch|ErrorDocument|Alias&quot; \
+    /etc/apache2/apache2.conf /etc/apache2/sites-enabled/ /etc/apache2/conf-enabled/
+(no output)
+</code></pre>
+<p><code>mod_rewrite</code> is <strong>not loaded</strong> (<code>ls /etc/apache2/mods-enabled/</code> contains no <code>rewrite.load</code>).
+<code>mod_alias</code> is loaded but no <code>Alias</code>/<code>Redirect</code> directive exists anywhere.
+<code>find /var/www -name .htaccess</code> → no output, and it could not have worked anyway:
+<code>AllowOverride None</code> at <code>/etc/apache2/apache2.conf:172</code> means a per-directory file cannot
+speak (the same structural point as lab 146). So the complete inventory of <code>Location</code>
+emitters is:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Emitter</th>
+<th>Source</th>
+<th>Destination decided by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>laboratorio1/redirect.php</code></td>
+<td><code>redirect.php:7</code></td>
+<td>the <strong>user</strong> (<code>?url=</code>)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>laboratorio2/redirect.php</code></td>
+<td><code>redirect.php:11</code></td>
+<td>user, after a prefix filter</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>laboratorio3/redirect.php</code></td>
+<td><code>redirect.php:14</code></td>
+<td>user, after a host-substring filter</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Apache <code>mod_dir</code> DirectorySlash</td>
+<td><code>dir.load</code> enabled, <code>ServerName</code> unset</td>
+<td>the <strong>request <code>Host</code></strong></td>
+</tr>
+</tbody>
+</table>
+<p>Emitter 4 is not in the lab's own material and is the most interesting one.</p>
+<hr />
+<h2 id="the-class--open-redirect-stated-generally">The class — open redirect, stated generally</h2>
+<p><strong>Entry criterion.</strong> <em>Does a request-supplied value reach a <code>Location</code> header such that the
+<code>Location</code>'s origin is not fixed by the server?</em> Everything else is elaboration. &quot;It
+redirects off-site&quot; is not the criterion, because a redirect to a second origin of the same
+application is not open redirect, and a redirect the server fully controls is not either.
+The criterion is about <strong>provenance of the destination</strong>, not about the destination.</p>
+<p>Four discriminators decide whether an instance is a <em>finding</em> or a <em>feature</em>. All four were
+applied here, and each one changed the answer.</p>
+<p><strong>1. Arbitrary external origin, or a known set?</strong>
+The parameter must accept an origin the server never enumerated. If the reachable set is
+closed and server-side, the feature is a navigation aid, not a bug. <code>laboratorio2</code> and
+<code>laboratorio3</code> <em>intend</em> a closed set (<code>https://www.google.com</code>, <code>google.com</code>) and both fail
+to achieve it — the intent is documented, the enforcement is not.</p>
+<p><strong>2. Who decides the destination — the user, or the server?</strong>
+This is the discriminator that most reports skip, and it separates two different bugs that
+get filed under the same CWE.</p>
+<ul>
+<li>A <strong>server-chosen destination from a user-supplied <em>path</em></strong> is open redirect. The origin
+is fixed; the user picks where within/beyond it to go.</li>
+<li>A <strong>server-chosen destination from a user-supplied <em>origin</em></strong> is a <em>different</em> bug and
+usually a <em>worse</em> one. The user does not even supply a path — the server composes the
+whole URL, and the only attacker-controlled part is the authority. This is
+CWE-644 (improper neutralisation of HTTP headers) escalating to CWE-601, and it is the
+primitive behind host-header cache poisoning and password-reset poisoning. In this lab it
+is Finding 4, and it was found only by asking &quot;who built this <code>Location</code>?&quot; rather than
+&quot;what did the user put in the query string?&quot;</li>
+</ul>
+<p><strong>3. Is there a token on the redirect itself?</strong>
+An <em>unparameterised</em> <code>Location</code> derived from a request header is a <strong>header-injection
+primitive</strong>, not merely an open redirect, and it is a different finding with a different
+severity. The test is whether the value is passed through a structured API
+(<code>header('Location: …', false, 302)</code>) or splashed raw into a header string, and whether the
+runtime permits a second header after a newline. <code>redirect.php:7</code> splashes raw; the runtime
+then refuses the newline. See Finding 5 and Controls.</p>
+<p><strong>4. What is the impact chain?</strong>
+An open redirect is only as serious as what it feeds. The four chains that turn it into a
+real compromise, in ascending order of severity: an <strong>OAuth <code>redirect_uri</code></strong> (the token
+itself leaks, because the IdP will only redirect to a registered origin — but an open
+redirect is exactly how an unregistered origin is smuggled past that check); a
+<strong>password-reset link</strong> (host-header variant ⇒ the victim resets a password on the
+attacker's host); a <strong>pre-filled credential form</strong>; and an <strong>authenticated session</strong>
+(the referrer and any URL fragment ride along on the hop). Each of these converts a
+phishing enabler into account compromise.</p>
+<h3 id="calibration--what-an-open-redirect-is-worth-with-no-chain-attached">Calibration — what an open redirect is worth with <strong>no</strong> chain attached</h3>
+<p>This is the part that makes the rule usable, and this lab is a clean specimen because the
+chain is <strong>absent</strong>, not merely unfound.</p>
+<p>Measured, not assumed: the entire docroot is 7 files, and a search for
+<code>session|setcookie|cookie|oauth|redirect_uri|token|password|passwd|login|auth|reset|forgot|secret</code>
+across <code>/var/www/html/</code> returns <strong>exactly one hit</strong> — the platform's own reward string in
+<code>index.html:91</code>. <code>php -i</code> reports <code>session.auto_start =&gt; Off</code>. <code>mod_session</code> is <em>available</em>
+(<code>/etc/apache2/mods-available/session.load</code>) but <strong>not enabled</strong> in <code>mods-enabled/</code>. Both
+security headers in <code>conf-available/security.conf:51,58</code> are commented out. There is no
+login form, no session, no OAuth client, no reset endpoint.</p>
+<p>The absence of cookies was then <strong>proved rather than assumed</strong>, with a manufactured oracle
+(defect #10: a negative with no work count is untested). A loopback listener under my own
+control was started to emit <code>[response-cookie-header]: ORACLE_SID=canary123</code>, and the <em>identical</em> detector
+(<code>curl -c jar -b jar</code>, both flags together per defect #4) was run against it and against the
+lab:</p>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th><code>[response-cookie-header]</code> seen</th>
+<th><code>Location</code> seen</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>oracle (127.0.0.1:9099)</td>
+<td><strong>1</strong></td>
+<td>1</td>
+</tr>
+<tr>
+<td>lab, 3 redirect sinks + 3 mod_dir paths + <code>/</code> (7 requests)</td>
+<td><strong>0</strong></td>
+<td>6</td>
+</tr>
+</tbody>
+</table>
+<p>The detector demonstrably fires. The lab emits no cookie on any of the seven paths.</p>
+<p><strong>So the calibration is: an open redirect with no chain is a phishing enabler, and nothing
+more.</strong> Its properties are real but bounded —</p>
+<ul>
+<li>the <em>lure</em> lives on the target's own origin, so pre-click inspection of the visible URL
+passes. Measured here: the target origin already serves an off-site link under a nameable
+path (<code>laboratorio1/index.html:55</code> → <code>href=&quot;redirect.php?url=http://google.com&quot;</code>), and
+<code>http://[net-0-8]/laboratorio1/redirect.php?url=http://evil.invalid/pwned</code> keeps
+<code>[net-0-8]</code> in the address bar until the 302 is followed;</li>
+<li>the attacker needs <strong>no infrastructure of their own on the critical path</strong> — the
+redirection is performed by the trusted host, so reputation, TLS and allowlists applied to
+the <em>link</em> all pass;</li>
+<li>the impact is on the <strong>victim's judgement</strong>, not on the target's confidentiality,
+integrity or availability. Nothing is taken from the operator.</li>
+</ul>
+<p>That is <code>C:N/I:N/A:N</code> with <code>UI:R</code> and <code>PR:N</code> — a <strong>Low-to-Medium phishing-enablement
+finding</strong>, and it should be filed at that severity, not inflated. Its severity is not a
+property of the redirect; it is a property of the redirect <strong>plus its consumer</strong>. When
+someone reports an open redirect without asking what consumes it, they have reported half a
+finding and cannot tell which half.</p>
+<p>A useful corollary, which this lab also demonstrates: <strong>a validated open redirect is still
+an open redirect.</strong> Labs 2 and 3 both have a filter, both filters fire on the allowlisted
+value, and both are bypassed. A filter's existence is not a control; only a filter that
+rejects the off-origin case is.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>The open-redirect chain is a <em>victim-side</em> chain and its terminal hop is <strong>not testable
+within scope</strong> (see NOT tested). What is measurable is the server side and the identity at
+every hop:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>www-data</code></td>
+<td><code>redirect.php:7,11,14</code> — <code>header(&quot;Location: $url&quot;)</code></td>
+<td><code>ps aux</code>: apache workers run <code>www-data</code> (uid 33)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>attacker-supplied origin</td>
+<td>302 with attacker-controlled <code>Location</code></td>
+<td>raw <code>Location:</code> header, quoted below</td>
+</tr>
+<tr>
+<td>3</td>
+<td>victim browser</td>
+<td>follows the <code>Location</code></td>
+<td><strong>NOT TESTED</strong> — requires a victim, out of scope</td>
+</tr>
+<tr>
+<td>4</td>
+<td>—</td>
+<td>no server-side consumer exists</td>
+<td>oracle: 0 <code>[response-cookie-header]</code> over 7 paths</td>
+</tr>
+</tbody>
+</table>
+<p>The escalation chain found in this lab is <strong>not</strong> part of the open-redirect class and is
+reported separately as Finding 6:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>balu</code> uid=1000</td>
+<td>SSH, credential disclosed in-page at <code>index.html:91</code></td>
+<td><code>uid=1000(balu) gid=1000(balu) groups=1000(balu),100(users)</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>balulito</code> uid=1001</td>
+<td>SSH, credential in world-readable <code>/secret.bak</code></td>
+<td><code>uid=1001(balulito) gid=1001(balulito) groups=1001(balulito),100(users)</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>root</code> uid=0</td>
+<td><code>sudo -n /bin/cp</code> (NOPASSWD) creates a root-owned artefact</td>
+<td><code>uid=0(root) gid=0(root)</code>, artefact measured — see Finding 6</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="finding-1--unvalidated-open-redirect-arbitrary-external-origin-cwe-601">Finding 1 — Unvalidated open redirect, arbitrary external origin (CWE-601)</h3>
+<p><strong>Source:</strong> <code>/var/www/html/laboratorio1/redirect.php:3,6-8</code></p>
+<pre><code class="language-php">3  $url = isset($_GET['url']) ? $_GET['url'] : '';
+6  if (!empty($url)) {
+7      header(&quot;Location: $url&quot;);
+8      exit();
+</code></pre>
+<p>The comment on line 5 says it outright: <em>&quot;Realiza la redirección sin validar la entrada&quot;</em>.
+There is no allowlist, no scheme check, no <code>parse_url</code>, nothing.</p>
+<p><strong>Literal evidence</strong> — raw <code>Location</code> header, byte for byte (<code>cat -A</code>, <code>^M</code> = CR):</p>
+<pre><code>$ curl -sS -o /dev/null -D - &quot;http://[net-0-8]/laboratorio1/redirect.php?url=http://evil.invalid/pwned&quot;
+HTTP/1.1 302 Found^M$
+Date: Wed, 30 Sep 2026 04:47:04 GMT^M$
+Server: Apache/2.4.62 (Debian)^M$
+Location: http://evil.invalid/pwned^M$
+Content-Length: 0^M$
+Content-Type: text/html; charset=UTF-8^M$
+^M$
+</code></pre>
+<p>Two further forms accepted, confirming the sink is unconstrained rather than
+scheme-restricted:</p>
+<pre><code>?url=//evil.invalid/pwned      -&gt; 302  Location: //evil.invalid/pwned
+?url=POST (method-agnostic)    -&gt; 302  Location: http://evil.invalid/post
+</code></pre>
+<p>The sink is <strong>method-agnostic</strong> (POST redirects identically), which widens the phishing
+surface: a lure need not be a navigable link.</p>
+<p><strong>Impact:</strong> arbitrary external destination chosen by the user, from the target's own origin.
+Calibrated per the section above: phishing enabler, <code>C:N/I:N/A:N</code>, no server-side consumer
+exists in this lab.</p>
+<p><strong>Root cause:</strong> <code>header()</code> called with a fully user-controlled value and no validation of
+any kind.</p>
+<p><strong>Remediation:</strong> do not take a destination from the user. If a same-site return path is
+required, map an opaque key to a server-side destination, or validate against a strict
+allowlist of exact origins using <code>parse_url()</code> + comparison of <strong>scheme and host separately</strong>
+— never a substring or prefix test.</p>
+<hr />
+<h3 id="finding-2--allowlist-bypassed-by-prefix-match-httpswwwgooglecomevilinvalid-cwe-601">Finding 2 — Allowlist bypassed by prefix match: <code>https://www.google.com@evil.invalid</code> (CWE-601)</h3>
+<p><strong>Source:</strong> <code>/var/www/html/laboratorio2/redirect.php:3,9</code></p>
+<pre><code class="language-php">3  $allowed_url = 'https://www.google.com';
+9  if (strpos($url, $allowed_url) === 0) {
+11     header(&quot;Location: $url&quot;);
+</code></pre>
+<p><code>strpos(...) === 0</code> is a <strong>prefix</strong> test. It asks &quot;does the string begin with the allowed
+value?&quot; and never asks where the authority ends.</p>
+<p><strong>Literal evidence:</strong></p>
+<pre><code>$ curl -sS -o /dev/null -D - &quot;.../laboratorio2/redirect.php?url=https://www.google.com@evil.invalid/&quot;
+HTTP/1.1 302 Found^M$
+Location: https://www.google.com@evil.invalid/^M$
+</code></pre>
+<p>The string does begin with <code>https://www.google.com</code>, so the filter passes. The browser does
+not read it that way: everything before <code>@</code> is <strong>userinfo</strong>, and the authority is
+<code>evil.invalid</code>. The victim lands on the attacker's host while the allowlisted name is
+visible in the URL bar.</p>
+<p>A second, argument-free bypass of the same filter — no reliance on userinfo rendering:</p>
+<pre><code>$ curl -sS -o /dev/null -D - &quot;.../laboratorio2/redirect.php?url=https://www.google.com.evil.invalid/&quot;
+HTTP/1.1 302 Found^M$
+Location: https://www.google.com.evil.invalid/^M$
+</code></pre>
+<p><code>google.com.evil.invalid</code> is a hostname entirely registrable by the attacker, and it begins
+with the allowlisted string. This is the stronger of the two proofs because it requires no
+argument about how a user agent parses userinfo — only that the registrable domain is
+<code>evil.invalid</code>.</p>
+<p><strong>Impact:</strong> arbitrary external origin, same calibration as Finding 1.</p>
+<p><strong>Root cause:</strong> a prefix comparison used where an exact-origin comparison is required. The
+filter validates the <em>string</em>, not the <em>origin</em> — and the origin is what matters.</p>
+<p><strong>Remediation:</strong> parse the URL, then compare <code>scheme</code> and <code>host</code> for exact equality against
+a list of permitted origins. Reject any userinfo component. Normalise before comparing.</p>
+<hr />
+<h3 id="finding-3--allowlist-bypassed-by-host-substring-match-httpgooglecomevilinvalid-cwe-601">Finding 3 — Allowlist bypassed by host-substring match: <code>http://google.com.evil.invalid</code> (CWE-601)</h3>
+<p><strong>Source:</strong> <code>/var/www/html/laboratorio3/redirect.php:3,9,12</code></p>
+<pre><code class="language-php">3   $allowed_domain = 'google.com';
+9   $parsed_url = parse_url($url);
+12  if (isset($parsed_url['host']) &amp;&amp; strpos($parsed_url['host'], $allowed_domain) !== false) {
+14      header(&quot;Location: $url&quot;);
+</code></pre>
+<p><code>!== false</code> is a <strong>contains</strong> test. <code>google.com</code> appearing <em>anywhere</em> inside the host is
+accepted; the code never checks that it is the host's end, nor that nothing follows it.</p>
+<p><strong>Literal evidence:</strong></p>
+<pre><code>$ curl -sS -o /dev/null -D - &quot;.../laboratorio3/redirect.php?url=http://google.com.evil.invalid/&quot;
+HTTP/1.1 302 Found^M$
+Location: http://google.com.evil.invalid/^M$
+</code></pre>
+<p><strong>Root cause:</strong> substring matching against a hostname, which is the canonical CWE-20-style
+mistake — <code>google.com.evil.invalid</code> <em>contains</em> <code>google.com</code> and is not <code>google.com</code>.</p>
+<p><strong>Remediation:</strong> compare <code>parse_url($url)['host']</code> for <strong>exact equality</strong> against the
+allowlist, case-insensitively, after stripping a single trailing dot. Never use
+<code>strpos</code>/<code>strstr</code> against a hostname.</p>
+<p><strong>Note on the three filters, which is the transferable part.</strong> Labs 2 and 3 use
+<code>strpos</code> twice, with <code>=== 0</code> in one and <code>!== false</code> in the other, and both are bypassable —
+but by <em>different</em> payloads, and the two validators differ in what they admit:</p>
+<table>
+<thead>
+<tr>
+<th>Payload</th>
+<th>lab 2 (<code>=== 0</code> prefix)</th>
+<th>lab 3 (<code>!== false</code> contains)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>https://www.google.com@evil.invalid/</code></td>
+<td><strong>302 → off-site</strong></td>
+<td><strong>200 rejected</strong></td>
+</tr>
+<tr>
+<td><code>https://www.google.com.evil.invalid/</code></td>
+<td><strong>302 → off-site</strong></td>
+<td><strong>accepted</strong> — the host <em>does</em> contain <code>google.com</code>, and the check is <code>strpos()!==false</code>, a contains test. This row is the proof that the filter has no end-of-host check</td>
+</tr>
+<tr>
+<td><code>http://google.com.evil.invalid/</code></td>
+<td>rejected</td>
+<td><strong>302 → off-site</strong></td>
+</tr>
+<tr>
+<td><code>http://google.com@evil.invalid/</code></td>
+<td>rejected</td>
+<td>rejected</td>
+</tr>
+<tr>
+<td><code>http://evil.invalid/google.com</code> (in path)</td>
+<td>rejected</td>
+<td><strong>200 rejected</strong></td>
+</tr>
+<tr>
+<td><code>http://evil.invalid/</code></td>
+<td><strong>200 rejected</strong></td>
+<td><strong>200 rejected</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Lab 3's <code>parse_url()</code> genuinely improves on lab 2: the userinfo trick that defeats lab 2 is
+<strong>rejected</strong> by lab 3, because <code>parse_url</code> places <code>www.google.com</code> in the <code>user</code> component,
+leaving <code>host = evil.invalid</code>, and <code>strpos('evil.invalid','google.com') === false</code>. That is
+a control that held, and it is why the two labs are worth having side by side: <code>parse_url</code>
+fixes the userinfo confusion and still leaves substring matching wide open.</p>
+<hr />
+<h3 id="finding-4--open-redirect-via-host-header-apache-composes-the-location-from-the-request-origin-cwe-644--cwe-601">Finding 4 — Open redirect via <code>Host</code> header: Apache composes the <code>Location</code> from the request origin (CWE-644 → CWE-601)</h3>
+<p><strong>This is the finding that &quot;it redirects off-site&quot; would have missed</strong>, because there is no
+<code>url</code> parameter and no application code involved at all.</p>
+<p><strong>Source:</strong> <code>/etc/apache2/sites-enabled/000-default.conf:9</code> — <code>#ServerName www.example.com</code>
+is <strong>commented out</strong>. <code>mod_dir</code> is enabled (<code>/etc/apache2/mods-enabled/dir.load</code>,
+<code>dir.conf</code> present), <code>DirectorySlash</code> is on by default, and with no <code>ServerName</code> and no
+<code>UseCanonicalName</code> directive the <code>Off</code> default applies for a <code>VirtualHost</code> — so Apache
+builds the <code>Location</code> from the <strong><code>Host</code> header the client sent</strong>.</p>
+<p><strong>Literal evidence.</strong> The control, first — a same-origin <code>Location</code> I expected:</p>
+<pre><code>$ curl -sS -o /dev/null -D - &quot;http://[net-0-8]/laboratorio1&quot;
+HTTP/1.1 301 Moved Permanently^M$
+Location: http://[net-0-8]/laboratorio1/^M$
+</code></pre>
+<p>The treatment — one header changed, nothing else:</p>
+<pre><code>$ curl -sv -o /dev/null -D - -H 'Host: evil.invalid' &quot;http://[net-0-8]/laboratorio1&quot;
+&gt; GET /laboratorio1 HTTP/1.1^M$
+&gt; Host: evil.invalid^M$                      &lt;- verbose trace: the header DID arrive (defect #5)
+&lt; HTTP/1.1 301 Moved Permanently^M$
+Location: http://evil.invalid/laboratorio1/^M$
+</code></pre>
+<p>The server composed a complete off-site URL from an attacker-supplied <strong>origin</strong>, with no
+user-supplied path. Every directory in the docroot is a redirector:</p>
+<pre><code>/laboratorio1  -&gt; 301  Location: http://evil.invalid/laboratorio1/
+/laboratorio2  -&gt; 301  Location: http://evil.invalid/laboratorio2/
+/laboratorio3  -&gt; 301  Location: http://evil.invalid/laboratorio3/
+/              -&gt; 200  (DocumentRoot itself is served directly, no DirectorySlash)
+</code></pre>
+<p><strong>Why this is a different bug from Findings 1–3</strong>, and why it ranks higher: the <em>server</em>
+decides the destination and the attacker only supplies the origin. This is precisely the
+discriminator from the class definition, and it is the primitive behind host-header cache
+poisoning and password-reset-link poisoning. In an application with a password-reset flow,
+this alone is account takeover; here there is no such flow, so its standalone value is again
+bounded to phishing — but the <em>root cause</em> is a server misconfiguration affecting every path,
+not a parameter, and it would survive fixing all three PHP handlers.</p>
+<p><strong>Root cause:</strong> <code>ServerName</code> unset in the <code>VirtualHost</code> with <code>UseCanonicalName</code> at its <code>Off</code>
+default, so the canonical name is taken from the request.</p>
+<p><strong>Remediation:</strong> set <code>ServerName</code> explicitly, or set <code>UseCanonicalName On</code> in the
+<code>VirtualHost</code>, and validate the <code>Host</code> header against a known set at the edge. Do not rely
+on the framework to sanitise it — here there is no framework in the path.</p>
+<hr />
+<h3 id="finding-5--crlf--response-splitting-primitive-present-in-code-blocked-only-by-the-php-runtime-cwe-113">Finding 5 — CRLF / response splitting primitive present in code, blocked only by the PHP runtime (CWE-113)</h3>
+<p><strong>Reported as a latent finding, not an exploitable one.</strong> The distinction matters and is
+the whole content of this item.</p>
+<p><code>redirect.php:7</code> is <code>header(&quot;Location: $url&quot;)</code> with <strong>no newline filtering whatsoever</strong> in
+the application. That is an unparameterised <code>Location</code> — the shape the class definition
+flags as a header-injection primitive rather than merely an open redirect. Whether it is
+exploitable is decided by the runtime, so the runtime was measured rather than assumed.</p>
+<p><strong>Oracle first</strong> (defect: a filter that rejects must be distinguished from a request that
+never carried the payload). <code>%0d%0a</code> really does decode to CR+LF in <code>$_GET</code> on this exact
+build:</p>
+<pre><code>$ php -r 'parse_str(&quot;url=http://evil.invalid/%0d%0aX-Injected:%20yes&quot;, $_GET); ...'
+php_version=8.2.26
+len=37
+hex=687474703a2f2f6576696c2e696e76616c69642f0d0a582d496e6a65637465643a20796573
+has_CR=YES  has_LF=YES
+</code></pre>
+<p><code>0d0a</code> at offset 22. The transport is proven; the payload is not being lost in transit.</p>
+<p><strong>The target's own log is the decisive evidence:</strong></p>
+<pre><code>$ tail -12 /var/log/apache2/error.log
+[Wed Sep 30 04:48:51.212589 2026] [php:warn] [pid 41:tid 41] [client [net-0-1]:44832]
+  PHP Warning:  Header may not contain more than a single header, new line detected
+  in /var/www/html/laboratorio1/redirect.php on line 7
+</code></pre>
+<p>And the HTTP-observable consequence — <strong>no <code>Location</code> header at all</strong>, which is what
+distinguishes &quot;runtime refused&quot; from &quot;runtime stripped the newline and redirected&quot;:</p>
+<pre><code>$ curl -sS -o b -D h &quot;http://[net-0-8]/laboratorio1/redirect.php?url=http://evil.invalid/%0d%0aX-Injected:%20yes&quot;
+HTTP/1.1 200 OK^M$          &lt;- no Location: line
+BODY bytes=0
+</code></pre>
+<p><strong>Assessment.</strong> Three states were possible and all three are now excluded: the CRLF did
+arrive (hex proof), the runtime refused it (log proof), and it did not silently truncate
+into a valid <code>Location</code> (no <code>Location</code> present). The control that held is <strong>PHP 8.2.26's
+<code>header()</code></strong>, not the application — the application has no filter at all. PHP has refused
+newlines in <code>header()</code> since 5.1.2, so the same code on an older runtime would inject a
+second response header, and <code>[response-cookie-header]</code> injection (session fixation) would follow from it.</p>
+<p><strong>Remediation:</strong> do not rely on the runtime. Reject <code>\r</code> and <code>\n</code> in any value used in a
+header, and use <code>header($name . ': ' . $value, true, $code)</code> with an explicit status.</p>
+<hr />
+<h3 id="finding-6--plaintext-credential-in-a-world-readable-file-grants-passwordless-root-cwe-522--cwe-256--cwe-732">Finding 6 — Plaintext credential in a world-readable file grants passwordless root (CWE-522 / CWE-256 / CWE-732)</h3>
+<p><strong>Outside the open-redirect class, reported because the class definition requires it.</strong> The
+class definition says: <em>if the chain runs through a token whose value lives somewhere the
+attacker can read or predict, that token-storage choice is its own finding.</em> This is the
+third time in this corpus that has been true. It is a <strong>finding I did not use</strong> to reach
+the open redirect, and it is filed separately so that patching the redirect handlers is not
+mistaken for patching the machine.</p>
+<p><strong>Source:</strong> <code>/secret.bak</code> — <code>-rw-r--r-- 1 balu balu 25 Dec 26 2024 /secret.bak</code>, mode
+<strong>644</strong>, owner <code>balu:balu</code>, at the filesystem root, <strong>outside</strong> the docroot
+(<code>DocumentRoot /var/www/html</code>, <code>000-default.conf:12</code>).</p>
+<pre><code>$ cat /secret.bak
+balulito:balulerochingon
+</code></pre>
+<p>Mode 644 at <code>/</code> means <strong>every local identity can read it</strong> — <code>www-data</code> included.</p>
+<p><strong>The credential is real and it escalates:</strong></p>
+<pre><code>$ ssh balulito@[net-0-8]   # password from /secret.bak
+uid=1001(balulito) gid=1001(balulito) groups=1001(balulito),100(users)
+$ sudo -n -l
+User balulito may run the following commands on f6748049babe:
+    (ALL) NOPASSWD: /bin/cp
+</code></pre>
+<p><strong>Root reached, proven with a manufactured oracle</strong> (this vector's success is a <em>state</em>,
+not a message, so a marker distinguishable by design is required — a random token and a
+timestamp, in a path the low-privilege user cannot pre-create):</p>
+<pre><code>MARKER=R98-1790743839-14653
+$ touch /tmp/$MARKER                    # as balulito -&gt; own file, uid=1001
+$ sudo -n cp /etc/hostname /tmp/$MARKER.root
+SUDO CP EXIT=0
+$ stat -c 'name=%n uid=%u(%U) gid=%g(%G) mode=%a' /tmp/$MARKER.root
+name=/tmp/R98-1790743839-14653.root uid=0(root) gid=0(root) mode=644
+$ cat /tmp/R98-1790743839-14653.root
+f6748049babe                            # this container's /etc/hostname
+</code></pre>
+<p>A root-owned artefact with this container's own hostname in it, created by a command the
+unprivileged identity was permitted to run. Not a claim about the future — a measured
+result.</p>
+<p><strong>Contrast, which is the point:</strong> the credential the platform <em>does</em> disclose,
+<code>index.html:91</code> (<code>balu</code> / <code>balulero</code>), reaches <code>uid=1000(balu)</code> and then
+<code>sudo: a password is required</code> — no escalation. The credential in the world-readable file
+reaches <code>uid=0</code>. <strong>The disclosed reward is the weaker credential and the leaked file is the
+real one.</strong> An operator reading only <code>index.html</code> would conclude the machine has no
+privilege escalation.</p>
+<p><strong>Reachability, stated honestly.</strong> <code>/secret.bak</code> is <strong>not</strong> web-reachable — all four
+traversal attempts returned <code>404</code> (272 bytes each): <code>/secret.bak</code>, <code>/../secret.bak</code>,
+<code>/..%2fsecret.bak</code>, <code>/%2e%2e/secret.bak</code>. <code>AllowOverride None</code>
+(<code>apache2.conf:172</code>) and <code>mod_rewrite</code> absent mean no route reaches <code>/</code>. So this requires
+an <strong>initial local or SSH foothold</strong>; it is a post-authentication privilege escalation and
+credential-disclosure issue, not a remote one. Its severity is therefore high but
+<strong>conditional</strong>, and that condition is the honest way to file it.</p>
+<p><strong>This contradicts the lab's own published description</strong>, which states <em>&quot;No hay escalada de
+privilegios en esta máquina.&quot;</em> The measurement is the reportable fact: escalation exists and
+is reachable in two commands from a mode-644 file.</p>
+<p><strong>Remediation:</strong> remove plaintext credentials from the filesystem entirely; if a bootstrap
+credential is unavoidable, deliver it out of band with a single-use token rather than a
+persistent file. Scope <code>sudoers</code> to the specific arguments required rather than
+<code>(ALL) NOPASSWD: /bin/cp</code>, which is a general-purpose root write primitive (<code>cp</code> of a
+crafted file over a target path is the standard route to full root).</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<p>Each with the positive control that proves the detector can fire. A control that has never
+seen a success is not a control.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Where</th>
+<th>Positive control that proves this detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Lab 2's allowlist rejects a plainly off-origin value</strong></td>
+<td><code>laboratorio2/redirect.php:13-15</code></td>
+<td>The same filter <strong>accepts</strong> <code>?url=https://www.google.com</code> → <code>302</code>, <code>Location: https://www.google.com</code>, 0-byte body. The filter fires.</td>
+</tr>
+<tr>
+<td><strong>Lab 3's <code>parse_url</code> defeats userinfo confusion</strong> (defeats lab 2's bypass)</td>
+<td><code>laboratorio3/redirect.php:9,12</code></td>
+<td>Same byte-identical payload <code>https://www.google.com@evil.invalid/</code> gives <strong>200 + 60 bytes</strong> here and <strong>302 + <code>Location:</code></strong> in lab 2. Two different outcomes from one string ⇒ the discriminator is real, not a coincidence.</td>
+</tr>
+<tr>
+<td><strong>Lab 3 checks <code>host</code>, not the whole URL</strong></td>
+<td><code>laboratorio3/redirect.php:12</code></td>
+<td><code>?url=http://evil.invalid/google.com</code> → <code>200</code>, 60 bytes rejected, while <code>?url=http://google.com.evil.invalid/</code> → <code>302</code>. The token must be in the host component.</td>
+</tr>
+<tr>
+<td><strong>PHP <code>header()</code> refuses embedded CRLF</strong></td>
+<td>PHP 8.2.26 runtime</td>
+<td>The CRLF's arrival was proven independently (<code>hex</code> contains <code>0d0a</code>), and the refusal is in the target's own log: <code>PHP Warning: Header may not contain more than a single header, new line detected in .../redirect.php on line 7</code>.</td>
+</tr>
+<tr>
+<td><strong>Apache validates the <code>Host</code> header</strong></td>
+<td>Apache 2.4.62</td>
+<td>Benign <code>Host: evil.invalid</code> → <code>301</code> + <code>Location: http://evil.invalid/laboratorio1/</code>; a <code>Host</code> carrying a path → <code>400</code>; duplicate <code>Host</code> → <code>400</code>. Per defect #16 the status alone is not the verdict — the discriminator is the <code>Location</code> line: 1 in the first case, <strong>0</strong> in the two rejected cases.</td>
+</tr>
+<tr>
+<td><strong>Apache rejects CR/LF in the request line</strong></td>
+<td>Apache 2.4.62</td>
+<td><code>GET /laboratorio1/%0d%0aX-Injected:%20yes</code> → <code>404</code>, 272 bytes, <strong>0</strong> <code>Location</code> lines.</td>
+</tr>
+<tr>
+<td><strong>Path traversal cannot reach <code>/secret.bak</code></strong></td>
+<td><code>000-default.conf:12</code>, <code>apache2.conf:172</code></td>
+<td>All four encodings returned <code>404</code> with 272 bytes each (a counted work result, not a silent negative).</td>
+</tr>
+<tr>
+<td><strong>Lab 1 degrades safely on an array parameter</strong></td>
+<td><code>redirect.php:3,7</code></td>
+<td><code>?url[]=http://evil.invalid</code> → <code>302</code> with <code>Location: Array</code> — PHP's array-to-string coercion. Not dangerous, and worth knowing it does not become a second primitive.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Positive controls for the <code>Location</code> detector itself</strong>, run before any conclusion was
+drawn from an external <code>Location</code>:</p>
+<pre><code>CTRL-1  ?url=http://[net-0-8]/dest   -&gt; 302  Location: http://[net-0-8]/dest      (same-origin, expected)
+CTRL-2  /laboratorio1                  -&gt; 301  Location: http://[net-0-8]/laboratorio1/
+CTRL-3  lab2 allowlisted value         -&gt; 302  Location: https://www.google.com
+</code></pre>
+<p>CTRL-3 is the one that matters most: it is the <strong>allowlisted success</strong>, so &quot;lab 2 blocked
+my payload&quot; is a statement about my payload rather than about a filter that never runs.</p>
+<hr />
+<h2 id="not-tested">NOT tested</h2>
+<p>Kept separate from <em>discarded with reason</em>, because these are gaps in coverage, not
+conclusions.</p>
+<ul>
+<li><strong>Victim-side delivery — not tested, and structurally untestable here.</strong> The escalation
+from &quot;the server emits an off-site <code>Location</code>&quot; to &quot;a human is phished&quot; needs a victim
+browser, a page to click from, and a destination to land on. Producing it would have
+required either a public redirector or a phishing host — <strong>third-party infrastructure,
+out of scope, and explicitly forbidden for this engagement.</strong> The finding is therefore
+proven from the <code>Location</code> header alone, and the delivery half is <strong>not claimed</strong>.</li>
+<li><strong><code>Referer</code> / cookie / fragment leakage on the redirect hop</strong> — not tested. Follows from
+the absent consumer: there is no session to leak (0 <code>[response-cookie-header]</code> over 7 paths, oracle
+green), so there is nothing to measure.</li>
+<li><strong>OAuth <code>redirect_uri</code> smuggling</strong> — not tested; no OAuth client exists in the 7-file
+docroot. The technique is described in the class definition, not claimed as a result here.</li>
+<li><strong>Password-reset poisoning via Finding 4</strong> — not tested; no reset endpoint exists.</li>
+<li><strong>Cache poisoning via Finding 4</strong> — not tested. <code>mod_cache</code> is not in <code>mods-enabled/</code>, and
+no caching layer sits in front of the container on the default bridge.</li>
+<li><strong>Whether the lab's platform grades the three sub-labs</strong> — not tested. I did not submit to
+DockerLabs; the reward analysis below is based on the shipped artefacts only.</li>
+<li><strong>Windows/IE-specific userinfo parsing</strong> for the lab-2 bypass — not tested. Finding 2 does
+not depend on it; the <code>google.com.evil.invalid</code> proof stands without any userinfo argument.</li>
+</ul>
+<h2 id="discarded-with-reason">Discarded with reason</h2>
+<ul>
+<li><strong>CRLF response splitting / <code>[response-cookie-header]</code> injection</strong> — discarded as <em>not exploitable on
+this runtime</em>, with the reason established rather than assumed: <code>%0d%0a</code> provably reached
+<code>$_GET</code> (hex <code>…0d0a…</code>), and PHP 8.2.26 refused it with a logged warning. Retained as
+Finding 5 because the code has no filter and the runtime is the only control.</li>
+<li><strong>Apache <code>Host</code> header carrying a path</strong> (<code>Host: evil.invalid/owned/page.html</code>) —
+discarded, <code>400 Bad Request</code>. Apache validates the authority syntax.</li>
+<li><strong>Duplicate <code>Host</code> header</strong> — discarded, <code>400 Bad Request</code>.</li>
+<li><strong><code>url[]=</code> array injection as a second primitive</strong> — discarded, degenerates to
+<code>Location: Array</code>. Counted, not assumed.</li>
+<li><strong>Reading <code>/secret.bak</code> over HTTP</strong> — discarded, 4/4 traversal encodings returned 404.
+The credential is local-only; this bounds Finding 6's severity rather than inflating it.</li>
+<li><strong>Brute force</strong> — not attempted. Both credentials were disclosed in shipped artefacts;
+exactly two SSH logins were made, one per disclosed credential.</li>
+</ul>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>What lied to me, or nearly did, during this engagement.</p>
+<p><strong>1. <code>/tmp/[tool]</code> was wiped mid-run by a concurrent worker, and it read as &quot;no data&quot;.</strong>
+My first matrix run produced <code>BODY bytes=</code> <strong>blank</strong> with <code>head: cannot open ... No such file or directory</code> interleaved. Treated naively, a blank byte count is a zero, and a zero
+means <em>untested</em> — I would have filed &quot;lab 1 returns an empty body&quot; as a measured property
+of the app. It was not: the scratch directory had been deleted between my <code>mkdir</code> and the
+<code>curl</code> write. <strong>Resolution:</strong> re-ran on a collision-proof path and the real figure appeared
+— the negative body is <strong>42 bytes</strong> (<code>No se proporcionó una URL para redirigir.</code>, UTF-8),
+and the rejection bodies are <strong>60 bytes</strong>. This is <code>self-corrections.md</code> §14 in a new
+costume: the failure did not look like a missing file, it looked like a number that was
+zero. <em>Any blank or absent count is untested, not zero.</em></p>
+<p><strong>2. My own variable name collided with a file, and the error was silent about which.</strong>
+I wrote <code>W=/tmp/...</code> into a file named <code>/tmp/[tool]/r98dir</code> and then <code>source</code>d it, while a
+directory of the same name already existed. The resulting <code>curl -o</code> failures printed
+<code>Not a directory</code> — which I initially misread as a filesystem or permission problem and
+started debugging the wrong layer. <strong>Resolution:</strong> <code>rm -f</code> the file, use an explicit path,
+confirm with <code>test -d</code> before use. Cheap to state, cost two tool calls.</p>
+<p><strong>3. Defect #5 (<code>rtk curl</code> can silently drop <code>-H</code>) nearly invalidated Finding 4, and the
+positive control is what caught it.</strong> Finding 4 rests entirely on one <code>-H 'Host: evil.invalid'</code>. A dropped header would have produced the <em>baseline</em> same-origin <code>Location</code>,
+which I would have read as &quot;the Host injection did not work&quot; — a false negative shaped
+exactly like a failed exploit. It was caught because the <code>Location</code> <strong>changed</strong>, and then
+confirmed in a <code>-sv</code> trace showing <code>&gt; Host: evil.invalid</code> on the wire. <strong>Rule: any finding
+that depends on a header must show that header in a verbose trace, not infer it from the
+response.</strong></p>
+<p><strong>4. Defect #3 (redirect-following) was avoided by construction, and it is worth stating
+why it was especially dangerous <em>here</em>.</strong> Every measurement in this writeup was taken with
+<code>curl</code> <strong>without</strong> <code>-L</code>, reading <code>Location</code> from the header block. Had any probe followed
+the redirect, the request would have ended at a non-routable <code>.invalid</code> name, and the tool
+would have reported a resolution failure or a connection error — reading as &quot;the
+destination is unreachable&quot; or &quot;the redirect is blocked&quot;, when in fact the redirect had
+fired perfectly. An earlier worker in this corpus had a conclusion inverted by exactly this.</p>
+<p><strong>5. Every <code>Location</code> value used as a destination was an RFC 2606 <code>.invalid</code> name, and no
+outbound connection was ever made.</strong> Not an instrumentation defect but a measurement
+hazard I was controlling for: had I used a real registrable domain, a proof of open
+redirect would have become an outbound request to third-party infrastructure, and the
+evidence would have depended on someone else's server responding. <code>evil.invalid</code> is
+non-routable by definition, so the entire proof rests on bytes the lab itself emitted.</p>
+<p><strong>6. A &quot;no cookie anywhere&quot; conclusion would have been untested without a manufactured
+oracle.</strong> There is no page in this lab that emits <code>[response-cookie-header]</code>, so the detector had never
+seen a success — the exact shape of <code>self-corrections.md</code> §1. I stood up a loopback
+listener that emits a canary cookie and ran the <em>identical</em> detector against both: <strong>1
+cookie from the oracle, 0 from the lab across 7 paths.</strong> The negative now carries a work
+count and a green control.</p>
+<p><strong>7. My own artefact could not be cleaned up with the primitive I had been granted — and I
+did not work around it.</strong> The root proof left <code>/tmp/R98-….root</code>, owned by root. <code>sudo -n rm</code>
+is not in the allowlist (only <code>/bin/cp</code>), and <code>/tmp</code>'s sticky bit blocks unlink by a
+non-owner. The correct response was <strong>not</strong> to escalate further to delete it: stage 9
+recreates the container from the image, which destroys <code>/tmp</code> outright. Verified after
+recreation: <code>ls /tmp/ | grep R98</code> → <code>NONE - clean</code>.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>No <code>FLAG{}</code> or <code>DL{…}</code> value exists in this lab.</strong> Documented search, not assumption:</p>
+<table>
+<thead>
+<tr>
+<th>Search</th>
+<th>Work count / result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>find / -xdev \( -iname '*flag*' -o -iname '*secret*' -o -iname '*.txt' \)</code></td>
+<td>read the whole filesystem minus <code>/proc</code>,<code>/sys</code>,<code>/usr</code>,<code>/var/lib/dpkg</code>,<code>/etc/ssl</code>; returned <strong>1</strong> hit: <code>/secret.bak</code> — which contains <code>balulito:balulerochingon</code> and no flag token</td>
+</tr>
+<tr>
+<td><code>grep -aoE '(FLAG|DL)\{[^}]*\}'</code> on <code>/root/.bashrc</code></td>
+<td>no match</td>
+</tr>
+<tr>
+<td><code>grep -aoE '(FLAG|DL)\{[^}]*\}'</code> on <code>/secret.bak</code></td>
+<td>no match</td>
+</tr>
+<tr>
+<td><code>ls -la [lab-home]/ /root/</code></td>
+<td>only <code>balu</code> and <code>balulito</code> home dirs, both <code>drwx------</code>, empty; no <code>.ssh</code> in either (<code>ls [lab-home]/*/.ssh /root/.ssh</code> → <code>no .ssh dirs</code>)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The actual reward mechanism is SSH access, disclosed in the page itself</strong> —
+<code>/var/www/html/index.html:91</code>, inside a client-side <code>alert()</code>:</p>
+<blockquote>
+<p><em>&quot;Accede por SSH con estas credenciales SOLO cuando hayas completado los retos anteriores.
+Usuario: balu — Password: balulero&quot;</em></p>
+</blockquote>
+<p>Verified, one login, no brute force:</p>
+<pre><code>$ ssh balu@[net-0-8]   # balu / balulero
+uid=1000(balu) gid=1000(balu) groups=1000(balu),100(users)
+$ sudo -n -l
+sudo: a password is required
+</code></pre>
+<p>This is consistent with <strong>26 of 32</strong> corpus labs having no <code>FLAG{}</code>, and with this lab's own
+published description. It is also the setup for Finding 6: the disclosed reward is the
+<strong>weaker</strong> of the two credentials on the machine.</p>
+<hr />
+<h2 id="restore">Restore</h2>
+<pre><code>$ docker rm -f redirection_container &amp;&amp; docker run -d --name redirection_container redirection:latest
+</code></pre>
+<p>Recreated from the image, not by undoing edits. <strong>Verified positively</strong> — the service
+answers <em>and</em> the <code>Location</code> fires, on the shipped image:</p>
+<pre><code>/                                                          -&gt; 200  bytes=3205
+/laboratorio1                                              -&gt; 301  Location: http://[net-0-8]/laboratorio1/
+/laboratorio1/redirect.php?url=http://evil.invalid/verify  -&gt; 302  Location: http://evil.invalid/verify
+/laboratorio2/redirect.php?url=https://www.google.com.evil.invalid/ -&gt; 302  Location: https://www.google.com.evil.invalid/
+/laboratorio3/redirect.php?url=http://google.com.evil.invalid/      -&gt; 302  Location: http://google.com.evil.invalid/
+</code></pre>
+<p>Source-level confirmation that the container is back to shipped content:</p>
+<pre><code>e9724183e2c6a1ad74febd02c52b0a8a  /var/www/html/laboratorio1/redirect.php
+a454d63d28c97badd24b4250433614a2  /var/www/html/laboratorio2/redirect.php
+2a6851068095aa6467deba37287b0a09  /var/www/html/laboratorio3/redirect.php
+-rw-r--r-- 1 balu balu 25 Dec 26  2024 /secret.bak
+/tmp marker: NONE - clean          &lt;- my artefact is gone with the old container
+id -&gt; uid=0(root)                   &lt;- container-level exec identity
+sshd listener: present
+</code></pre>
+<p>Note that the vulnerabilities <strong>reproduce on the freshly created container</strong>, which is the
+correct outcome: they are inherent to the shipped source, not artefacts of my session. That
+is itself the restore check — a restored lab should still be exploitable, or the restore
+was wrong.</p>
+<hr />
+<h2 id="feed-forward-candidate-for-the-parent--runbook-5--10">Feed-forward candidate (for the parent — RUNBOOK §5 / §10)</h2>
+<p>Open redirect is a <strong>new class</strong>; the row does not exist in <code>RUNBOOK.md</code> §5 and there is no
+<code>corpus/98</code> precedent. A rule that would generalise past this lab, in the RUNBOOK's
+question/discriminator format:</p>
+<blockquote>
+<p>| <strong>Open redirect</strong> | Does a request-supplied value reach a <code>Location</code> header such that the <code>Location</code>'s <strong>origin</strong> is not fixed by the server? | Name the <strong>provenance</strong> of the destination, not its value. Four discriminators: (1) arbitrary external origin vs a closed server-side set; (2) <strong>who decides</strong> — user-supplied <em>path</em> (CWE-601) vs user-supplied <em>origin</em> via a request header (CWE-644→601, the worse bug); (3) is the <code>Location</code> <strong>unparameterised</strong>, i.e. a header-injection primitive whose exploitability the runtime, not the app, decides; (4) <strong>what consumes it</strong> — OAuth <code>redirect_uri</code>, password reset, pre-filled credentials, or a session. |</p>
+</blockquote>
+<p>And the calibration that makes (4) actionable, which this lab is a clean specimen of because
+the chain is <em>absent</em> rather than unfound:</p>
+<blockquote>
+<p><strong>An open redirect with no consumer is a phishing enabler and nothing more</strong> —
+<code>C:N/I:N/A:N</code>, <code>UI:R</code>, <code>PR:N</code>. Its lure lives on the target's own origin, so pre-click
+inspection passes, and the attacker needs no infrastructure on the critical path. Report it
+at that severity and do not inflate it. Severity is a property of the redirect <strong>plus its
+consumer</strong>; a report that does not ask what consumes the redirect has filed half a
+finding and cannot tell which half.</p>
+</blockquote>
+<p>Two subsidiary rules this lab paid for, worth carrying:</p>
+<ul>
+<li><strong>A filter's existence is not a control.</strong> Labs 2 and 3 both filter, both filters fire on
+the allowlisted value, and both are bypassed — by different payloads. A prefix test
+(<code>strpos(...) === 0</code>) is defeated by userinfo (<code>https://www.google.com@evil.invalid/</code>) and
+by suffix confusion (<code>https://www.google.com.evil.invalid/</code>); a host-substring test
+(<code>strpos(...) !== false</code>) is defeated by <code>google.com.evil.invalid</code>. Never <code>strpos</code> a URL or
+a hostname — <code>parse_url</code> then compare <code>scheme</code> and <code>host</code> for exact equality, and reject
+any userinfo component.</li>
+<li><strong>Ask &quot;who built this <code>Location</code>?&quot; for every redirect you find, including the ones with no
+parameter.</strong> <code>ServerName</code> commented out in a <code>VirtualHost</code> with <code>UseCanonicalName</code> at its
+<code>Off</code> default made every directory in the docroot a redirector driven by the <code>Host</code>
+header — a finding that a search for <code>?url=</code> parameters would not have produced, and that
+would survive fixing all three PHP handlers.</li>
+</ul>
+<p><strong>Instrumentation defect to add to <code>method/self-corrections.md</code>:</strong> a shared <code>/tmp</code> scratch
+directory deleted by a concurrent process makes every byte count in a batch read as blank,
+and a blank count is indistinguishable from a real zero. State it as: <em>a missing or blank
+count is untested, not zero</em> — and confirm the scratch path still exists before trusting a
+batch that depends on it.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

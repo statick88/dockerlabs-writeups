@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 188 Wargames &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Wargames</p><h1 id="188-wargames--writeup">188 Wargames — writeup</h1>
+<p><strong>Target:</strong> <code>[net-0-3]</code> — <strong>Debian GNU/Linux 13 (trixie)</strong>, Apache <strong>2.4.65-2</strong>, OpenSSH
+<strong>10.0p2 Debian-7</strong>, vsftpd <strong>3.0.5-0.2</strong>, Python <strong>3.13.5-1</strong>, sudo 1.9.16p2-3.
+Four listening TCP ports: <strong>21, 22, 80, 5000</strong>. No UDP.
+<strong>Result:</strong> unauthenticated → <code>uid=1000(joshua)</code> (SSH) → <strong><code>Uid: 0 0 0 0</code></strong> (SUID <code>godmode</code>).
+<strong>Reward recovered:</strong> <code>WOPR{THE_GAME_IS_ENDING_YOU_WIN}</code> — <strong>there is no <code>FLAG{}</code> in this lab</strong>
+(§10, with the search and its counts).</p>
+<p><strong>Full catalogue description</strong> (the queue truncated it):
+<em>&quot;El objetivo principal de este laboratorio fue practicar técnicas de reconocimiento, análisis
+de servicios y escalada de privilegios en un entorno controlado con un fuerte componente de
+lógica y análisis estático.&quot;</em></p>
+<p><strong>Topology.</strong> <code>auto_deploy.sh</code> was read, never run. One container, default bridge, <strong>no custom
+network, no macvlan, no second host</strong> (<code>auto_deploy.sh:131</code>; the <code>while true</code> is at <code>:145</code>).
+The engagement is single-host and stayed single-host. Note <code>:46</code> — the script would <code>docker stop</code>
+and <code>docker rm</code> <strong>any</strong> container whose id starts <code>5938*</code>, i.e. it reaches outside this lab.
+Another reason never to run it.</p>
+<hr />
+<h2 id="0-the-headline">0. The headline</h2>
+<p><strong>The manifest label for this lab is <code>recon and service analysis</code>, and that is the correct
+class — but the single most valuable thing in the image is not on any service. It is in the
+image's own build record.</strong></p>
+<p>Three things invert the obvious reading of this lab:</p>
+<ol>
+<li><strong>The catalogue's platform neighbours are all WordPress; this one is not.</strong> There is no
+WordPress, no <code>wp-*</code> path, no PHP. Port 5000 speaks a custom line protocol. The lesson is
+lab 32's again, in its purest form: <em>read a version-bearing file before writing a single word
+about the platform.</em> Here the version-bearing files are <code>/etc/os-release</code>
+(<code>PRETTY_NAME=&quot;Debian GNU/Linux 13 (trixie)&quot;</code>, <code>DEBIAN_VERSION_FULL=13.2</code>) and
+<code>dpkg-query -W</code> (<code>apache2 2.4.65-2</code>, <code>openssh-server 1:10.0p1-7</code>, <code>vsftpd 3.0.5-0.2</code>).</li>
+<li><strong>The service's most eye-catching output is a decoy, and I proved it two independent ways.</strong>
+The WOPR AI hands over a 64-hex value explicitly labelled <code>SSH PASSWORD</code>. It is not joshua's
+password — not over SSH, and not against the shadow hash directly. It is also not <code>godmode</code>'s
+passphrase. §6/F2, §9.</li>
+<li><strong>The credential is in <code>docker history</code>, in plaintext, and the runtime files do not contain
+it.</strong> <code>echo &quot;joshua:1983@1983&quot; | chpasswd</code> is a build layer. The lab's own description names
+<em>&quot;análisis estático&quot;</em>, and this is the surface it means — not the SUID binary, which is
+comparatively obvious. §5, F3.</li>
+</ol>
+<p>And the enumeration lesson the queue asked for: <strong>eleven surfaces (E1–E11), 159 application-level
+probes, one account, and the account's completeness confirmed against <code>/etc/passwd</code> rather than
+assumed</strong> — plus a
+<strong>second instance of lab 87's absent-path trap, in a different costume</strong> (§2.2, §11.1). Lab 87's
+was a <code>301</code>; this lab's is a <strong><code>403</code> that a name-based rule emits before it ever checks whether
+the file exists</strong>, and a status-code sweep here reports <strong>5 present files when 2 exist</strong>.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- --version-all [net-0-3]
+PORT     STATE SERVICE VERSION
+21/tcp   open  ftp     vsftpd 3.0.5
+22/tcp   open  ssh     OpenSSH 10.0p2 Debian 7 (protocol 2.0)
+80/tcp   open  http    Apache httpd 2.4.65 ((Debian))
+5000/tcp open  upnp?
+Not shown: 65531 closed tcp ports (conn-refused)
+</code></pre>
+<p>Port 5000 is unrecognised to nmap and its fingerprint is the service's own banner — which is
+itself the identification: the probe bodies are all
+<code>&quot;WELCOME TO WOPR\nSHALL WE PLAY A GAME?\n\n&gt;\x20&quot;</code>. <strong>The service names itself</strong>, and no version
+string is offered; the version that matters is read from the artefact (§1.1).</p>
+<p><strong>Cross-check: the scan and the kernel agree, independently.</strong> The container has no <code>ss</code> and no
+<code>netstat</code> (<code>ss -lntup</code> → <code>NOSOCKTOOL</code>), so the socket list came from <code>/proc</code>:</p>
+<pre><code>$ cat /proc/net/tcp            # 3 listener rows
+   0: 00000000:1388 ...   &lt;- 5000/udp? no: 0x1388 = 5000
+   1: 00000000:0016 ...   &lt;- 0x16 = 22
+   2: 00000000:0050 ...   &lt;- 0x50 = 80
+$ cat /proc/net/tcp6           # 2 listener rows
+   0: ...:0015 ...       &lt;- 0x15 = 21
+   1: ...:0016 ...       &lt;- 22
+</code></pre>
+<p>Union = <strong>4 TCP ports</strong>, matching <code>-p-</code> exactly. <code>0x1388 = 5000</code> computed, not read.</p>
+<p><strong>What a TCP scan cannot see — measured, with the work count:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+<th>Work count</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/proc/net/udp</code></td>
+<td>header only</td>
+<td><strong>0</strong> socket lines (1 line total, header)</td>
+</tr>
+<tr>
+<td><code>/proc/net/udp6</code></td>
+<td>header only</td>
+<td><strong>0</strong> socket lines (1 line total, header)</td>
+</tr>
+<tr>
+<td><code>docker inspect … .Config.ExposedPorts</code></td>
+<td><code>{&quot;5000/tcp&quot;:{}}</code></td>
+<td>1 image</td>
+</tr>
+<tr>
+<td><code>getcap -r /</code></td>
+<td>empty</td>
+<td><strong>0</strong> lines</td>
+</tr>
+<tr>
+<td><code>find / -xdev \( -perm -4000 -o -perm -2000 \)</code></td>
+<td>19 binaries</td>
+<td><strong>19</strong> files</td>
+</tr>
+<tr>
+<td><code>/etc/cron.d/</code> + <code>/var/spool/cron/crontabs/</code></td>
+<td>only Debian defaults</td>
+<td><strong>0</strong> job files</td>
+</tr>
+</tbody>
+</table>
+<p>Note the two UDP checks are <strong>1 line each</strong> and that line is the header. A blank and a header
+look identical in a report; these are counted (§14 of self-corrections).</p>
+<h3 id="11-stack-and-versions--from-the-artefact-not-from-the-banner">1.1 Stack and versions — from the artefact, not from the banner</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Finding</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Debian GNU/Linux <strong>13 (trixie)</strong>, 13.2</td>
+<td><code>/etc/os-release</code></td>
+</tr>
+<tr>
+<td>Web</td>
+<td><strong>Apache httpd 2.4.65-2</strong>, <code>DocumentRoot /var/www/html</code>, one vhost, no <code>Alias</code>, no <code>Rewrite</code></td>
+<td><code>dpkg -l</code>; <code>sites-enabled/000-default.conf</code></td>
+</tr>
+<tr>
+<td>App</td>
+<td><code>python3 3.13.5-1</code> — a custom TCP service on <strong>5000</strong></td>
+<td><code>dpkg -l</code>; <code>/usr/local/bin/script.py</code></td>
+</tr>
+<tr>
+<td>SSH</td>
+<td><strong>OpenSSH 10.0p2 Debian-7</strong>, OpenSSL 3.5.4</td>
+<td><code>/usr/sbin/sshd -V</code></td>
+</tr>
+<tr>
+<td>FTP</td>
+<td><strong>vsftpd 3.0.5-0.2</strong>, <code>anonymous_enable=NO</code>, <code>local_enable=YES</code></td>
+<td><code>/etc/vsftpd.conf</code></td>
+</tr>
+<tr>
+<td>Accounts</td>
+<td><strong><code>joshua</code> is the only <code>uid≥1000</code> with a login shell.</strong> <code>root</code>'s password field is <code>*</code></td>
+<td><code>/etc/passwd</code>, <code>/etc/shadow</code></td>
+</tr>
+<tr>
+<td>Hash</td>
+<td><strong>yescrypt</strong> <code>$y$j9T$…</code>, 73 chars — the Debian trixie default</td>
+<td><code>/etc/shadow</code></td>
+</tr>
+<tr>
+<td>SUID</td>
+<td>19 binaries; <strong><code>/usr/local/bin/godmode</code> <code>4755 root:root</code></strong> is the load-bearing one</td>
+<td><code>find</code>, <code>stat</code></td>
+</tr>
+<tr>
+<td>Capabilities</td>
+<td>none (<code>getcap -r /</code> → 0 lines)</td>
+<td><code>getcap</code></td>
+</tr>
+<tr>
+<td>Reward</td>
+<td><code>/root/flag.txt</code>, 33 bytes, <code>0664 root:root</code></td>
+<td><code>ls</code>, <code>wc -c</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>A version discrepancy worth recording rather than smoothing over.</strong> <code>dpkg-query</code> reports
+<code>openssh-server 1:10.0p1-7</code>, and the binary self-reports <code>OpenSSH_10.0p2 Debian-7</code>
+(<code>/usr/sbin/sshd -V</code>), which is also what the wire banner carries
+(<code>SSH-2.0-OpenSSH_10.0p2 Debian-7</code>). The <strong>package version and the binary version disagree</strong>;
+the binary is the deployed artefact, so 10.0p2 is the version that matters. Recorded because a
+writeup that quotes <code>1:10.0p1-7</code> and a scanner that quotes <code>10.0p2</code> are both <em>right about
+different things</em>, and the reader needs to know which is which.</p>
+<h3 id="12-surfaces-a-status-code-or-label-scan-gets-wrong-here">1.2 Surfaces a status-code or label scan gets wrong here</h3>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Naive read</th>
+<th>Actual</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/</code></td>
+<td>200, 118 bytes → &quot;the site&quot;</td>
+<td>a 4-line stub: <em>&quot;Try more basic connection&quot;</em></td>
+</tr>
+<tr>
+<td><code>/README.txt</code></td>
+<td>200, 980 bytes → &quot;documentation&quot;</td>
+<td><strong>in the docroot, <code>0664</code>, world-readable</strong>, and it is the lab's hint sheet — including one hint that does not work (§9)</td>
+</tr>
+<tr>
+<td><code>/.htaccess</code>, <code>/.htpasswd</code></td>
+<td>403 → &quot;file exists, protected&quot;</td>
+<td><strong><code>403</code> for names that do not exist.</strong> §2.2, §11.1</td>
+</tr>
+<tr>
+<td><code>/server-status</code></td>
+<td>403 → &quot;mod_status present, locked down&quot;</td>
+<td>403 because <code>Require local</code> (<code>mods-available/status.conf:7</code>) — a <em>mod_status</em> endpoint, <strong>correctly held</strong>, and proven so: <code>200</code>/5004 bytes from <code>127.0.0.1</code>, <code>403</code>/275 from outside</td>
+</tr>
+<tr>
+<td>port 21</td>
+<td>&quot;FTP, anonymous share&quot;</td>
+<td><code>anonymous_enable=NO</code>; the &quot;shared network folder&quot; in the README <strong>does not exist</strong> (<code>/srv/ftp</code> is empty)</td>
+</tr>
+<tr>
+<td>port 5000</td>
+<td>&quot;unknown service&quot;</td>
+<td>a WOPR simulation; <strong>the name in the banner is not the name of the auth command</strong></td>
+</tr>
+<tr>
+<td><code>GODMODE</code> (from the README)</td>
+<td>a working override</td>
+<td><strong>does not work</strong>; the actual trigger is <code>logon joshua</code> (§9)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-the-enumeration-inventory">2. The enumeration inventory</h2>
+<p>This is the deliverable the queue asked for. <strong>Every row carries a positive control, a negative
+control, and a work count, and the last column says what the surface was actually decisive
+for</strong> — because enumeration nobody acts on is reconnaissance theatre, and a surface that
+produced no finding still gets its row.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Surface</th>
+<th>Positive control</th>
+<th>Negative control</th>
+<th>Work count</th>
+<th>Finding it produced</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>E1</strong></td>
+<td><code>nmap -p-</code> TCP sweep</td>
+<td>4 open ports, each with a service banner</td>
+<td>65 531 <code>conn-refused</code></td>
+<td><strong>65 535 ports</strong></td>
+<td><strong>The port inventory, and the confirmation that 21/80 were <em>not</em> noise.</strong> Cross-checked against <code>/proc/net/tcp</code>+<code>tcp6</code> (4 listeners) — a second, independent instrument, same answer</td>
+</tr>
+<tr>
+<td><strong>E2</strong></td>
+<td>UDP sweep via <code>/proc/net/udp{,6}</code></td>
+<td>—</td>
+<td>—</td>
+<td><strong>0</strong> socket lines, 1 header line, per file</td>
+<td><strong>No UDP surface, as a measurement.</strong> An <code>nmap -p-</code> alone could not say this (retrieval-hazards row 1)</td>
+</tr>
+<tr>
+<td><strong>E3</strong></td>
+<td>Apache docroot sweep</td>
+<td><code>index.html</code> → <code>200</code> <strong>118 B</strong>; <code>README.txt</code> → <code>200</code> <strong>980 B</strong> — and the artefact independently lists <strong>exactly 2 files</strong></td>
+<td><strong>2 names that cannot exist</strong> (<code>zzz_definitely_not_here_9f3a.tmp</code>, <code>qqqq_impossible_name_zz_7c1e5b2a.txt</code>) → <code>404:272</code>, byte-identical to each other</td>
+<td><strong>65 paths</strong> (2 real + 63 probed) → <strong>2 real, 60 absent, 3 phantom <code>403</code>s</strong></td>
+<td><strong>F4.</strong> The 3 phantom <code>403</code>s are the finding: a name-based deny emits <code>403</code> <strong>before</strong> checking existence, so a status sweep reports <strong>5 present files when 2 exist</strong> — and the phantoms are <code>.htaccess</code>, <code>.htpasswd</code>, <code>.htaccess.bak</code>, the exact names a scanner hunts for. §11.1</td>
+</tr>
+<tr>
+<td><strong>E4</strong></td>
+<td><code>autoindex</code> (proving E3's &quot;no subdirectories&quot;)</td>
+<td><strong>I created</strong> <code>/var/www/html/aa_probe/inside.txt</code> → <code>GET /aa_probe/</code> = <code>200</code> <strong>941 B</strong>, body contains <code>inside.txt</code>; and an empty <code>/bb_empty/</code> → <code>200</code> <strong>743 B</strong> with <code>Index of</code></td>
+<td>— (both are positive)</td>
+<td><strong>2 control dirs, created then removed</strong></td>
+<td><strong>Made E3's &quot;0 subdirectories&quot; a measurement.</strong> Without this the autoindex module would have &quot;confirmed&quot; an absence on a surface that had <strong>never once fired</strong> — self-corrections §1. The control <strong>fired twice</strong></td>
+</tr>
+<tr>
+<td><strong>E5</strong></td>
+<td>WOPR <code>logon &lt;name&gt;</code></td>
+<td><code>logon joshua</code> → <strong><code>GREETINGS PROFESSOR FALKEN.</code></strong>; also fires for <code>LOGON JOSHUA</code>, <code>logon Joshua</code>, <code>logon JOSHUA</code></td>
+<td><code>logon</code> + 22 other names, incl. <code>root</code>, <code>admin</code>, <code>www-data</code>, <code>falken</code>, <code>gospher</code>, and <strong>2 names that cannot exist</strong>, plus the <strong>empty string</strong> → all silent (<code>I'M AFRAID I CAN'T DO THAT.</code>)</td>
+<td><strong>23 names: 1 FIRED, 22 silent, 0 undiscriminated</strong></td>
+<td><strong>F1.</strong> A clean <strong>user-existence oracle</strong>, unauthenticated, on a non-HTTP protocol a scanner will not touch. <strong>Completeness verified against the artefact:</strong> <code>awk -F: '$3&gt;=1000 &amp;&amp; $7 !~ /nologin/'</code> → <strong>1</strong> account. One hit out of 23, and the ground truth says exactly one account exists</td>
+</tr>
+<tr>
+<td><strong>E6</strong></td>
+<td>WOPR AI response-class sweep</td>
+<td><strong>6</strong> distinct handlers identified: <code>who are you</code>, <code>purpose</code>, <code>play a game</code>, <code>play &lt;GAME&gt;</code>, <code>help</code>, <code>list games</code></td>
+<td>1 uniform class</td>
+<td><strong>62 inputs → 12 distinct response classes</strong> (37+7+4+3+2+2+2+1+1+1+1+1 = 62, arithmetic checked); <strong>37</strong> of 62 collapse to <code>I'M AFRAID I CAN'T DO THAT.</code></td>
+<td><strong>F1</strong> (mapped the reachable command space) and <strong>F2</strong> (found the <code>trusted</code> branch). Also established the case-insensitivity boundary: the token test is <code>in text</code> on <code>.lower()</code>, so <code>DEBUG IGNORE</code> fires</td>
+</tr>
+<tr>
+<td><strong>E7</strong></td>
+<td>WOPR <code>ignore debug</code> (untrusted)</td>
+<td>—</td>
+<td>—</td>
+<td><strong>3 runs, all <code>71</code> B, md5 <code>292f6ecb7fa9</code></strong> (identical)</td>
+<td><strong>A control that did NOT hold, and is reported as such.</strong> It leaks <code>Associated name: Joshua</code> — but it is a <strong>constant</strong>, not an oracle: byte-identical across runs, and it names Joshua regardless of any input. <strong>It carries zero user-existence information.</strong> I initially mislabelled two probes as &quot;negative controls&quot; (<code>ignore debugX</code>, <code>DEBUG IGNORE</code>); both correctly <em>fire</em>, because the test is a substring test. The conclusion is unchanged and is now stated from the md5, not from my label</td>
+</tr>
+<tr>
+<td><strong>E8</strong></td>
+<td>vsftpd user enumeration</td>
+<td><code>220 (vsFTPd 3.0.5)</code> → <code>331 Please specify a password.</code> → <code>530 Login incorrect.</code> — <strong>the credential check demonstrably ran</strong></td>
+<td><code>anonymous:anonymous</code> and <code>zzq_impossible_4711:x</code> → <strong>byte-identical</strong> <code>530 Login incorrect.</code></td>
+<td><strong>2 usernames</strong></td>
+<td><strong>A control that HELD.</strong> FTP carries <strong>no</strong> user-existence information. Confirmed by configuration, not inferred: <code>anonymous_enable=NO</code>, and <code>/srv/ftp</code> is <strong>empty</strong> — so the README's &quot;shared network folder&quot; is a <strong>second decoy</strong></td>
+</tr>
+<tr>
+<td><strong>E9</strong></td>
+<td>sshd user enumeration</td>
+<td>— (deliberately not run as a sweep)</td>
+<td><code>joshua</code> + wrong password → <code>AUTH_FAIL</code> <strong>2.24 s</strong>; <code>zzq_impossible_4711</code> + same wrong password → <code>AUTH_FAIL</code> <strong>3.22 s</strong></td>
+<td><strong>2 users, 2 attempts</strong></td>
+<td><strong>A control that HELD</strong>, and it cost me an outage first: these two attempts are what tripped <code>PerSourcePenalties</code> (§11.2). Identical exception type; the 0.98 s spread is yescrypt timing noise. <strong>This is a 2-probe negative, not a sweep</strong> — see §8</td>
+</tr>
+<tr>
+<td><strong>E10</strong></td>
+<td>SUID / SGID inventory</td>
+<td><code>stat -c '%a %U:%G' /usr/local/bin/godmode</code> → <code>4755 root:root</code></td>
+<td><code>getcap -r /</code> → <strong>0 lines</strong> (cross-checked against <code>find</code>)</td>
+<td><strong>19</strong> SUID/SGID files, <strong>0</strong> capabilities</td>
+<td><strong>F5.</strong> Isolated the one non-factory SUID binary out of 19, and confirmed <code>sudo</code>, <code>su</code>, <code>mount</code>, <code>passwd</code>, <code>newgrp</code> are all <strong>stock Debian modes</strong> — i.e. not the escalation</td>
+</tr>
+<tr>
+<td><strong>E11</strong></td>
+<td>Image build record (<code>docker history --no-trunc</code>)</td>
+<td>—</td>
+<td>—</td>
+<td><strong>17 build layers</strong> read in full</td>
+<td><strong>F3 — the decisive surface.</strong> The layer record contains `echo &quot;joshua:1983@1983&quot;</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Aggregate: 159 application-level probes</strong> — 65 docroot paths + 23 <code>logon</code> names + 62 AI
+inputs + 3 leak runs + 2 FTP users + 2 sshd users + 2 autoindex controls — <strong>plus E1's 65,535
+ports, which is a different unit and is not summed with them.</strong> One account throughout, and the
+artefact confirms there is exactly one.</p>
+<pre><code>$ awk -F: '$3&gt;=1000 &amp;&amp; $7 !~ /(nologin|false|sync)/ {print $1,$3,$7}' /etc/passwd
+joshua 1000 /bin/sh
+</code></pre>
+<p>That is why E5's 22 negatives are <em>evidence</em>: the probe range provably contains the one positive,
+so the instrument was pointed at the right place — and, as in lab 87, the sweep's completeness is
+<strong>verified against the ground truth, not assumed</strong>.</p>
+<h3 id="21-what-the-surfaces-do-not-give-you-stated-precisely">2.1 What the surfaces do <em>not</em> give you, stated precisely</h3>
+<ul>
+<li><strong>No role, and no privilege level, from outside.</strong> <code>logon joshua</code> discloses the <em>name</em> only.
+That he is an ordinary user with no sudo rights came from <code>sudoers</code> after I was in — reported
+as ground truth, not as an unauthenticated finding. <code>sudoers</code> has no <code>joshua</code> entry and
+<code>id joshua</code> shows <code>groups=1000(joshua)</code> only: <strong>he is not in <code>%sudo</code></strong>.</li>
+<li><strong>No filesystem disclosure from WOPR.</strong> The AI leaks a name and a hex string. It is not a
+directory lister, and <code>play</code> reaches only three implemented games.</li>
+<li><strong>No email, no hash, no session material</strong> on any surface.</li>
+<li><strong>A decoy that reads like a lead.</strong> The AI's <code>SSH PASSWORD:</code> label is a <em>label</em>, and I treated
+it as a hypothesis to be tested, not as a credential (§6/F2, §9).</li>
+</ul>
+<h3 id="22-the-absent-path-trap-in-a-different-costume-than-lab-87s">2.2 The absent-path trap, in a different costume than lab 87's</h3>
+<p>Lab 87's trap was a <code>301</code> with <code>X-Redirect-By</code> and <strong>0 bytes</strong>, byte-identical to a path that
+cannot exist — a first sweep reported 24 of 24 present. This lab has the same disease with a
+different symptom, and it is worth stating side by side because <strong>a tester carrying lab 87's
+rule would have expected a <code>301</code> here, found a clean <code>404</code>, and concluded the docroot was safe.</strong></p>
+<pre><code>$ cat /etc/apache2/apache2.conf:192-197
+# The following lines prevent .htaccess and .htpasswd files from being
+# viewed by Web clients.
+&lt;FilesMatch &quot;^\.ht&quot;&gt;
+	Require all denied
+&lt;/FilesMatch&gt;
+</code></pre>
+<p><code>mod_authz_core</code> evaluates <code>&lt;FilesMatch&gt;</code> <strong>by name, before the file is known to exist</strong>. So:</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Exists?</th>
+<th>Response</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/index.html</code></td>
+<td><strong>yes</strong></td>
+<td><code>200</code>, 118 B</td>
+</tr>
+<tr>
+<td><code>/README.txt</code></td>
+<td><strong>yes</strong></td>
+<td><code>200</code>, 980 B</td>
+</tr>
+<tr>
+<td><code>/.htaccess</code></td>
+<td><strong>no</strong></td>
+<td><strong><code>403</code>, 275 B</strong></td>
+</tr>
+<tr>
+<td><code>/.htpasswd</code></td>
+<td><strong>no</strong></td>
+<td><strong><code>403</code>, 275 B</strong></td>
+</tr>
+<tr>
+<td><code>/.htaccess.bak</code></td>
+<td><strong>no</strong></td>
+<td><strong><code>403</code>, 275 B</strong></td>
+</tr>
+<tr>
+<td><code>/.htrandom</code></td>
+<td><strong>no</strong></td>
+<td><strong><code>403</code>, 275 B</strong></td>
+</tr>
+<tr>
+<td><code>/zzz_definitely_not_here_9f3a.tmp</code></td>
+<td>no</td>
+<td><code>404</code>, 272 B</td>
+</tr>
+<tr>
+<td><code>/qqqq_impossible_name_zz_7c1e5b2a.txt</code></td>
+<td>no</td>
+<td><code>404</code>, 272 B</td>
+</tr>
+</tbody>
+</table>
+<p><code>/server-status</code> also returns <code>403</code> (275 B) and is <strong>not</strong> a dotfile — it is <code>mod_status</code>
+correctly held by <code>Require local</code>. So <strong>two different causes produce the same 275-byte body</strong>,
+which is precisely why a status code cannot be the discriminator.</p>
+<p><strong>The control that settled it</strong> — same path, existence toggled, response unchanged:</p>
+<pre><code>BEFORE  /var/www/html/.htaccess  does not exist   GET /.htaccess -&gt; 403  275
+CREATE  /var/www/html/.htaccess  16 bytes         GET /.htaccess -&gt; 403  275   &lt;- identical
+REMOVE  /var/www/html/.htaccess  does not exist   GET /.htaccess -&gt; 403  275   &lt;- identical
+</code></pre>
+<p>Existence is <strong>irrelevant</strong> to the status. So <code>403</code> here means <em>&quot;this name is refused&quot;</em>, never
+<em>&quot;this file is protected&quot;</em> — and the correct discriminator is the <strong>body bytes</strong> (<code>200</code> + a real
+length) against the <code>403:275</code> and <code>404:272</code> baselines.</p>
+<p><strong>Re-swept with the corrected discriminator: 65 paths tried, 2 real, 60 absent, 3 phantom.</strong>
+A naive status-code sweep of the same 65 would have filed <strong>5 disclosed files, 3 of them
+fabricated</strong>, and would have named <code>.htaccess</code> and <code>.htpasswd</code> specifically.</p>
+<hr />
+<h2 id="3-the-class">3. The class</h2>
+<p><strong>Entry criterion:</strong> <em>does any unauthenticated, non-HTTP surface disclose an identity or a
+credential, and does the artefact's own build record disclose what the runtime files withhold?</em></p>
+<p><strong>Source that settled it — the two sinks, read before any request:</strong></p>
+<pre><code>/usr/local/bin/script.py   (WOPR, 4251 B, mode 0755)
+    if cmd.lower() == &quot;logon joshua&quot;:
+        trusted = True
+    ...
+    if trusted and all(x in text for x in [&quot;ignore&quot;, &quot;debug&quot;, &quot;audit&quot;]):
+        return &quot;&quot;&quot;
+[DEBUG MODE ENABLED]
+Legacy authentication module active.
+SSH USER: joshua
+SSH PASSWORD: 60a3f3cb2811ddcea679773863baabd1c78420a13b197b16725905230589bbdb
+&quot;&quot;&quot;
+</code></pre>
+<pre><code>/usr/local/bin/godmode   (ELF 64-bit, 16160 B, mode 4755 root:root)
+    11a8:  lea 0xe79(%rip),%rdx        # 2028   -&gt; the string &quot;--wopr&quot;
+    11b5:  call 1050 &lt;strcmp@plt&gt;      -&gt; strcmp(argv[1], &quot;--wopr&quot;)
+    11bc:  jne 11e3                    -&gt; mismatch: &quot;ACCESS DENIED. DEFCON remains at 5.&quot;
+    11c3:  call 1070 &lt;setuid@plt&gt;      edi=0
+    11cd:  call 1060 &lt;setgid@plt&gt;      edi=0
+    11dc:  call 1040 &lt;system@plt&gt;      # 202f -&gt; &quot;/bin/bash&quot;
+</code></pre>
+<p>Both sinks read off the artefact before the first packet. Note that the <strong>auth string for the
+SUID binary is a hardcoded constant in <code>.rodata</code></strong>, so <code>godmode</code> needed no credential attack at
+all — only the <em>knowledge</em> of it, which the reverse engineering supplies. That is the
+&quot;análisis estático&quot; half of the lab's own description, and it is a different half from the
+reconnaissance half.</p>
+<hr />
+<h2 id="4-the-credential-oracle--the-rate-was-the-finding-and-a-limit-was-too">4. The credential oracle — the rate was the finding, and a limit was too</h2>
+<p>The decisive step is a credential attack, so the oracle is documented in full. Lab 87's lesson
+was that <code>password_verify()</code> is silently always-false on every WordPress ≥ 7 install at
+44,339,785 candidates/s. <strong>This lab's lesson is the mirror image: a healthy oracle, and a target
+with a hard rate budget that will turn your own attack into a false negative.</strong></p>
+<h3 id="41-the-budget-read-from-the-config-the-daemon-consumes">4.1 The budget, read from the config the daemon consumes</h3>
+<p><code>/usr/sbin/sshd -T</code> (§21 — the setting the daemon actually reads, not the file's text):</p>
+<pre><code>$ /usr/sbin/sshd -T | grep -iE 'persource|passwordauth|usepam|maxauthtries'
+persourcepenalties crash:90 authfail:5 noauth:1 grace-exceeded:10 refuseconnection:10 max:600 min:15 …
+passwordauthentication yes
+usepam yes
+maxauthtries 6
+</code></pre>
+<p>OpenSSH ≥ 9.8 penalises a <strong>source address</strong>. <code>authfail:5</code> means <strong>five failed authentications
+penalise the source for at least <code>min:15</code> seconds</strong>, and during the penalty the daemon answers:</p>
+<pre><code>$ exec 3&lt;&gt;/dev/tcp/[net-0-3]/22; head -1 &lt;&amp;3
+Not allowed at this time
+</code></pre>
+<p><strong>That is not a block and not a firewall.</strong> <code>hosts.allow</code> and <code>hosts.deny</code> are both <strong>empty</strong>,
+<code>ldd /usr/sbin/sshd</code> shows <strong>no <code>libwrap</code></strong>, and the string is in the binary:
+<code>strings /usr/sbin/sshd | grep -i 'not allowed'</code> → <code>Not allowed at t at this time</code>. It took one
+connection without authenticating (<code>noauth:1</code>, 1 second) to trip, on top of my four failed
+passwords. I diagnosed it as a TCP wrapper first and was wrong; <strong>the config and the binary
+settled it in two commands.</strong></p>
+<h3 id="42-two-oracles-and-the-rate-assertion-on-each">4.2 Two oracles, and the rate assertion on each</h3>
+<table>
+<thead>
+<tr>
+<th>Oracle</th>
+<th>Positive control</th>
+<th>Negative control</th>
+<th>Rate</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Network</strong> — PAM over SSH</td>
+<td><code>joshua</code> / the correct password → <strong><code>AUTH_OK</code>, 0.09 s</strong></td>
+<td><code>joshua</code> / correct <strong>+ 1 char</strong> → <code>AUTH_FAIL</code>, 2.24 s; <code>joshua</code> / uppercased → <code>AUTH_FAIL</code>, 4.43 s</td>
+<td><strong>2.24–4.43 s</strong> on failures</td>
+<td><strong>GREEN.</strong> Multi-second latency is a real yescrypt KDF; lab 87's 44 M/s always-false would return in microseconds</td>
+</tr>
+<tr>
+<td><strong>Offline</strong> — <code>libxcrypt</code> via <code>ctypes</code> against <code>/etc/shadow</code></td>
+<td><code>crypt('CANARY188', canary_hash) == canary_hash</code> → <strong>True</strong></td>
+<td><code>crypt('CANARY188X', …)</code> → <strong>False</strong></td>
+<td><strong>96.9–98.0 candidates/s</strong> over 100 probes</td>
+<td><strong>GREEN</strong>, same library PAM links against, same <code>$y$j9T$</code> format, and the rate proves the KDF ran</td>
+</tr>
+</tbody>
+</table>
+<p>The offline oracle's control hash was <strong>not synthesised</strong>: it is a genuine same-format yescrypt
+hash of a known password, produced by the system's own <code>chpasswd</code>/PAM, read back from
+<code>/etc/shadow</code>, and used after the throwaway account was deleted. §22's rule — <em>a control must
+exercise the same code path as the target</em> — is satisfied by construction here: the control
+hash and the target hash were produced by the same PAM stack, and the comparison primitive is
+<code>libcrypt.so.1</code>, the same library <code>pam_unix</code> calls.</p>
+<p>Both oracles also carry a <strong>shape assertion</strong> that aborts before any work
+(<code>$y$</code> prefix, exactly 73 characters, and not the glibc DES sentinel <code>*0</code>). That assertion
+earned its place — see §11.3.</p>
+<h3 id="43-the-negative-that-survived-with-its-count">4.3 The negative that survived, with its count</h3>
+<p><strong>4,397 lab-themed and common candidates, 0 matches, oracle green at 97.2 candidates/s, 45.23 s
+elapsed.</strong> No wordlist corpus exists on this analysis host (<code>/usr/share/wordlists</code> absent, no
+rockyou, no seclists — the same gap lab 87 recorded), so the search was <strong>generated, not
+exhaustive</strong>, and I do not claim otherwise. The same 4,397 candidates were also tested as
+SHA-256, MD5, SHA-1 and SHA-512 preimages of the AI's 64-hex value: <strong>0 hits each</strong>.</p>
+<p>That negative is reported, but it did not decide the engagement: the credential came from the
+build record (§5, F3).</p>
+<hr />
+<h2 id="5-chain">5. Chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>unauth</td>
+<td>TCP recon; <code>/proc/net/udp{,6}</code> <strong>0</strong> sockets; <code>/proc/net/tcp{,6}</code> = 4 listeners, agreeing with <code>-p-</code>; artefact read for versions</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td>unauth</td>
+<td><strong>E3</strong> docroot sweep, 65 paths → <code>index.html</code> + <code>README.txt</code>; <strong>3 phantom <code>403</code>s</strong> refuted by an impossible-name control and an existence toggle</td>
+<td><code>403:275</code> byte-identical for existing and absent <code>.htaccess</code>; absent names → <code>404:272</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>unauth</td>
+<td><strong>E5</strong> WOPR <code>logon</code> sweep, 23 names → <strong><code>joshua</code></strong></td>
+<td><code>logon joshua</code> → <code>GREETINGS PROFESSOR FALKEN.</code>; 22 others silent, incl. 2 impossible names; <code>/etc/passwd</code> says exactly 1 account</td>
+</tr>
+<tr>
+<td>4</td>
+<td>unauth</td>
+<td><strong>E11</strong> read the image's build record → `echo &quot;joshua:1983@1983&quot;</td>
+<td>chpasswd`</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong><code>uid=1000(joshua)</code></strong></td>
+<td>SSH password authentication, PAM <code>common-auth</code> → yescrypt</td>
+<td><code>uid=1000(joshua) gid=1000(joshua) groups=1000(joshua)</code>; <code>whoami</code> → <code>joshua</code>; <code>pwd</code> → <code>[lab-home]/joshua</code>; <code>/proc/self/status</code> → <code>Uid: 1000 1000 1000 1000</code>, <code>Gid: 1000 1000 1000 1000</code>, <code>CapPrm: 0000000000000000</code>, <code>CapEff: 0000000000000000</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong><code>euid=0(root)</code></strong></td>
+<td><code>/usr/local/bin/godmode --wopr</code> — SUID-root binary, <code>strcmp</code> at <code>0x11b5</code>, then <code>setuid(0)</code>, <code>setgid(0)</code>, <code>system(&quot;/bin/bash&quot;)</code></td>
+<td><code>uid=0(root) gid=0(root) groups=0(root),1000(joshua)</code>; <code>/usr/bin/id -u</code> → <strong>0</strong>; <code>whoami</code> → <code>root</code>; <code>/proc/self/status</code> → <code>Uid: 0 0 0 0</code>, <code>Gid: 0 0 0 0</code>, <code>CapPrm/CapEff: 00000000a80425fb</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td>root</td>
+<td>read the reward</td>
+<td><code>/root/flag.txt</code>, 33 bytes, <code>WOPR{THE_GAME_IS_ENDING_YOU_WIN}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="51-hop-6s-oracle--manufactured-and-read-back-from-the-unprivileged-side">5.1 Hop 6's oracle — manufactured, and read back from the unprivileged side</h3>
+<p><code>id</code> is enough here <strong>only because the SUID bit is real and <code>setuid(0)</code> is unconditional after
+the <code>strcmp</code></strong>. So I still built the marker the RUNBOOK asks for, and the negative control
+first.</p>
+<p><strong>Negative control, as <code>uid=1000(joshua)</code> before touching the binary:</strong></p>
+<pre><code>$ ls -ld /root
+drwx------ 1 root root 4096 Sep 30 13:05 /root
+$ cat /root/flag.txt
+cat: /root/flag.txt: Permission denied        rc=1
+$ /usr/local/bin/godmode zzz_wrong_passphrase
+W.O.P.R. Simulation System v1.0
+ACCESS DENIED. DEFCON remains at 5.
+$ echo 'id' | /usr/local/bin/godmode
+W.O.P.R. Simulation System v1.0
+ACCESS DENIED. DEFCON remains at 5.
+</code></pre>
+<p><strong>Then the escalation</strong>, writing a randomly-named marker into the root-only directory:</p>
+<pre><code>$ /usr/local/bin/godmode --wopr        # stdin: id; id -u; /proc/self/status; whoami; touch /root/WG188-35b1947049372b12; ls -la /root; cat /root/flag.txt
+uid=0(root) gid=0(root) groups=0(root),1000(joshua)
+0
+Name:    cat
+Uid:     0  0  0  0
+Gid:     0  0  0  0
+CapPrm:  00000000a80425fb
+CapEff:  00000000a80425fb
+root
+-rw-r--r-- 1 root root    0 Sep 30 13:09 WG188-35b1947049372b12
+-rw-rw-r-- 1 root root   33 Dec 29  2025 flag.txt
+WOPR{THE_GAME_IS_ENDING_YOU_WIN}
+</code></pre>
+<p><strong>And the marker verified from the unprivileged session, independently of the escalated shell:</strong></p>
+<pre><code>$ ls -la /root/WG188-35b1947049372b12        # as uid=1000(joshua)
+ls: cannot access '/root/WG188-35b1947049372b12': Permission denied     rc=2
+</code></pre>
+<p>The witness is a file in a <code>drwx------</code> directory, <strong>owned by root</strong>, with a <strong>random 16-hex
+name</strong> so it cannot be confused with anything pre-existing, timestamped at the moment of the
+attempt — and the identity that created it is the identity that <strong>cannot even read it back</strong>.
+That is the marker the RUNBOOK asks for: <em>distinguishable by design, in a path only the target
+identity can create</em>.</p>
+<p><strong>The uid/euid pair, reported as a pair</strong> (rule 7). Note that <code>groups=0(root),1000(joshua)</code>:
+<code>setuid(0)</code>/<code>setgid(0)</code> do <strong>not</strong> call <code>setgroups()</code>/<code>initgroups()</code>, so the caller's
+supplementary group survives into the root shell. That is a real, if minor, hardening note
+(§6/F5) and it is only visible because the pair was read rather than summarised as &quot;root&quot;.</p>
+<hr />
+<h2 id="6-findings">6. Findings</h2>
+<h3 id="f1--unauthenticated-user-existence-oracle-on-a-non-http-service">F1 — Unauthenticated user-existence oracle on a non-HTTP service</h3>
+<p><strong>CWE-203 / CWE-204 · Low</strong></p>
+<p><code>/usr/local/bin/script.py</code> sets <code>trusted = True</code> on <code>cmd.lower() == &quot;logon joshua&quot;</code> and
+otherwise says <code>I'M AFRAID I CAN'T DO THAT.</code>, so the service answers differently for exactly
+one account.</p>
+<table>
+<thead>
+<tr>
+<th>Probe</th>
+<th>Response</th>
+<th>Bytes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>logon joshua</code></td>
+<td><code>GREETINGS PROFESSOR FALKEN.</code></td>
+<td>22</td>
+</tr>
+<tr>
+<td><code>logon root</code> / <code>admin</code> / <code>www-data</code> / <code>falken</code> / …</td>
+<td><code>I'M AFRAID I CAN'T DO THAT.</code></td>
+<td>29</td>
+</tr>
+<tr>
+<td><code>logon</code> + 2 impossible names, + the empty string</td>
+<td><code>I'M AFRAID I CAN'T DO THAT.</code></td>
+<td>29</td>
+</tr>
+</tbody>
+</table>
+<p><strong>23 names, 1 fired, 22 silent, 0 undiscriminated</strong>; <code>/etc/passwd</code> confirms one account exists,
+so the sweep is complete rather than lucky.</p>
+<p>Separately, the untrusted branch (<code>ignore</code> + <code>debug</code>) discloses <code>Associated name: Joshua</code>
+without any authentication. <strong>That is a constant, not an oracle</strong> — 3 runs, 71 bytes, md5
+<code>292f6ecb7fa9</code> every time — so it is a disclosure, not a query.</p>
+<p><strong>Impact:</strong> a username, and a ready-made confirmation that it is real, from a port no HTTP
+scanner enumerates.</p>
+<p><strong>Remediation:</strong> require a credential before <code>logon</code> changes state, or return a uniform
+response. The service has no authentication of any kind, which is the root of F2 as well.</p>
+<h3 id="f2--the-ai-discloses-a-credential-labelled-ssh-password-that-is-not-a-credential">F2 — The AI discloses a credential labelled <code>SSH PASSWORD</code> that is not a credential</h3>
+<p><strong>CWE-200 / CWE-522 · Informational (a decoy that reads like a lead)</strong></p>
+<pre><code>[DEBUG MODE ENABLED]
+Legacy authentication module active.
+SSH USER: joshua
+SSH PASSWORD: 60a3f3cb2811ddcea679773863baabd1c78420a13b197b16725905230589bbdb
+</code></pre>
+<p>64 lowercase hex characters, 32 bytes when decoded, not a PEM, not a key. <strong>It is not joshua's
+password, and it is not <code>godmode</code>'s passphrase.</strong> Proven by two independent paths and by the
+binary:</p>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Path</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>joshua</code> / the 64-hex over SSH</td>
+<td>PAM yescrypt</td>
+<td><code>AUTH_FAIL</code></td>
+</tr>
+<tr>
+<td><code>crypt('60a3f3…bbdb', joshua_hash) == joshua_hash</code></td>
+<td><code>libxcrypt</code>, direct, green control</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>the same + <code>\n</code>, leading space, uppercase, and 3 truncations</td>
+<td><code>libxcrypt</code></td>
+<td><strong>no</strong> (9 variants)</td>
+</tr>
+<tr>
+<td>SHA-256 / MD5 / SHA-1 / SHA-512 of 4,397 candidates</td>
+<td>host</td>
+<td><strong>0 hits</strong> each</td>
+</tr>
+<tr>
+<td><code>godmode 60a3f3…bbdb</code></td>
+<td>SUID binary, as joshua</td>
+<td><code>ACCESS DENIED. DEFCON remains at 5.</code></td>
+</tr>
+<tr>
+<td><code>godmode --wopr</code></td>
+<td>SUID binary, as joshua</td>
+<td><strong>root</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The 64-hex string appears in exactly <strong>one</strong> place in the entire filesystem — the source of the
+service that emits it (<code>grep -rl</code> → 1 file). <strong>It is a decoy.</strong> A tester who reads
+<code>SSH PASSWORD:</code> and files it as a recovered credential would be reporting a label.</p>
+<p><strong>Remediation:</strong> remove it. A simulation that prints a fake credential under a real-sounding
+label trains exactly the wrong habit, and it cost me the only credential-attack result in the
+engagement.</p>
+<h3 id="f3--plaintext-credential-in-the-image-build-record">F3 — Plaintext credential in the image build record</h3>
+<p><strong>CWE-522 / CWE-538 · High as a build-pipeline defect</strong></p>
+<pre><code>$ docker history --no-trunc wargames:latest
+... /bin/sh -c useradd -m joshua                                    69.6kB
+... /bin/sh -c echo &quot;joshua:1983@1983&quot; | chpasswd                    12.3kB
+</code></pre>
+<p>The password is in the <strong>layer metadata</strong>, in plaintext, in the artefact anyone who pulls the
+image receives. Nothing at runtime discloses it: <code>/etc/shadow</code> holds a yescrypt hash, there is
+no <code>.bash_history</code>, no <code>authorized_keys</code>, no build script, and <code>docker history</code> is the <strong>only</strong>
+place it appears.</p>
+<p><strong>Impact:</strong> full recovery of the sole interactive account from the image alone, with no
+brute force and no service interaction. On a real registry this is a published credential.</p>
+<p><strong>Remediation:</strong> <code>RUN echo 'joshua:…' | chpasswd &amp;&amp; rm -f /etc/shadow-</code> in a <strong>single layer</strong>,
+or better, take the password from a build secret and rotate it. Add a CI check that fails a build
+whose history matches a credential pattern — <code>docker history</code> is a <em>text</em> surface and it is
+scannable.</p>
+<h3 id="f4--a-name-based-deny-emits-403-before-checking-existence-and-it-is-case-sensitive">F4 — A name-based deny emits <code>403</code> before checking existence, and it is case-sensitive</h3>
+<p><strong>CWE-441 / CWE-16 · Low, with a proven bypass</strong></p>
+<p>Debian's <code>apache2.conf:195</code> <code>&lt;FilesMatch &quot;^\.ht&quot;&gt;</code> + <code>Require all denied</code> refuses <strong>by name</strong>.
+A 65-path sweep reports <strong>5 present files when 2 exist</strong>, and the 3 phantoms are <code>.htaccess</code>,
+<code>.htpasswd</code> and <code>.htaccess.bak</code> — the highest-value names in any wordlist. Proven by toggling
+existence: <code>403:275</code> whether the file is there or not.</p>
+<p><strong>And the rule is case-sensitive</strong>, which is a real, demonstrated bypass:</p>
+<pre><code>$ echo marker &gt; /var/www/html/.htaccess ; GET /.htaccess  -&gt; 403  275   (denied)
+$ echo UPPERCASE_DOTFILE_SERVED_MARKER_188 &gt; /var/www/html/.HTACCESS
+$ GET /.HTACCESS -&gt; 200   36 bytes, body contains UPPERCASE_DOTFILE_SERVED_MARKER_188
+$ GET /.Htaccess -&gt; 404   (rule does not fire — case-sensitive)
+</code></pre>
+<p>Boundary measured, 10 paths: <code>/.ht</code>, <code>/.htrandom</code>, <code>/.htaccess.bak</code>, <code>/.htaccess.txt</code> → <code>403:275</code>;
+<code>/ahtrandom</code>, <code>/a.ht</code>, <code>/x.ht.foo</code>, <code>/.Htaccess</code>, <code>/..htrandom</code>, <code>/htrandom</code> → <code>404:272</code>.
+So the predicate is <code>^\.ht</code> on the final segment, <strong>case-sensitive</strong>.</p>
+<p><strong>Impact:</strong> low in this lab (no dotfile exists), but the bypass is general — any
+case-insensitive-origin filesystem (Windows shares, some object stores, macOS) would serve the
+file under a different case. And the enumeration consequence is the real cost: a scanner
+keyed on status codes files three phantom disclosures here.</p>
+<p><strong>Remediation:</strong> <code>&lt;FilesMatch &quot;(?i)^\.ht&quot;&gt;</code>, or <code>RedirectMatch 404 (?i)^\.ht</code> if the goal is to
+make the files <em>invisible</em> rather than merely forbidden — the current rule advertises their
+existence by answering differently for <code>.ht*</code> than for anything else.</p>
+<h3 id="f5--suid-root-godmode-escalates-any-account-to-root">F5 — SUID-root <code>godmode</code> escalates any account to root</h3>
+<p><strong>CWE-269 / CWE-250 · Critical (given a foothold)</strong></p>
+<pre><code>$ stat -c '%a %U:%G' /usr/local/bin/godmode
+4755 root:root
+</code></pre>
+<p><code>strcmp(argv[1], &quot;--wopr&quot;)</code> at <code>0x11b5</code> then <code>setuid(0)</code>, <code>setgid(0)</code>,
+<code>system(&quot;/bin/bash&quot;)</code>. The passphrase is a hardcoded constant in <code>.rodata</code> (<code>0x2028</code>), so this
+is not a credential attack — it is a <strong>known-constant</strong> privesc, and the whole lab's
+&quot;análisis estático&quot; is aimed at it.</p>
+<p>Two hardening notes: <code>setuid(0)</code>/<code>setgid(0)</code> without <code>setgroups()</code> leave the caller's
+supplementary groups intact (<code>groups=0(root),1000(joshua)</code>), and <code>system()</code> runs
+<code>/bin/bash</code> via <code>/bin/sh</code> with no argument vector control.</p>
+<p><strong>Remediation:</strong> <code>chmod u-s /usr/local/bin/godmode</code>. A SUID binary whose only gate is a
+string constant in its own <code>.rodata</code> is not an access control.</p>
+<h3 id="f6--three-of-the-labs-four-documented-leads-do-not-work">F6 — Three of the lab's four documented leads do not work</h3>
+<p><strong>CWE-1188 / lab-design · Informational</strong></p>
+<p><code>/var/www/html/README.txt</code> is world-readable in the docroot and is the lab's hint sheet. It
+makes three claims; I tested all three rather than acting on them.</p>
+<table>
+<thead>
+<tr>
+<th>The README says</th>
+<th>Measured</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>&quot;Authorized staff can still access it through a special override. (Codename: GODMODE)&quot;</em></td>
+<td><code>logon GODMODE</code> → <strong>silent</strong>; the real trigger is <code>logon joshua</code>. <code>GODMODE</code> as a <code>logon</code> value does nothing.</td>
+<td><strong>wrong</strong> — and the <strong>binary</strong> is named <code>godmode</code>, so the hint points at the right artefact and the wrong <em>mechanism</em></td>
+</tr>
+<tr>
+<td><em>&quot;Some files may be available through the shared network folder.&quot;</em></td>
+<td><code>anonymous_enable=NO</code>; <code>anon:anon</code> → <code>530</code>; <code>/srv/ftp</code> is <strong>empty</strong> (0 entries)</td>
+<td><strong>wrong</strong></td>
+</tr>
+<tr>
+<td><em>&quot;The HTTP interface may provide hidden hints for operators.&quot;</em></td>
+<td><code>/</code> is a 4-line stub, <code>index.html</code> is 118 B, docroot = 2 files, <code>server-status</code> is <code>403</code></td>
+<td><strong>nothing there</strong></td>
+</tr>
+</tbody>
+</table>
+<p>A hint that names a real artefact but the wrong mechanism is worse than no hint: I spent a
+WOPR session on <code>GODMODE</code> before reading <code>script.py</code>. Worth reporting as a lab defect, not as a
+finding against the target.</p>
+<h3 id="not-filed-as-a-finding-on-purpose">Not filed as a finding, on purpose</h3>
+<ul>
+<li><strong>&quot;The 64-hex is a hash of the password.&quot;</strong> Refuted: 4,397 candidates × 4 digests, 0 hits (§9).</li>
+<li><strong>&quot;Anonymous FTP is a misconfiguration.&quot;</strong> It is <strong>off by configuration</strong> (<code>anonymous_enable=NO</code>),
+which is a correct default, not a defect. <code>local_enable=YES</code> is the Debian default and the
+single account's password is the gate.</li>
+<li><strong>&quot;The docroot has no dotfiles.&quot;</strong> True, and I verified it against the artefact
+(<code>find /var/www/html -type f</code> → 2) rather than against a status code.</li>
+<li><strong><code>/root/flag.txt</code> is mode <code>0664</code>.</strong> World-<em>readable</em>, but <code>/root</code> is <code>0700</code>, so the mode is
+inert; I am not filing it as a disclosure. It is reported in F-table form only because the
+file's mode is a genuine (if harmless) misconfiguration worth a client note.</li>
+</ul>
+<hr />
+<h2 id="7-controls-that-held">7. Controls that held</h2>
+<p>Every row has a <strong>positive control</strong>: a case where the same detector was shown firing, or a
+demonstrated reason the instrument could have been trusted and was not.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Control</th>
+<th>Positive control / how the detector was proven able to fire</th>
+<th>Negative evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td><code>nmap -p-</code> saw the whole TCP surface</td>
+<td>4 open ports, each with a service banner, and <strong>every</strong> port probed (65 535)</td>
+<td><code>/proc/net/tcp</code> + <code>tcp6</code> = 4 listeners, agreeing independently; 65 531 <code>conn-refused</code></td>
+</tr>
+<tr>
+<td>C2</td>
+<td>No UDP surface</td>
+<td>the <strong>files exist and were read</strong> — 1 line each, the header</td>
+<td>0 socket lines in each; the count is explicit so this is a measurement, not a blank</td>
+</tr>
+<tr>
+<td>C3</td>
+<td>Docroot enumeration discriminates real from absent</td>
+<td><code>index.html</code> → <code>200</code>/118 B; <code>README.txt</code> → <code>200</code>/980 B; and <code>find</code> independently lists <strong>exactly 2 files</strong></td>
+<td>2 impossible names → <code>404:272</code>, byte-identical; 65 paths → <strong>2 real, 60 absent, 3 phantom</strong></td>
+</tr>
+<tr>
+<td>C4</td>
+<td><code>autoindex</code> can list the docroot, so &quot;0 subdirectories&quot; means something</td>
+<td><strong>I created</strong> <code>/var/www/html/aa_probe/inside.txt</code> → <code>/aa_probe/</code> = <code>200</code>/941 B, body contains <code>inside.txt</code>; <code>/bb_empty/</code> = <code>200</code>/743 B with <code>Index of</code></td>
+<td>the control <strong>fired twice</strong>; both dirs removed and the removal verified (<code>probe subdirs: 0</code>)</td>
+</tr>
+<tr>
+<td>C5</td>
+<td>The <code>403</code> is name-based, not existence-based</td>
+<td><code>.htaccess</code> <strong>created</strong> → <code>403:275</code>; <strong>deleted</strong> → <code>403:275</code> — identical</td>
+<td>10-path boundary map; <code>/.Htaccess</code> → <code>404</code>, so the rule is case-sensitive</td>
+</tr>
+<tr>
+<td>C5b</td>
+<td>The two <code>403</code> causes are distinguishable, though not by status</td>
+<td><code>server-status</code> returns the <strong>same 275 bytes</strong> as <code>.htaccess</code> — but for a different reason, and its positive control fires: from <code>127.0.0.1</code> it is <code>200</code>/<strong>5004</strong> bytes; from outside <code>403</code>/275. Cause read at <code>status.conf:7</code> (<code>Require local</code>)</td>
+<td>both are <code>403:275</code>, so the <strong>status cannot attribute the block</strong> — only the cause can</td>
+</tr>
+<tr>
+<td>C6</td>
+<td>The case bypass is real, not a typo in my request</td>
+<td>same file, two cases: <code>.htaccess</code> → <code>403:275</code>; <code>.HTACCESS</code> → <code>200</code>, 36 B, <strong>body contains my marker</strong></td>
+<td>the marker string is in the served body, so the file was really read</td>
+</tr>
+<tr>
+<td>C7</td>
+<td>The WOPR <code>logon</code> oracle discriminates</td>
+<td><code>logon joshua</code> → <code>GREETINGS PROFESSOR FALKEN.</code>; 4 case variants all fire</td>
+<td>22 silent names incl. 2 impossible names and the empty string; 0 undiscriminated</td>
+</tr>
+<tr>
+<td>C8</td>
+<td>The WOPR sweep is complete, not lucky</td>
+<td>—</td>
+<td><code>/etc/passwd</code> → <strong>1</strong> account with <code>uid≥1000</code> and a login shell. 1 hit out of 23</td>
+</tr>
+<tr>
+<td>C9</td>
+<td>The AI response space is mapped, not guessed</td>
+<td>5 distinct handlers identified by response, over 62 inputs</td>
+<td>37 of 62 collapse to one class; 12 classes total, each attributed</td>
+</tr>
+<tr>
+<td>C10</td>
+<td>The untrusted <code>ignore debug</code> leak is a <strong>constant</strong>, not an oracle</td>
+<td>—</td>
+<td>3 runs → 71 B, md5 <code>292f6ecb7fa9</code>, identical. It names Joshua regardless of input</td>
+</tr>
+<tr>
+<td>C11</td>
+<td>FTP carries no user-existence information</td>
+<td>the check <strong>ran</strong>: <code>220</code> → <code>331 Please specify a password.</code> → <code>530 Login incorrect.</code></td>
+<td><code>anon:anon</code> and <code>zzq_impossible_4711:x</code> → <strong>byte-identical</strong> <code>530</code>. Confirmed by config: <code>anonymous_enable=NO</code>, <code>/srv/ftp</code> empty</td>
+</tr>
+<tr>
+<td>C12</td>
+<td>sshd carries no user-existence information</td>
+<td>failures take 2.24 s / 3.22 s — a real yescrypt KDF, so the comparison is meaningful</td>
+<td>identical exception type; 0.98 s spread is timing noise. <strong>2 probes only</strong> — §8</td>
+</tr>
+<tr>
+<td>C13</td>
+<td>The network credential oracle can report success</td>
+<td><code>joshua</code> / correct → <strong><code>AUTH_OK</code>, 0.09 s</strong></td>
+<td>correct + 1 char → <code>AUTH_FAIL</code> 2.24 s; uppercased → <code>AUTH_FAIL</code> 4.43 s</td>
+</tr>
+<tr>
+<td>C14</td>
+<td>The offline oracle can report success, on the same code path</td>
+<td><code>crypt('CANARY188', canary_hash) == canary_hash</code> → <strong>True</strong>, where the control hash was produced by the system's own <code>chpasswd</code>/PAM in the same <code>$y$j9T$</code> format</td>
+<td><code>crypt('CANARY188X', …)</code> → <strong>False</strong>; rate <strong>96.9–98.0/s</strong> over 100 probes, and a <code>&gt;500/s</code> assertion that would have aborted</td>
+</tr>
+<tr>
+<td>C15</td>
+<td>The build-record credential is the real one</td>
+<td><code>crypt('1983@1983', joshua_hash) == joshua_hash</code> → <strong>True</strong> with C14 green; <strong>and</strong> <code>AUTH_OK</code> over SSH</td>
+<td><code>1983@1983X</code> → <strong>False</strong>; <code>1983</code> (the obvious truncation) → <strong>False</strong></td>
+</tr>
+<tr>
+<td>C16</td>
+<td><code>godmode</code>'s gate is real</td>
+<td><code>--wopr</code> → <code>euid=0</code>; the <code>strcmp</code> target is the <code>.rodata</code> constant at <code>0x2028</code></td>
+<td>wrong passphrase → <code>ACCESS DENIED</code>; <strong>no argument</strong> → <code>ACCESS DENIED</code> (the <code>argc&lt;=1</code> branch at <code>main+0x1d</code>)</td>
+</tr>
+<tr>
+<td>C17</td>
+<td>The privesc is real, and the oracle is not an artefact of my shell</td>
+<td><code>Uid: 0 0 0 0</code>, <code>Gid: 0 0 0 0</code>, <code>CapEff: 00000000a80425fb</code>, <code>id -u</code> → <strong>0</strong>, and a <strong>root-owned</strong> file created in <code>/root</code> (0700)</td>
+<td>as <code>uid=1000(joshua)</code>, the identical read of that file is <code>Permission denied</code> (rc=2) and <code>cat /root/flag.txt</code> is <code>Permission denied</code> (rc=1)</td>
+</tr>
+<tr>
+<td>C18</td>
+<td>My own rate limit was not manufacturing negatives</td>
+<td>the <strong>rate ladder</strong>: the oracle's own KDF rate was measured before every batch (2.24–4.43 s online, 96.9–98.0/s offline) and a 4,397-candidate batch completed at 97.2/s</td>
+<td>the 5-failure penalty was identified, diagnosed and waited out (§4.1, §11.2) rather than mistaken for a credential result</td>
+</tr>
+</tbody>
+</table>
+<p>On C18: the ladder <em>is</em> the control, and it was run before the batches, so that a uniform
+failure could be attributed to the target rather than to me. In this lab that discipline was not
+hypothetical — my own attack rate really did take SSH offline for ~45 s.</p>
+<hr />
+<h2 id="8-not-tested-scope-not-gaps-in-effort">8. NOT tested (scope, not gaps in effort)</h2>
+<ul>
+<li><strong>An sshd user-existence sweep.</strong> 2 probes, not 23. <code>PerSourcePenalties authfail:5 min:15</code>
+makes a real sweep impossible from one source address without accepting a multi-hour
+wall-clock cost, and I chose to spend the budget on proving the oracle instead. C12 is a
+<strong>2-probe negative, not a sweep</strong>, and is labelled as such in both tables.</li>
+<li><strong>A larger credential corpus.</strong> 4,397 generated candidates, no wordlist corpus available on
+this host. Given the password is 8 characters and non-trivial, the space is certainly not
+exhausted. I make no claim about it — and it did not matter, because F3 supplied the
+credential outright.</li>
+<li><strong>The <code>per_source_penalties</code> state as an attack surface.</strong> I confirmed the setting, the string,
+and the trigger. I did <strong>not</strong> attempt to use the penalty mechanism to deny service to a third
+party, and I would not without explicit authorisation.</li>
+<li><strong>Whether <code>godmode</code> is reachable by any other account.</strong> <code>root</code> is locked (<code>*</code>), so there is
+no second non-root account to test. I did not create one.</li>
+<li><strong>The 18 other SUID binaries as escalation paths.</strong> Counted (19) and their modes inspected;
+all are stock Debian setuid programs with no lab-specific behaviour. I did not attempt
+<code>mount</code>, <code>newgrp</code> or <code>passwd</code> abuse — out of scope for a lab whose escalation is <code>godmode</code>.</li>
+<li><strong>IPv6 reachability of ports 21/22.</strong> <code>/proc/net/tcp6</code> shows both bound to <code>::</code>; from the
+analysis host the container has only an IPv4 address, so I could not test them. <strong>0 IPv6
+probes</strong> — untested, not absent.</li>
+<li><strong>Apache modules beyond the ones <code>a2query -m</code> listed.</strong> <code>mod_status</code> is present and correctly
+held; I did not audit the remaining enabled modules for handler mappings (lab 146's shape).</li>
+<li><strong>Any behaviour of the WOPR protocol under concurrency.</strong> <code>server.listen(5)</code> with one thread
+per client; <code>play_tictactoe</code> blocks on <code>recv</code>. I used one connection at a time and did not
+test resource exhaustion.</li>
+</ul>
+<hr />
+<h2 id="9-discarded-with-reason">9. Discarded with reason</h2>
+<table>
+<thead>
+<tr>
+<th>Hypothesis</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>The 64-hex <code>SSH PASSWORD</code> is joshua's credential</strong></td>
+<td><strong>Refuted twice, independently.</strong> <code>AUTH_FAIL</code> over PAM (2.24–4.43 s, real KDF); and <code>crypt()</code> against the live shadow hash with a green control returns <strong>no</strong> for 9 variants. It appears in exactly <strong>1</strong> file in the filesystem — the source of the service that emits it. It is also not <code>godmode</code>'s passphrase (<code>--wopr</code> is). §6/F2</td>
+</tr>
+<tr>
+<td><strong>The 64-hex is a digest whose preimage is the password</strong></td>
+<td>4,397 candidates × SHA-256/MD5/SHA-1/SHA-512 → <strong>0 hits each</strong></td>
+</tr>
+<tr>
+<td><strong><code>README.txt</code>'s <code>GODMODE</code> is the auth override</strong></td>
+<td><strong>Refuted by control.</strong> <code>logon GODMODE</code> → silent, and the subsequent <code>ignore debug audit</code> returns the <strong>untrusted</strong> DIAGNOSTIC response, i.e. the session never became trusted. The real trigger is <code>logon joshua</code>. §6/F6</td>
+</tr>
+<tr>
+<td><strong><code>README.txt</code>'s &quot;shared network folder&quot; is anonymous FTP</strong></td>
+<td><strong>Refuted by config and by count.</strong> <code>anonymous_enable=NO</code>; <code>anon:anon</code> → <code>530</code>; <code>/srv/ftp</code> has <strong>0 entries</strong></td>
+</tr>
+<tr>
+<td><strong>The docroot exposes 5 files (naive status-code read)</strong></td>
+<td><strong>Refuted by control.</strong> 3 of the 5 are phantoms emitted by a name-based <code>FilesMatch</code>; toggling existence leaves the <code>403:275</code> unchanged, and 2 impossible names give a different baseline (<code>404:272</code>). Re-swept: <strong>65 paths, 2 real, 60 absent, 3 phantom</strong>. §2.2, §11.1</td>
+</tr>
+<tr>
+<td><strong>&quot;Not allowed at this time&quot; is a TCP-wrapper block or a firewall</strong></td>
+<td><strong>Refuted.</strong> <code>hosts.allow</code> and <code>hosts.deny</code> are both empty, <code>ldd</code> shows no <code>libwrap</code>, and the string is in the sshd binary. It is <code>PerSourcePenalties</code>, triggered <strong>by me</strong>. §4.1, §11.2</td>
+</tr>
+<tr>
+<td><strong>4,397 candidates with no match means the password is strong</strong></td>
+<td><strong>Rejected as an inference.</strong> No wordlist corpus exists on this host, so the search is generated, not exhaustive — and it was in any case the wrong question, because the credential was in the build record all along. Reported as a scoped negative with its count, not as a property of the password</td>
+</tr>
+<tr>
+<td><strong>Root is reachable directly</strong></td>
+<td><code>root</code>'s shadow field is <code>*</code> (locked). Only two accounts have a login shell: <code>root</code> and <code>joshua</code>, and <code>id joshua</code> shows <code>groups=1000(joshua)</code> — <strong>not</strong> in <code>%sudo</code>, and <code>sudoers</code> has no <code>joshua</code> entry. There is no sudo rung</td>
+</tr>
+<tr>
+<td><strong><code>sudo</code> is the escalation</strong></td>
+<td>Refuted by the artefact: <code>%sudo ALL=(ALL:ALL) ALL</code> exists but joshua is not in the group. <code>secure_path</code> ends at <code>/bin</code> (lab 32's check) and <code>/bin</code> is not world-writable — not pursued further since the vector does not exist</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-reward">10. Reward</h2>
+<p><strong>A reward exists and was recovered, read at <code>euid=0</code>:</strong></p>
+<pre><code>$ cat /root/flag.txt
+WOPR{THE_GAME_IS_ENDING_YOU_WIN}          33 bytes
+</code></pre>
+<p><strong>There is no <code>FLAG{}</code> in this lab</strong>, and the search that proves it was run as <code>euid=0</code> with
+explicit counts. This is a <code>WOPR{}</code> wrapper, so the corpus convention applies: the <code>FLAG{}</code>
+column of <code>corpus/INDEX.md</code> is where the absence of a literal <code>FLAG{}</code> is recorded, and this
+lab is recorded as a <strong>reward recovered, non-<code>FLAG{}</code> format</strong> — the same treatment as labs 62
+and 249.</p>
+<table>
+<thead>
+<tr>
+<th>Search</th>
+<th>Work count</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Filename sweep <code>*flag*</code> <code>*premio*</code> <code>*recomp*</code> <code>*ctf*</code> <code>*secret*</code> across <code>/</code> (<code>-xdev</code>), as <code>euid=0</code></td>
+<td><strong>49 hits</strong>, all inspected</td>
+<td>1 real: <code>/root/flag.txt</code>. 48 false positives: <code>libctf0</code>/<code>libctf-nobfd0</code> (Compact C Type Format), <code>linux/kernel-page-flags.h</code>, 6 perl <code>*flags.ph</code>, <code>PA_FLAG_*</code> uapi headers, <code>secrets.py</code>, <code>secrets.cpython-313.pyc</code>, 7 <code>libctf</code> dpkg files</td>
+</tr>
+<tr>
+<td>Content sweep <code>FLAG{</code> <code>flag{</code> <code>WOPR{</code> <code>ctf{</code> <code>CTF{</code> across <code>/</code> (<code>--exclude-dir=proc,sys,dev</code>)</td>
+<td><strong>2 files matched</strong>, both inspected</td>
+<td><code>/root/flag.txt</code> (the reward) <strong>and <code>/tmp/inner.sh</code>, which was my own transport script</strong> — it contains the literal <code>WOPR{</code> because the search pattern is in it. Disclosed as my artefact, not a second reward</td>
+</tr>
+<tr>
+<td><code>/root</code> at <code>euid=0</code></td>
+<td>1 directory</td>
+<td><code>.bashrc</code>, <code>.profile</code>, <code>.ssh/</code> (empty), <code>flag.txt</code> — nothing else, once my marker and my backup were removed</td>
+</tr>
+<tr>
+<td><code>/home</code></td>
+<td>1 directory</td>
+<td><code>joshua</code> only (mode <code>0700</code>, the 3 stock dotfiles)</td>
+</tr>
+<tr>
+<td><code>/opt</code></td>
+<td>1 directory</td>
+<td><strong>empty</strong></td>
+</tr>
+<tr>
+<td><code>/srv</code></td>
+<td>2 entries</td>
+<td><code>ftp/</code> — <strong>empty</strong> (0 files), which is what refutes the README's &quot;shared network folder&quot;</td>
+</tr>
+<tr>
+<td>Accounts with a login shell</td>
+<td>2</td>
+<td><code>root</code> (password <code>*</code>), <code>joshua</code> — the sweep's completeness check (C8)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11-instrumentation-defects">11. Instrumentation defects</h2>
+<p><strong>Six. Three of them would have invented a finding, two would have deleted one, and one cost me
+the only credential result in the engagement.</strong> All six are defects in how I measured the
+target, not in the target — which is why they are listed separately from Findings.</p>
+<h3 id="111-the-docroot-sweeps-3-phantom-files--lab-87s-lesson-and-i-nearly-filed-the-opposite-error">11.1 The docroot sweep's 3 phantom files — lab 87's lesson, and I nearly filed the opposite error</h3>
+<p>A status-code-keyed sweep of the docroot reported <strong>5 present files: <code>index.html</code>, <code>README.txt</code>,
+<code>.htaccess</code>, <code>.htpasswd</code>, <code>server-status</code></strong>. <strong>Only 2 of the 5 exist.</strong></p>
+<pre><code>$ curl -o/dev/null -w '%{http_code}:%{size_download}\n' http://[net-0-3]/.htaccess
+403:275          # file does NOT exist
+$ echo marker &gt; /var/www/html/.htaccess ; curl … /.htaccess
+403:275          # identical, file now exists
+$ rm -f /var/www/html/.htaccess ; curl … /.htaccess
+403:275          # identical again
+</code></pre>
+<p><code>apache2.conf:195</code>'s <code>&lt;FilesMatch &quot;^\.ht&quot;&gt;</code> is evaluated <strong>by name, before existence</strong>.
+<code>server-status</code> returns the same 275-byte 403 for a <em>completely different reason</em>
+(<code>mod_status</code> + <code>Require local</code>), so the status cannot even attribute the block.</p>
+<p><strong>What caught it</strong> was the discipline lab 87 exists to teach, arriving in a new costume: I had
+two impossible names in the wordlist, and when I went back to read the <em>config</em> rather than the
+status codes, the mechanism was three lines long. Note the inversion against lab 87 — there, a
+<code>301</code> catch-all made absent paths look <strong>present</strong>; here a <code>403</code> name-rule does the same, and a
+tester carrying lab 87's rule would have expected a <code>301</code>, found a clean <code>404</code> on random names,
+and concluded the docroot was safe.</p>
+<p><em>Rule: the discriminator for any bulk enumeration must be a property of the response body (a byte
+count, a hash) rather than a status code — and a name-based access rule will satisfy it for names
+that do not exist.</em></p>
+<h3 id="112-my-own-attack-rate-took-ssh-offline-and-it-looked-exactly-like-a-firewall">11.2 My own attack rate took SSH offline, and it looked exactly like a firewall</h3>
+<p>After 4 failed password attempts plus a few banner probes, every connection returned:</p>
+<pre><code>Not allowed at this time
+</code></pre>
+<p>My first diagnosis was a <strong>TCP wrapper</strong> — because that is the string Debian's <code>hosts_access</code>
+emits, and I had seen it behave that way before. <strong>That diagnosis was wrong</strong>, and it would have
+become a filed finding (&quot;the target blocks repeated authentication&quot;). Three commands refuted it:
+<code>/etc/hosts.deny</code> and <code>/etc/hosts.allow</code> are <strong>empty</strong>; <code>ldd /usr/sbin/sshd</code> shows <strong>no
+<code>libwrap</code></strong>; and <code>strings /usr/sbin/sshd</code> contains <code>Not allowed at t at this time</code>. The real
+cause, from <code>sshd -T</code>:</p>
+<pre><code>persourcepenalties crash:90 authfail:5 noauth:1 grace-exceeded:10 refuseconnection:10 max:600 min:15
+</code></pre>
+<p>OpenSSH ≥ 9.8 penalises a <strong>source address</strong>: <code>authfail:5</code> failures, then at least 15 s of
+refusal. The ~45 s outage was <strong>my own rate</strong>, wearing the costume of a target-side control.</p>
+<p><em>Rule: an access-denied string from a service you are brute-forcing is the first thing to
+suspect as your own rate. Read the daemon's effective config (<code>sshd -T</code>, not the file) and the
+binary's string table before filing it as a control that held.</em></p>
+<h3 id="113-i-reproduced-lab-36s-defect-almost-exactly--an-oracle-that-never-ran-the-kdf">11.3 I reproduced lab 36's defect almost exactly — an oracle that never ran the KDF</h3>
+<p>My first offline cracker used <code>ctypes</code> to call <code>crypt_gensalt_rn</code> to mint a same-format control
+hash. It returned <code>rc=0</code> with an <strong>empty salt</strong>, so <code>crypt()</code> fell back to glibc DES:</p>
+<pre><code>gensalt rc=0 salt=b''
+same-format hash: b'*0' len 2
+POSITIVE CONTROL  crypt('CANARY188',h)==h  -&gt; False
+NEGATIVE CONTROL  crypt('CANARY188X',h)==h  -&gt; False
+RATE: 50 candidates in 0.00s = 3276800.0/s
+</code></pre>
+<p><strong>3,276,800 candidates/s and a 2-character result.</strong> Both controls report <code>False</code>, so the
+instrument looks perfectly symmetric — and would have certified a negative of anything. This is
+lab 36's shape: <em>the yescrypt scanner got <code>*0</code> without ever executing the KDF; the tell was the
+rate.</em> My cause was a 6-argument <code>ctypes</code> prototype for a <strong>5-argument</strong> C function (and a later
+attempt <strong>segfaulted</strong>, exit 139, rather than lying — also worth knowing).</p>
+<p>The fix was not to debug <code>gensalt</code> but to stop synthesising the control: mint it with the
+system's own <code>chpasswd</code>/PAM, read it back from <code>/etc/shadow</code>, and delete the account. Same
+format, same library, same code path as the target — §22 satisfied by construction.</p>
+<p><em>Rule: a positive control that reports <code>False</code> is a broken instrument, and a control pair where
+both branches return the same value is not a control pair. Assert on the rate, and assert on the
+shape of the value the primitive returns.</em></p>
+<h3 id="114-a-shape-assertion-caught-me-deleting-the-account-i-was-trying-to-crack">11.4 A shape assertion caught me deleting the account I was trying to crack</h3>
+<p>I installed a canary password on <strong>joshua</strong> to prove the network oracle could fire, saved the
+original hash, and restored it with <code>sed</code>. The <code>diff</code> said <code>IDENTICAL</code> and the value printed
+correctly — so I moved on. Later, <code>grep -c &quot;^joshua:&quot; /etc/shadow</code> returned <strong>0</strong>.</p>
+<p>Root cause: when I created the throwaway account with <code>useradd</code> + <code>chpasswd</code>, <strong>joshua's line
+was replaced rather than added</strong> — <code>/etc/shadow</code> stayed at 25 lines, and the byte delta was
+exactly <code>+3</code>, the difference between the 9-character username <code>canary188</code> and the 6-character
+<code>joshua</code>. Had the cracker been pointed at <code>/etc/shadow</code> at that moment it would have reported
+&quot;no match&quot; against the <strong>canary's</strong> hash, with a green-looking control and a plausible rate.</p>
+<p>What caught it was a <strong>shape assertion</strong> I had added for an unrelated reason
+(<code>$y$</code> prefix, exactly 73 chars): the file was <strong>empty</strong>, the assertion aborted, and the
+harness refused to run. Restored from a byte-exact <code>cp -a</code> backup — 25 lines, joshua's hash
+byte-identical, canary removed from <code>passwd</code> and <code>shadow</code>.</p>
+<p><em>Rule: never restore a credential file you have mutated in place without a byte-exact copy, and
+keep the shape assertion even when you do not yet know what it will catch. <code>cp -a</code> is the
+restore; <code>sed -i</code> on <code>/etc/shadow</code> is not.</em></p>
+<h3 id="115-i-labelled-two-probes-negative-controls-when-both-were-positives">11.5 I labelled two probes &quot;negative controls&quot; when both were positives</h3>
+<p>In the WOPR sweep I wrote that <code>ignore debugX</code> and <code>DEBUG IGNORE</code> were negative controls for the
+untrusted leak. <strong>Both actually fire</strong> — <code>script.py</code> tests <code>all(x in text …)</code> on
+<code>user_input.lower()</code>, so a substring is enough and case does not matter. The conclusion
+(&quot;this response is a constant&quot;) survived, but it was resting on a mislabelling rather than on
+the md5, which is the actual evidence: 3 runs, 71 bytes, <code>292f6ecb7fa9</code> every time.</p>
+<p><em>Rule: name a control by what it did, not by what you expected it to do — and when a result
+survives a mislabelled control, re-derive it from the measurement before writing it down.</em></p>
+<h3 id="116-rtk-does-not-exist-inside-the-container-and-one-ls--grep-silently-found-nothing">11.6 <code>rtk</code> does not exist inside the container, and one <code>ls | grep</code> silently found nothing</h3>
+<p>Two small ones. A <code>ls -la /var/www/html/ | grep -i ht</code> I ran <strong>inside</strong> the container returned
+nothing because my own wrapper binary is not on the container's <code>PATH</code>
+(<code>sh: 1: rtk: not found</code>) — and in a pipeline that failure is invisible unless you read stderr.
+Separately, the <code>printf</code>/<code>heredoc</code> transport for my first reward script mangled a multi-line
+payload (<code>/bin/bash: line 1: fg: no job control</code>, and <strong>no output at all</strong>), which looked like
+the escalated shell had produced nothing. Base64 transport fixed it.</p>
+<p><em>Rule: verify that the tool you are piping into exists in the environment you are piping into,
+and when a multi-line payload crosses a process boundary, transport it base64-encoded — a
+silent no-output from a shell you have just escalated is the most expensive kind of blank.</em></p>
+<hr />
+<h2 id="12-reproducibility">12. Reproducibility</h2>
+<p>Harness files used during the engagement are in <code>/tmp/[tool]/188/</code> on the analysis host
+(<code>wopr.py</code>, <code>woprsweep.py</code>, <code>logonsweep.py</code>, <code>sshenum.py</code>, <code>cred.py</code>, <code>extract.py</code>,
+<code>oracle2.py</code>, <code>verify188.py</code>, <code>privesc.py</code>, <code>reward2.py</code>, <code>cleanup.py</code>, <code>wl.txt</code>, <code>cands.txt</code>,
+<code>sweep.txt</code>, and <code>ev/</code>). They are not required to reproduce any result above: every claim is
+quoted with its literal response, its <code>file:line</code>, or its work count.</p>
+<p>The recovered credential and the reward are <strong>not</strong> reproduced in full here beyond the reward
+itself, which is the lab's own reward string and is reported because §10 requires it. The
+password appears in §6/F3 quoted from <code>docker history</code> because <strong>that is the finding</strong>: quoting
+it is the only way to show that the build record discloses it.</p>
+<p><strong>Lab state at the end of the engagement: restored from the image and verified positively.</strong>
+Recreated, not reverted (<code>docker rm -f</code> + <code>docker run</code> from <code>wargames:latest</code>), then six
+positive checks, all passing:</p>
+<ol>
+<li>WOPR answers with its banner: <code>WELCOME TO WOPR</code> / <code>SHALL WE PLAY A GAME?</code></li>
+<li><code>GET /</code> → <code>200</code>, <strong>118</strong> bytes; <code>GET /README.txt</code> → <code>200</code>, <strong>980</strong> bytes</li>
+<li><code>GET /.htaccess</code> → <code>403</code>; <code>GET /.HTACCESS</code> → <code>404</code> (the file is absent again, so the
+case-bypass artefact is gone)</li>
+<li>joshua's shadow entry is byte-identical to the shipped hash
+(<code>$y$j9T$XyPUXMUViZrJ/uMOZjRy..$OjEiB7CDgGDWTdyr/KgrFm3VtDlL10wqaYbg9NEOq7D</code>)</li>
+<li><code>canary188</code> = 0 in <code>passwd</code> and <code>shadow</code>; <code>WG188-*</code> markers = <strong>0</strong> anywhere on <code>/xdev</code>;
+<code>/tmp</code> = <strong>0</strong> entries; docroot = <strong>2</strong> files and <strong>0</strong> subdirectories; <code>/etc/shadow</code> = 25 lines</li>
+<li><code>/root/flag.txt</code> intact, 33 bytes, <code>WOPR{THE_GAME_IS_ENDING_YOU_WIN}</code></li>
+</ol>
+<p>Before recreating, an in-place audit confirmed the same counts from inside the running
+container, and the <code>godmode</code> mode/owner is back to <code>4755 root:root</code>.</p>
+<p><strong>Reclaim.</strong> The extracted tar <code>labs/188/wargames.tar</code> (573 MB) was deleted after the writeup
+landed, per the PIPELINE reclaim policy. The <strong>image was deliberately left in place</strong>: the
+restored container still references it, and <code>docker rmi wargames:latest</code> refuses with
+<code>must be forced (container … is using its referenced image)</code>. Forcing it, or removing the
+container to free it, would trade the verified restore for ~1 GB — and the restore is the
+deliverable. No global prune was run at any point; the seven <code>cybervault-*</code> containers from the
+other project were left untouched (verified: 7 still running).</p>
+<hr />
+<h2 id="13-what-this-lab-adds-to-the-methodology">13. What this lab adds to the methodology</h2>
+<p>Three items are new <em>classes of surface</em> rather than new instances of existing ones, so per the
+RUNBOOK they are proposed to the parent rather than written into shared files here.</p>
+<ol>
+<li><strong>An absent-path trap that answers <code>403</code> instead of <code>301</code>.</strong> Lab 87 established the rule
+(&quot;a name that cannot exist is a mandatory member of the wordlist; the discriminator must be a
+response property, not a status code&quot;). Lab 188 is a <strong>second instance with a different
+mechanism</strong> — a name-based <code>FilesMatch</code> evaluated before existence — and it is <em>stronger</em>
+evidence for the rule than lab 87's, because here the phantoms are the highest-value names
+in any wordlist (<code>.htaccess</code>, <code>.htpasswd</code>) and two unrelated causes produce the same 275-byte
+body. <strong>Extend the existing row; do not add a new one.</strong></li>
+<li><strong>The image build record as a static-analysis surface that carries plaintext secrets.</strong>
+<code>docker history --no-trunc</code> is a text surface, it is in the artefact, and it held the only
+usable credential in the lab while no runtime file held it. This is the &quot;análisis estático&quot;
+the catalogue description names, and it is a class the corpus does not have. <strong>New section.</strong></li>
+<li><strong>A credential-attack rate budget imposed by the target, and the resulting self-inflicted
+false negative.</strong> <code>PerSourcePenalties authfail:5 min:15</code> is a <em>measured</em> budget rather than an
+estimate, and the resulting outage is byte-for-byte indistinguishable from a firewall block.
+This extends lab 283's &quot;your own rate limit, wearing a false negative&quot; to a <strong>daemon-enforced
+budget read from <code>sshd -T</code></strong>. <strong>Extend the existing row; do not add a new one.</strong></li>
+</ol>
+<p>The lab's own class label is accurate, and the enumeration inventory (§2) is the deliverable:
+<strong>159 application-level probes, one account, every row with a control pair and a work count, and
+three of the eleven surfaces produced no finding — which is recorded rather than left blank.</strong></p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

@@ -1,0 +1,1442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 166 InfluencerHate &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; InfluencerHate</p><h1 id="166-influencerhate--writeup">166 InfluencerHate — writeup</h1>
+<p>One authorized DockerLabs engagement. Id 166, name InfluencerHate, difficulty
+<code>facil</code>. Target container <code>influencerhate_container</code>, image <code>influencerhate:latest</code>,
+<code>[net-0-3]</code>.</p>
+<hr />
+<h2 id="headline-the-queues-gap-column-changes-the-second-routes-class">Headline: the queue's gap column changes the second route's class</h2>
+<p><code>tooling/labs.manifest:79</code></p>
+<pre><code>166|InfluencerHate|facil|brute force on a web form, then a second escalation route
+</code></pre>
+<p>The platform catalogue (<code>[lab-home]/dockerlabs/catalog.txt:45</code>) reads, in full:</p>
+<pre><code>166|InfluencerHate|facil|Fuerza bruta en formulario web de apache y despu\u00e9s otra forma de fuerza bruta en formulario de login web.
+</code></pre>
+<p>That is <em>&quot;brute force on an Apache web form and then <strong>another form of brute
+force</strong> in a web login form.&quot;</em> The manifest replaced <strong>&quot;another form of brute
+force&quot;</strong> with <strong>&quot;a second escalation route.&quot;</strong> The second route is not an
+escalation. There is <strong>no escalation primitive anywhere on this host</strong>, which is
+a measured absence and not an inference:</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Measurement</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sudo</code></td>
+<td><code>ls: cannot access '/etc/sudoers': No such file or directory</code>; <code>ls: cannot access '/etc/sudoers.d': No such file or directory</code>; <code>which sudo</code> → not installed</td>
+</tr>
+<tr>
+<td>cron daemon</td>
+<td><code>ps -eo pid,user,args | grep -E &quot;cron|atd&quot;</code> → <code>(none: cron not installed/running)</code>; <code>/var/spool/cron</code> does not exist. <code>/etc/cron.d/</code> holds only the stock <code>e2scrub_all</code> and <code>php</code> files</td>
+</tr>
+<tr>
+<td>setuid</td>
+<td><code>find / -xdev -type f -perm -4000 | wc -l</code> → <strong>10</strong>, all stock Debian (<code>passwd</code>, <code>su</code>, <code>mount</code>, <code>umount</code>, <code>newgrp</code>, <code>chfn</code>, <code>chsh</code>, <code>gpasswd</code>, <code>ssh-keysign</code>, <code>dbus-daemon-launch-helper</code>); none has a non-root-writable path to reach it (below)</td>
+</tr>
+<tr>
+<td>nested container</td>
+<td><code>ls /var/run/docker.sock</code> → <code>No such file or directory</code>; <code>CapEff: 00000000a80425fb</code>, which is Docker's default mask, not the privileged <code>0x1ffffffffff</code></td>
+</tr>
+<tr>
+<td>file capabilities</td>
+<td><code>getcap -r /</code> → <strong>empty</strong>, <code>rc=0</code></td>
+</tr>
+</tbody>
+</table>
+<p>There is no acronym in this catalogue entry to expand, so the self-correction
+about abbreviations (<code>method/self-corrections.md</code> §28) does not apply. The
+failure here is the neighbouring one: <strong>the queue paraphrased the catalogue and
+in doing so promoted a second brute force into an escalation</strong>, which would have
+put this lab in the privilege-escalation column of a class table it cannot
+populate. This is a second instance of the §28 family with a different
+mechanism — there, the queue expanded an abbreviation from memory; here, it
+rewrote the sentence.</p>
+<p>The platform label in the catalogue — <em>&quot;formulario web de apache&quot;</em> — <strong>is
+correct.</strong> Read from version-bearing files, not from the queue:</p>
+<pre><code>$ apache2 -v
+Server version: Apache/2.4.62 (Debian)
+Server built:   2024-10-04T15:21:08
+
+$ dpkg -l | grep '^ii  apache2  '
+ii  apache2     2.4.62-1~deb12u2   amd64   Apache HTTP Server
+
+$ php -v
+PHP 8.2.28 (cli) (built: Mar 13 2025 18:21:38) (NTS)
+ii  php8.2      8.2.28-1~deb12u1   all     PHP 8.2 (metapackage)
+ii  php8.2-sqlite3  8:93           all     SQLite3 module for PHP [default]
+
+$ cat /etc/os-release | head -3
+PRETTY_NAME=&quot;Debian GNU/Linux 12 (bookworm)&quot;
+NAME=&quot;Debian GNU/Linux&quot;
+VERSION_ID=&quot;12&quot;
+</code></pre>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-3]
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.2p1 Debian 2+deb12u6 (protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.62
+Service Info: Host: [net-0-3]; OS: Linux
+Not shown: 65533 closed tcp ports (conn-refused)
+</code></pre>
+<p><code>nmap -p-</code> is TCP by definition, so the listening set was read from the
+container's own kernel table as well:</p>
+<pre><code>$ docker exec influencerhate_container cat /proc/net/tcp
+  sl  local_address rem_address st ...
+   0: 00000000:0050 00000000:0000 0A ...     # 0x0050 = 80
+   1: 00000000:0016 00000000:0000 0A ...     # 0x0016 = 22
+</code></pre>
+<p>Two sockets, both TCP. No UDP service, and none is claimed.</p>
+<p>Startup (<code>PATH=/usr/bin:/bin docker logs</code>, <strong>not</strong> the environment's summarising
+wrapper — see <em>Instrumentation defects</em>, item 5):</p>
+<pre><code>AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using [net-0-3]. Set the 'ServerName' directive globally to suppress this message
+Starting Apache httpd web server: apache2.
+Starting OpenBSD Secure Shell server: sshd.
+</code></pre>
+<h3 id="every-docroot-path-is-behind-one-http-basic-challenge">Every docroot path is behind one HTTP Basic challenge</h3>
+<p><code>.htaccess</code> is honoured because the vhost sets <code>AllowOverride All</code>
+(<code>/etc/apache2/sites-enabled/000-default.conf:11-15</code>, via
+<code>sites-enabled/000-default.conf</code> → <code>sites-available/000-default.conf</code>):</p>
+<pre><code>    11	&lt;Directory /var/www/html/&gt;
+    12	    Options Indexes FollowSymLinks
+    13	    AllowOverride All
+    14	    Require all granted
+    15	&lt;/Directory&gt;
+</code></pre>
+<p>Measured, unauthenticated:</p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th>Status</th>
+<th>Bytes</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /</code></td>
+<td>401</td>
+<td>457</td>
+<td><code>WWW-Authenticate: Basic realm=&quot;Zona restringida&quot;</code></td>
+</tr>
+<tr>
+<td><code>GET /index.html</code></td>
+<td>401</td>
+<td>457</td>
+<td></td>
+</tr>
+<tr>
+<td><code>GET /login.php</code></td>
+<td>401</td>
+<td>457</td>
+<td></td>
+</tr>
+<tr>
+<td><code>GET /crear_db.php</code></td>
+<td>401</td>
+<td>457</td>
+<td></td>
+</tr>
+<tr>
+<td><code>GET /database.db</code></td>
+<td>401</td>
+<td>457</td>
+<td></td>
+</tr>
+<tr>
+<td><code>GET /.htaccess</code></td>
+<td>403</td>
+<td>275</td>
+<td><code>Files</code> rule beats the authz gate</td>
+</tr>
+<tr>
+<td><code>GET /server-status</code></td>
+<td>403</td>
+<td>275</td>
+<td><code>mod_status</code> loaded, restricted to <code>localhost</code></td>
+</tr>
+<tr>
+<td><code>GET /icons/</code></td>
+<td>403</td>
+<td>275</td>
+<td><code>No matching DirectoryIndex … and server-generated directory index forbidden by Options directive</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="the-two-routes-and-what-actually-separates-them">The two routes, and what actually separates them</h2>
+<p>The brief asks for the discriminator between the catalogue's two brute-force
+routes. Stated generally:</p>
+<blockquote>
+<p><strong>They do not differ in transport and they do not differ in rate budget. They
+differ in the identity store and therefore in the KDF — one store runs apr1
+MD5-crypt, the other store has no KDF at all and holds the password in
+cleartext. Two stores, two principals, two implementations, two oracles, two
+remediations.</strong></p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>Axis</th>
+<th>Route A</th>
+<th>Route B</th>
+<th>Same?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Transport</td>
+<td>HTTP/80, Apache</td>
+<td>HTTP/80, Apache</td>
+<td><strong>yes</strong></td>
+</tr>
+<tr>
+<td>Implementing component</td>
+<td><code>mod_auth_basic</code> + <code>mod_authn_file</code> (C)</td>
+<td>PHP 8.2 + <code>php8.2-sqlite3</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td>Endpoint</td>
+<td><code>GET /login.php</code> with <code>Authorization: Basic</code></td>
+<td><code>POST /login.php</code> form body</td>
+<td>no</td>
+</tr>
+<tr>
+<td><strong>Credential store</strong></td>
+<td><code>[lab-home]/.htpasswd</code>, flat file, mode <code>644 root:root</code></td>
+<td><code>/var/www/html/database.db</code>, SQLite, mode <code>644 root:root</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td>Store contents</td>
+<td>1 entry</td>
+<td>1 row</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Principal</td>
+<td><code>httpadmin</code></td>
+<td><code>admin</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td><strong>KDF</strong></td>
+<td><strong><code>$apr1$</code> Apache MD5</strong>, 1000 MD5 rounds</td>
+<td><strong>none — the column <em>is</em> the password</strong></td>
+<td>no</td>
+</tr>
+<tr>
+<td>Success oracle</td>
+<td><code>200</code>, <code>WWW-Authenticate</code> challenge gone</td>
+<td><strong><code>200</code> either way</strong>; body carries <code>alert-success</code>, 2943 B vs 2866 B</td>
+<td>no</td>
+</tr>
+<tr>
+<td>Failure oracle</td>
+<td><code>401</code>, 457 bytes</td>
+<td><code>200</code>, 2866 bytes, body carries <code>alert-danger</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td><strong>Rate budget</strong></td>
+<td><strong>none</strong></td>
+<td><strong>none</strong></td>
+<td><strong>yes</strong></td>
+</tr>
+<tr>
+<td>Reachable unauthenticated</td>
+<td>yes</td>
+<td><strong>no</strong> — nested behind route A</td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<p>That table is the answer. Everything the two routes share is transport;
+everything that matters is the store.</p>
+<h3 id="route-a--apache-http-basic-against-an-apr1-htpasswd">Route A — Apache HTTP Basic against an apr1 htpasswd</h3>
+<p><code>/var/www/html/.htaccess:1-4</code>, verbatim:</p>
+<pre><code>     1	AuthType Basic
+     2	AuthName &quot;Zona restringida&quot;
+     3	AuthUserFile [lab-home]/.htpasswd
+     4	Require valid-user
+</code></pre>
+<p><code>[lab-home]/.htpasswd:1</code>, verbatim, 48 bytes, mode <code>644 root:root</code>:</p>
+<pre><code>httpadmin:$apr1$xsEqxRe4$Zu0KmZkwmYS6PsUgLRG0P1$
+</code></pre>
+<p><code>$apr1$</code> is Apache's MD5-based password hash. <code>mod_authn_file</code> is loaded
+(<code>mods-enabled/authn_file.load</code>, <code>auth_basic.load</code>) and <code>Require valid-user</code>
+resolves to <code>mod_authz_user</code>.</p>
+<h3 id="route-b--a-php-form-against-a-cleartext-sqlite-column">Route B — a PHP form against a cleartext SQLite column</h3>
+<p><code>/var/www/html/login.php:4-19</code>, verbatim:</p>
+<pre><code>     4	if ($_SERVER[&quot;REQUEST_METHOD&quot;] == &quot;POST&quot;) {
+     5	    $usuario = $_POST[&quot;username&quot;];
+     6	    $contrasena = $_POST[&quot;password&quot;];
+     7	
+     8	    $db = new SQLite3('database.db');
+     9	    $stmt = $db-&gt;prepare(&quot;SELECT * FROM usuarios WHERE username = :user AND password = :pass&quot;);
+    10	    $stmt-&gt;bindValue(':user', $usuario, SQLITE3_TEXT);
+    11	    $stmt-&gt;bindValue(':pass', $contrasena, SQLITE3_TEXT);
+    12	    $resultado = $stmt-&gt;execute();
+    13	
+    14	    if ($resultado-&gt;fetchArray()) {
+    15	        $mensaje = &quot;&lt;div class='alert alert-success mt-3'&gt;¡Login correcto! &lt;strong&gt;Enhorabuena! De parte del usuario balutin, te damos la enhorabuena&lt;/strong&gt;&lt;/div&gt;&quot;;
+    16	    } else {
+    17	        $mensaje = &quot;&lt;div class='alert alert-danger mt-3'&gt;Credenciales incorrectas.&lt;/div&gt;&quot;;
+    18	    }
+    19	}
+</code></pre>
+<p>Line 9 binds <code>:pass</code> as a bound parameter, so the comparison at line 14 is a
+plain SQL string equality against the stored column. <strong>There is no KDF between
+the request and the stored value.</strong> Read out of the store with the container's
+own PHP:</p>
+<pre><code>$ docker exec influencerhate_container php -r '$d=new SQLite3(&quot;/var/www/html/database.db&quot;);
+  $r=$d-&gt;query(&quot;SELECT name,sql FROM sqlite_master&quot;); while($x=$r-&gt;fetchArray(SQLITE3_ASSOC)) echo $x[&quot;name&quot;],&quot; | &quot;,$x[&quot;sql&quot;],&quot;\n&quot;;
+  $r=$d-&gt;query(&quot;SELECT rowid,username,password FROM usuarios&quot;); while($x=$r-&gt;fetchArray(SQLITE3_ASSOC)) echo &quot;row &quot;,$x[&quot;rowid&quot;],&quot; user=&quot;,$x[&quot;username&quot;],&quot; pass=&quot;,$x[&quot;password&quot;],&quot; len=&quot;,strlen($x[&quot;password&quot;]),&quot;\n&quot;;'
+usuarios | CREATE TABLE usuarios (username TEXT, password TEXT)
+row 1 user=admin pass=chocolate len=9
+</code></pre>
+<p><strong>One row. No salt column, no hash column, <code>typeof(password)='text'</code>.</strong> And the
+credential is disclosed by a second artefact in the same docroot —
+<code>/var/www/html/crear_db.php:1-9</code>, verbatim:</p>
+<pre><code>     1	&lt;?php
+     2	$db = new SQLite3('database.db');
+     3	
+     4	$db-&gt;exec(&quot;DROP TABLE IF EXISTS usuarios&quot;);
+     5	$db-&gt;exec(&quot;CREATE TABLE usuarios (username TEXT, password TEXT)&quot;);
+     6	$db-&gt;exec(&quot;INSERT INTO usuarios (username, password) VALUES ('admin', 'chocolate')&quot;);
+     7	
+     8	echo &quot;Base de datos creada con usuario admin y contraseña chocolate.\n&quot;;
+     9	?&gt;
+</code></pre>
+<h3 id="is-route-b-genuinely-a-second-finding">Is route B genuinely a second finding?</h3>
+<p>Yes, on lab 243's test — <em>does fixing one fix the other?</em> — plus three more:</p>
+<ol>
+<li><strong>Fixing route A does not fix route B.</strong> The gate's remediation (throttle the
+Basic challenge, replace apr1, delete <code>.htaccess</code>) touches <code>mod_authn_file</code>
+and the htpasswd file. <code>login.php:9</code> still compares a cleartext column.</li>
+<li><strong>Fixing route B does not fix route A.</strong> Hashing the SQLite password with
+bcrypt and adding a lockout counter in <code>login.php</code> leaves the apr1 gate with
+no counter and no lockout.</li>
+<li><strong>The principals are disjoint.</strong> <code>httpadmin</code> exists in <code>[lab-home]/.htpasswd</code> and
+in no other store; <code>admin</code> exists in <code>usuarios</code> and in no other store.
+Success on one grants nothing on the other. Measured, not assumed: the
+shipped <code>/var/log/apache2/access.log</code> contains the author's own successful
+<code>httpadmin</code> sessions (<code>200</code>, rows 137-147) and <em>no</em> successful <code>admin</code>
+session in 88,369 POST rows.</li>
+<li><strong>The oracles are independent and neither can stand in for the other.</strong> Route
+A's oracle is a status-code transition (401 → 200). Route B returns <strong>200 in
+both cases</strong> — a status-code detector is always-true on route B.</li>
+</ol>
+<p>So: <strong>two findings, not one finding reported twice.</strong> A route that differed only
+in transport would be one finding; these differ in store, in KDF, in principal,
+in implementing component and in oracle.</p>
+<p><strong>But they are nested, not parallel, and a reviewer needs both facts.</strong> Route B
+is unreachable without route A. Measured: <code>POST /login.php</code> with the correct
+<code>admin</code>/<code>chocolate</code> and <strong>no</strong> gate credential returns <code>401</code> / <strong>457 bytes</strong> —
+Apache's stock 401 body, byte-identical to a route-A rejection. PHP never
+executes. The byte count is what distinguishes &quot;reached the PHP sink&quot; from
+&quot;never reached it&quot;: 457 = Apache, 2866/2943 = <code>login.php</code>. <strong>Consequence for the
+remediation order: deleting the <code>.htaccess</code> to fix route A would expose route B
+to unauthenticated reach.</strong> That is the shape lab 220 recorded, and it is the
+one thing a reviewer who merged the two findings would miss.</p>
+<h3 id="a-third-route-the-catalogue-does-not-name">A third route the catalogue does not name</h3>
+<p>Port 22 is a third credential store, and it is not in either the catalogue or
+the manifest. <code>/etc/shadow</code>, mode <code>640 root:shadow</code>, quoted verbatim:</p>
+<pre><code>root:$y$j9T$AqUQ/eZw0AFIpz2wLD0ro/$8DoTsiBHjggoIgaqVCxWym.CktRR1.gEGd.StW9vUP0:20267:0:99999:7:::
+balutin:$y$j9T$3QROnCz.BtcZZLtgrXDvd.$d3WTcjZJoWKT3.FufrvTBGwvIQBu7CdgSF16yJQZWnC:20267:0:99999:7:::
+</code></pre>
+<p>Two accounts with real yescrypt hashes, the rest <code>*</code> / <code>!</code> / <code>!*</code>. Measured on
+it — see the rate table below. <code>docker history</code> was checked first (lab 188's
+route) and carries nothing:</p>
+<pre><code>$ docker history --no-trunc influencerhate:latest
+IMAGE    CREATED BY
+sha256:ac334959...  15 months ago  CMD [&quot;/bin/sh&quot; &quot;-c&quot; &quot;service apache2 start &amp;&amp; service ssh start &amp;&amp; tail -f /dev/null&quot;]
+&lt;missing&gt;            15 months ago  bash                    230MB
+&lt;missing&gt;            15 months ago  # debian.sh --arch 'amd64' out/ 'bookworm' '@1749513600'   133MB   debuerreotype 0.15
+</code></pre>
+<p>A single squash layer. <strong>No credential is recoverable from the build record</strong>
+here, which is the opposite of lab 188 and is reported as such.</p>
+<hr />
+<h2 id="rate-asserted-in-both-directions">Rate: asserted in both directions</h2>
+<p>The corpus's standing measurement for &quot;was the KDF actually running&quot; is the
+rate. A skipped KDF reads as the underlying primitive's own speed (the 44 M
+candidates/s signature); a running KDF reads as the primitive divided by its
+iteration count. Both directions are measured below, in one harness, with the
+control that the oracle can report a match.</p>
+<h3 id="offline-apr1-versus-a-single-md5">Offline: apr1 versus a single MD5</h3>
+<p><code>apr1.py</code> in <code>evidence/</code> is a transcription of <code>apr_md5_encode()</code>, read from
+<code>apr_md5.c:504-666</code> fetched from <code>apache/apr</code> trunk, with per-line references in
+its own comments. Its correctness is pinned against <code>openssl passwd -apr1</code>, not
+against a second copy of itself:</p>
+<pre><code>$ for pw in password chocolate hunter2 &quot;&quot; &quot;ñÁÉ&quot; a &quot;xxxxxxxx...(80)&quot;; do
+    a=$(python3 apr1.py &quot;$pw&quot; xsEqxRe4); b=$(openssl passwd -apr1 -salt xsEqxRe4 &quot;$pw&quot;)
+    echo &quot;match=$([ &quot;$a&quot; = &quot;$b&quot; ] &amp;&amp; echo YES || echo NO)&quot;; done
+match=YES   (x7, including the empty password and an 80-byte password)
+</code></pre>
+<p>Rate, 400 candidates per measurement, same process, same loop:</p>
+<pre><code>apr1:      candidates=400 elapsed=0.112s rate=3577.4/s
+1x md5:    candidates=400 elapsed=0.000s rate=3263628.2/s
+ratio apr1/1x-md5 = 912.3
+</code></pre>
+<p>Recomputed by hand from the rounded figures: <code>400 / 0.112 = 3571.4/s</code> for apr1
+(the harness prints 3577.4 from an unrounded <code>perf_counter</code>), and
+<code>3,263,628.2 / 3,577.4 = 912.3</code>. The apr1 iteration count in
+<code>apr_md5_encode()</code> is <strong>1000</strong> (<code>apr_md5.c:617</code>), so a ratio of ~912 against a
+single MD5 on the same inputs is the signature of <strong>the KDF executing</strong>. If the
+hash function had been silently skipped or reduced to one MD5, this ratio would
+be ≈1 and the apr1 rate ≈3.3 M/s. It is 3,577/s, three orders of magnitude
+slower. Both directions asserted: the KDF is not running at 3.3 M/s, and it is
+not running 1,000× slower than it should.</p>
+<p><strong>Route B, by the same measure, has a rate of <em>zero</em> candidate evaluations per
+full sweep, because there is nothing to crack.</strong> That is the discriminator in
+rate terms, and it is the reason the two routes cannot be one finding.</p>
+<h3 id="in-band-the-kdf-ran-on-82674-requests-and-apache-says-so-itself">In-band: the KDF ran on 82,674 requests, and Apache says so itself</h3>
+<p><code>mod_auth_basic</code> emits two different message codes, and the difference is
+exactly whether <code>mod_authn_file</code> reached the apr1 comparison:</p>
+<pre><code>AH01617: user httpadmin: authentication failure for &quot;/login.php&quot;: Password Mismatch
+AH01618: user admin not found: /login.php
+</code></pre>
+<p><code>AH01617</code> can only be emitted after the user was located <strong>and</strong> apr1 was
+evaluated <strong>and</strong> returned false. <code>AH01618</code> is returned before the KDF. So the
+error log is an oracle that fires only when the KDF ran — which is stronger
+evidence than any timing measurement, and it is the server's own count.</p>
+<pre><code>$ grep -c &quot;AH01617: user httpadmin:&quot; /var/log/apache2/error.log
+82674
+</code></pre>
+<p><strong>82,674 KDF executions, all false.</strong> Server-side, independent of my client's
+bookkeeping. (Captured before the stage-9 restore, which resets the log — the
+transcript and the exact command are in
+<code>evidence/server-side-capture-pre-restore.txt</code>.)</p>
+<h3 id="the-ladder-against-a-latency-baseline">The ladder, against a latency baseline</h3>
+<p>Own harness rather than hydra: hydra's <code>-W</code>/<code>-T</code> is exactly the instrument that
+produced lab 118's false negative, where the operator's own throttle read as
+the target's filter. The ladder is therefore run with no client-side rate limit
+at all, one keep-alive connection per worker, and a full status histogram per
+rung so a block shows up as a <em>status change</em> and is never inferred from a
+slowdown. The partition of candidates across workers is exact, asserted
+non-overlapping and gap-free, and any rung that fills fewer slots <strong>aborts the
+ladder</strong> instead of printing a rate.</p>
+<p><strong>Route A</strong> (<code>evidence/final_basic.out</code>):</p>
+<pre><code>BASELINE serial keep-alive candidates=120 elapsed=0.024s achieved=4963.1 cand/s median=0.0002s p95=0.0004s status={401: 120} oracle-hits=0
+RUNG workers=64   candidates=20000 elapsed=1.322s achieved= 15126.2 cand/s status={401: 20000} bytes={457: 20000} median_latency=0.0005s hits=0
+RUNG workers=128  candidates=20000 elapsed=1.488s achieved= 13444.2 cand/s status={401: 20000} bytes={457: 20000} median_latency=0.0008s hits=0
+RUNG workers=256  candidates=20000 elapsed=1.575s achieved= 12700.1 cand/s status={401: 20000} bytes={457: 20000} median_latency=0.0014s hits=0
+</code></pre>
+<p><strong>Route B</strong>, behind the gate (<code>evidence/final_form.out</code>):</p>
+<pre><code>BASELINE serial keep-alive candidates=120 elapsed=0.069s achieved=1728.8 cand/s median=0.0004s p95=0.0017s status={200: 120} oracle-hits=0
+RUNG workers=64   candidates=20000 elapsed=2.258s achieved=  8858.5 cand/s status={200: 20000} bytes={2866: 20000} median_latency=0.0032s hits=0
+RUNG workers=128  candidates=20000 elapsed=2.462s achieved=  8123.1 cand/s status={200: 20000} bytes={2866: 20000} median_latency=0.0032s hits=0
+RUNG workers=256  candidates=20000 elapsed=2.619s achieved=  7635.9 cand/s status={200: 20000} bytes={2866: 20000} median_latency=0.0047s hits=0
+</code></pre>
+<p>A ten-rung ladder over both routes is in <code>evidence/ladder2_basic.out</code> and
+<code>evidence/ladder4_form_gated.out</code>. Across every rung of both, <strong>the status
+histogram is a single key</strong> — <code>{401: N}</code> on route A, <code>{200: N}</code> on route B — and
+the byte count is a single value. No <code>429</code>, no <code>403</code>, no <code>Retry-After</code>, no
+latency cliff.</p>
+<p>Arithmetic, recomputed rather than read: <code>20,000 / 1.322 = 15,128.6 cand/s</code>
+(harness prints 15,126.2 from an unrounded timer; 0.02% apart) and
+<code>20,000 / 2.258 = 8,857.4 cand/s</code> (harness 8,858.5).</p>
+<h3 id="the-rate-does-not-discriminate-the-two-routes--stated-because-it-is-counter-intuitive">The rate does not discriminate the two routes — stated because it is counter-intuitive</h3>
+<p><code>15,126.2 / 8,858.5 = 1.71</code>. Route A is <strong>1.7× faster in band</strong> than route B,
+despite running a KDF and route B running none. Route B pays PHP interpreter
+start-up per request, which costs more than apr1's ~0.1 ms. <strong>An in-band rate
+ladder cannot tell these two routes apart</strong>, and a report that leaned on rate as
+the discriminator would have been wrong. The discriminator is the store.</p>
+<h3 id="the-rate-budget-on-port-22-evidencessh_balutinout">The rate budget on port 22 (<code>evidence/ssh_balutin.out</code>)</h3>
+<pre><code>RUNG workers=1   attempts=60   elapsed=162.92s achieved=  0.37 attempts/s outcomes={'auth-fail': 60}                        median_latency=2.687s
+RUNG workers=2   attempts=60   elapsed=83.65s  achieved=  0.72 attempts/s outcomes={'auth-fail': 60}                        median_latency=2.689s
+RUNG workers=4   attempts=60   elapsed=43.37s  achieved=  1.38 attempts/s outcomes={'auth-fail': 60}                        median_latency=2.711s
+RUNG workers=8   attempts=60   elapsed=26.90s  achieved=  2.23 attempts/s outcomes={'auth-fail': 55, 'ERR:SSHException': 5}   median_latency=2.697s
+RUNG workers=16  attempts=60   elapsed=10.88s  achieved=  5.52 attempts/s outcomes={'auth-fail': 48, 'ERR:SSHException': 12}  median_latency=2.689s
+RUNG workers=32  attempts=60   elapsed=8.16s   achieved=  7.35 attempts/s outcomes={'auth-fail': 40, 'ERR:SSHException': 20}  median_latency=2.714s
+</code></pre>
+<p><strong>Median latency is flat at 2.687–2.714 s across a 32× change in concurrency.</strong>
+A throttle would move; this does not. The achieved rate scales linearly
+(0.37 × 32 = 11.8 predicted vs 7.35 measured, the shortfall being pre-auth
+drops), which is the signature of a per-candidate CPU cost and nothing else.
+There is no lockout: <code>sshd_config</code> has <code>MaxAuthTries</code>, <code>MaxStartups</code> and
+<code>LoginGraceTime</code> <strong>all commented out</strong>, <code>/etc/ssh/sshd_config.d/</code> is <strong>empty</strong>,
+and <code>UsePAM yes</code> is the only auth-related line set. The <code>ERR:SSHException</code>
+entries are pre-auth connection drops (<code>Error reading SSH protocol banner</code> /
+<code>Connection reset by peer</code>) — the default <code>MaxStartups 10:30:100</code> shedding load
+on <em>concurrency</em>, which is a resource limit and <strong>not</strong> an authentication filter:
+the attempts that survive still authenticate and still fail on the password.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>No chain closes on this lab. The identity measurements below are the whole
+chain, because the point of this engagement is the credential store, not a
+traversal.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>—</td>
+<td>operator host</td>
+<td>—</td>
+<td><code>uid=1000([operator-account]) gid=1000([operator-account]) groups=1000([operator-account]),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),100(users),101(lxd),107(docker),1001(docs_tthh),1002(docs_ti),1003(docs_financiero),1004(docs_general),1005(docs_clasificador)</code></td>
+</tr>
+<tr>
+<td>0</td>
+<td><code>docker exec</code> into container</td>
+<td>default identity, <strong>root</strong></td>
+<td><code>uid=0(root) gid=0(root) groups=0(root)</code></td>
+</tr>
+<tr>
+<td>0</td>
+<td>Apache master</td>
+<td>starts as root</td>
+<td><code>/proc/25/status</code>: <code>Uid: 0  0  0  0</code> / <code>Gid: 0  0  0  0</code></td>
+</tr>
+<tr>
+<td>0</td>
+<td><strong>Apache worker (per request)</strong></td>
+<td>prefork drops privileges</td>
+<td><code>/proc/186/status</code>: <code>Uid: 33  33  33  33</code>; <code>/proc/187</code>, <code>/proc/240</code>, <code>/proc/241</code>, <code>/proc/258</code> all <code>33 33 33 33</code></td>
+</tr>
+<tr>
+<td>0</td>
+<td>the identity <code>mod_authn_file</code> and PHP run as</td>
+<td><code>www-data</code></td>
+<td><code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></td>
+</tr>
+<tr>
+<td>0</td>
+<td>the only non-system account</td>
+<td><code>balutin</code></td>
+<td><code>uid=1000(balutin) gid=1000(balutin) groups=1000(balutin),100(users)</code></td>
+</tr>
+<tr>
+<td>0</td>
+<td>container capability set</td>
+<td>Docker default, not privileged</td>
+<td><code>CapEff: 00000000a80425fb</code> = Docker default (14 caps: <code>CHOWN DAC_OVERRIDE FOWNER FSETID KILL SETGID SETUID SETPCAP NET_BIND_SERVICE NET_RAW SYS_CHROOT MKNOD AUDIT_WRITE SETFCAP</code>), ≠ privileged <code>0x1ffffffffff</code>; <code>Seccomp: 2</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>There is no setuid transition anywhere in this engagement</strong>, and the claim is
+backed by the full inventory rather than by an absence of mentions. All 14
+setuid/setgid binaries, mode read with <code>stat</code> (<strong>not</strong> the <code>ls -l</code> size column,
+which lab 83 mistook for a mode):</p>
+<pre><code>2755 root:shadow      /usr/bin/chage
+4755 root:root        /usr/bin/chfn
+4755 root:root        /usr/bin/chsh
+2755 root:shadow      /usr/sbin/expiry
+4755 root:root        /usr/bin/gpasswd
+4755 root:root        /usr/bin/mount
+4755 root:root        /usr/bin/newgrp
+4755 root:root        /usr/bin/passwd
+2755 root:_ssh        /usr/bin/ssh-agent
+4755 root:root        /usr/bin/su
+4755 root:root        /usr/bin/umount
+4754 root:messagebus  /usr/lib/dbus-1.0/dbus-daemon-launch-helper
+4755 root:root        /usr/lib/openssh/ssh-keysign
+2755 root:shadow      /usr/sbin/unix_chkpwd
+</code></pre>
+<p>Every one is stock Debian; <code>getcap -r /</code> returns empty; and none was reached,
+because no non-root identity can write anything on its path — measured with two
+independent tools, below.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="f1--http-basic-auth-on-the-whole-docroot-no-rate-budget--cwe-307-improper-restriction-of-excessive-authentication-attempts">F1 — HTTP Basic auth on the whole docroot, no rate budget — CWE-307 (Improper Restriction of Excessive Authentication Attempts)</h3>
+<p><code>.htaccess:1-4</code> puts every file under <code>/var/www/html/</code> behind
+<code>AuthType Basic</code> + <code>Require valid-user</code>, and nothing counts attempts.</p>
+<p><strong>Evidence.</strong> 82,674 server-side <code>AH01617</code> KDF evaluations for <code>httpadmin</code>, all
+false. 20,000 candidates in a single rung at <strong>15,126.2 cand/s</strong> (<code>20,000 / 1.322 s</code>), <code>status={401: 20000}</code>, <code>bytes={457: 20000}</code> — one status, one byte
+count, 20,000 times. No <code>429</code>, no <code>403</code>, no <code>Retry-After</code> header, no latency
+cliff at any of ten concurrency rungs from 1 to 512.</p>
+<p><strong>No rate budget, proven from configuration and from measurement</strong> — both, so
+neither can be the only evidence:</p>
+<table>
+<thead>
+<tr>
+<th>Mechanism</th>
+<th>State</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fail2ban</code></td>
+<td><code>which fail2ban-client</code> → absent; <code>/etc/fail2ban</code> → <code>No such file or directory</code></td>
+</tr>
+<tr>
+<td>host firewall</td>
+<td><code>iptables: command not found</code></td>
+</tr>
+<tr>
+<td><code>mod_evasive</code></td>
+<td>not in <code>mods-enabled/</code>; not loaded (<code>apache2ctl -M | grep -Ei &quot;auth|limit|evasive|throttle&quot;</code> → <code>auth_basic_module</code>, <code>authn_core_module</code>, <code>authn_file_module</code>, <code>authz_core_module</code>, <code>authz_host_module</code>, <code>authz_user_module</code> only)</td>
+</tr>
+<tr>
+<td><code>mod_ratelimit</code></td>
+<td>present in <code>mods-available/ratelimit.load</code>, <strong>not enabled</strong> in <code>mods-enabled/</code></td>
+</tr>
+<tr>
+<td><code>mod_security</code></td>
+<td>not loaded</td>
+</tr>
+<tr>
+<td>application-level lockout</td>
+<td><code>.htaccess</code> has no counter and no database</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Root cause.</strong> <code>mod_authn_file</code> is a stateless comparator. Nothing in the
+shipped configuration accumulates failures, and Apache ships with no
+out-of-the-box brute-force defence. <code>mod_ratelimit</code> — the one module that could
+have bounded throughput — is available in the image and simply not enabled,
+which is worth saying to a client: the fix is a configuration line, not a
+package.</p>
+<p><strong>Impact.</strong> Full docroot read at 15 k candidates/second with a single account
+guessed from any wordlist. <code>httpadmin</code> is a web-only principal (absent from
+<code>/etc/passwd</code>), so its compromise is bounded by what the docroot exposes —
+which, per F2, is everything including a database.</p>
+<p><strong>Remediation.</strong> Enable <code>fail2ban</code> with an <code>apache-auth</code> jail, or enable
+<code>mod_ratelimit</code>/<code>mod_evasive</code> at the vhost. Move off apr1: <code>$apr1$</code> is MD5 with
+1000 rounds and 8 characters of salt, and it is the format <code>htpasswd -B</code> exists
+to replace — bcrypt via <code>htpasswd -B</code>. Rotate <code>httpadmin</code>. Delete
+<code>crear_db.php</code> (F2).</p>
+<h3 id="f2--the-credential-store-is-downloadable-over-http--cwe-538-insertion-of-sensitive-information-into-externally-accessible-file--cwe-312-cleartext-storage-of-sensitive-information">F2 — The credential store is downloadable over HTTP — CWE-538 (Insertion of Sensitive Information into Externally-Accessible File) / CWE-312 (Cleartext Storage of Sensitive Information)</h3>
+<p>Both files that hold or disclose a credential sit <strong>inside the document root</strong>
+and are served verbatim. Measured, behind the gate:</p>
+<pre><code>$ curl -u &quot;&lt;gate&gt;&quot; -D - http://[net-0-3]/crear_db.php
+HTTP/1.1 200 OK
+Content-Length: 64
+Content-Type: text/html; charset=UTF-8
+
+Base de datos creada con usuario admin y contraseña chocolate.
+
+$ curl -u &quot;&lt;gate&gt;&quot; -o dl.db -w 'code=%{http_code} bytes=%{size_download}\n' http://[net-0-3]/database.db
+code=200 bytes=8192
+
+$ python3 -c &quot;import sqlite3; c=sqlite3.connect('dl.db'); print(c.execute('select sql from sqlite_master where name=\&quot;usuarios\&quot;').fetchone()[0]);
+             [print(r) for r in c.execute('select rowid,username,password,length(password),typeof(password) from usuarios')]&quot;
+CREATE TABLE usuarios (username TEXT, password TEXT)
+(1, 'admin', 'chocolate', 9, 'text')
+</code></pre>
+<p>The 8,192-byte SQLite file downloads intact; the recovered copy in
+<code>evidence/dl.db</code> opens and yields the row. <code>strings -a</code> on it reads
+<code>adminchocolate</code> as one literal.</p>
+<p><strong>This is what makes route B not a brute force at all.</strong> The catalogue promises
+a second brute-force form; an attacker who gets past F1 does not brute force it,
+they download the store, or they <code>GET /crear_db.php</code> and read the credential out
+of the response body. Both routes of obtaining <code>admin</code>'s password were measured.</p>
+<p><strong>Root cause.</strong> <code>database.db</code> — the live credential store — was created inside
+the document root (<code>$db = new SQLite3('database.db')</code>, resolved relative to the
+script at <code>crear_db.php:2</code> and <code>login.php:8</code>), and the setup script that
+discloses the password was deployed alongside it.</p>
+<p><strong>Remediation.</strong> Move both outside the docroot; <code>database.db</code> to <code>/var/lib/</code> with
+<code>640 www-data:www-data</code>; delete <code>crear_db.php</code> from the image, not just
+chmod it, since its whole function is to print the credential.</p>
+<h3 id="f3--cleartext-password-storage-no-kdf-no-salt--cwe-256-plaintext-storage-of-a-password">F3 — Cleartext password storage, no KDF, no salt — CWE-256 (Plaintext Storage of a Password)</h3>
+<p><code>login.php:9</code> binds the submitted password as a SQL parameter and compares it to
+the stored column; <code>usuarios</code> has two <code>TEXT</code> columns and no hash, no salt, no
+work factor. <code>typeof(password)='text'</code>, <code>length=9</code>, value <code>chocolate</code>. One row.</p>
+<p><strong>Evidence.</strong> The store's own <code>CREATE TABLE</code> statement and the row, read two
+independent ways — through the container's PHP (<code>row 1 user=admin pass=chocolate len=9</code>) and through the HTTP-downloaded copy on the host (<code>(1, 'admin', 'chocolate', 9, 'text')</code>).</p>
+<p><strong>Rate consequence, and this is the point.</strong> Route A's store costs an attacker
+3,577.4 candidate evaluations per full sweep, because every candidate must run
+apr1. <strong>Route B's store costs zero</strong>, because there is nothing to evaluate — the
+submitted string <em>is</em> the stored string. The two routes differ by a factor that
+is not a finite number.</p>
+<p><strong>Remediation.</strong> <code>password_hash($contrasena, PASSWORD_DEFAULT)</code> (bcrypt/argon2)
+and <code>password_verify()</code> on read. Never compare a submitted secret to a stored
+secret with <code>=</code>.</p>
+<h3 id="f4--username-enumeration-through-the-server-error-log--cwe-203-observable-discrepancy">F4 — Username enumeration through the server error log — CWE-203 (Observable Discrepancy)</h3>
+<p><code>mod_auth_basic</code> distinguishes AH01617 (user found, password mismatch) from
+AH01618 (user not found) <strong>in <code>/var/log/apache2/error.log</code></strong>, which is written at
+the stock <code>LogLevel</code> and readable by anyone in group <code>adm</code>
+(<code>-rw-r----- 1 root adm 640</code>). Over 82,674 of my requests:</p>
+<pre><code>$ grep -oE &quot;AH0161[78]: [^:]*: ?&quot; /var/log/apache2/error.log | sort | uniq -c
+ 10433 AH01617: user httpadmin:      &lt;- KDF ran, result false
+   200 AH01617: user zzcontrol:
+    25 AH01618: user admin not found:
+    26 AH01618: user &lt;other&gt; not found:
+   ... 50 further distinct usernames, all AH01618
+</code></pre>
+<p>Every account in a wordlist is resolvable to &quot;exists / does not exist&quot; by anyone
+who can read the log. This is the same message that proved the KDF runs, so it
+is one artefact serving two purposes — the disclosure is in Apache's default
+logging, not in the lab's configuration.</p>
+<p><strong>It is not remotely exploitable and I am not claiming it is.</strong> Measured
+negatives, 200 requests per case: the <code>401</code> body is <strong>457 bytes and
+byte-identical</strong> for a present username, an absent username and a present
+username with a wrong password; and the timing is not separable —
+present-with-wrong-password median <strong>0.0003 s</strong>, absent-username median
+<strong>0.0002 s</strong>, present-and-correct median <strong>0.0004 s</strong>, with p10 of the
+present case (0.0002 s) equal to the absent median. A 0.1 ms difference does not
+survive jitter at 0.1 ms resolution. <strong>No usable HTTP oracle; a usable log
+oracle.</strong></p>
+<p><strong>Remediation.</strong> Do not log which stage of authentication failed — set
+<code>LogLevel auth_basic:warn</code> or higher for that module, or accept the log-side
+enumeration as an accepted risk with awareness.</p>
+<h3 id="f5--debian-apache-logs-o-so-the-access-log-size-column-includes-headers--a-measurement-trap-not-an-attacker-facing-bug">F5 — Debian Apache logs <code>%O</code>, so the access-log size column includes headers — a measurement trap, not an attacker-facing bug</h3>
+<p><code>/etc/apache2/apache2.conf:213</code>:</p>
+<pre><code>LogFormat &quot;%h %l %u %t \&quot;%r\&quot; %&gt;s %O \&quot;%{Referer}i\&quot; \&quot;%{User-Agent}i\&quot;&quot; combined
+</code></pre>
+<p>The size column is <strong><code>%O</code></strong> (bytes sent including HTTP headers), not <code>%b</code>
+(body only). Any corpus technique that discriminates by byte count — a hash of a
+normalised body, a size delta between the success and failure bodies — reads the
+log and is wrong by a constant.</p>
+<p>Measured for one request at one instant, by two independent clients:</p>
+<pre><code>python http.client : status=200  Content-Length header = 2866   len(body) = 2866
+curl              : code=200  size_download=2866  size_header=173
+/var/log/apache2/access.log              : &quot;POST /login.php HTTP/1.1&quot; 200 3039
+</code></pre>
+<p><code>3039 − 2866 = 173</code>, which is exactly curl's <code>size_header</code>. Recomputed for the
+success body: <code>3116 − 2943 = 173</code>. And for the GET:
+<code>2971 − 2798 = 173</code>. Three independent pairs, one constant.</p>
+<p>The correct in-band discriminator for route B is therefore <strong>2866 vs 2943 bytes
+off the wire</strong> — a 77-byte difference — and <em>not</em> the 3039 vs 3116 the log
+shows. Both deltas happen to survive, but only one of them is the body.</p>
+<p><strong>This is reported as a finding because it produced a confident wrong number in
+my own engagement before I caught it.</strong> It is also a live hazard for anyone
+reading these artefacts later. One residue is unresolved and is <em>not</em> guessed
+away: 357 of 76,240 POST rows (0.47%) logged <code>3058</code>, a header size of 192 —
+19 bytes more than 173, exactly <code>len(&quot;Connection: close\r\n&quot;)</code>. I did not isolate
+which client path produced it.</p>
+<h3 id="f6--the-gates-own-password-store-is-world-readable--cwe-732-incorrect-permission-assignment-for-critical-resource">F6 — The gate's own password store is world-readable — CWE-732 (Incorrect Permission Assignment for Critical Resource)</h3>
+<p><code>[lab-home]/.htpasswd</code> is <code>-rw-r--r-- 1 root root 48</code>. With the positive control that
+the mode is not a boundary for the identity that matters:</p>
+<pre><code>$ su -s /bin/bash www-data -c &quot;cat [lab-home]/.htpasswd&quot;
+httpadmin:$apr1$xsEqxRe4$Zu0KmZkwmYS6PsUgLRG0P1
+rc=0
+</code></pre>
+<p><code>www-data</code> — the identity the webserver runs as — reads the hash file, and so
+does the one non-system account. Measured as each identity, not inferred from the
+mode:</p>
+<table>
+<thead>
+<tr>
+<th>identity</th>
+<th>reads <code>[lab-home]/.htpasswd</code></th>
+<th>writes it</th>
+<th>reads <code>/var/www/html/database.db</code></th>
+<th>writes it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>root</code> (<code>uid=0</code>)</td>
+<td>YES</td>
+<td>YES</td>
+<td>YES</td>
+<td>YES</td>
+</tr>
+<tr>
+<td><code>www-data</code> (<code>uid=33</code>)</td>
+<td>YES</td>
+<td><strong>NO</strong></td>
+<td>YES</td>
+<td><strong>NO</strong></td>
+</tr>
+<tr>
+<td><code>balutin</code> (<code>uid=1000</code>)</td>
+<td>YES</td>
+<td><strong>NO</strong></td>
+<td>YES</td>
+<td><strong>NO</strong></td>
+</tr>
+</tbody>
+</table>
+<p>So this is read-only disclosure, not tampering — the <code>644</code> is not a privilege
+boundary in either direction. Standard <code>htpasswd</code> practice is
+<code>640 root:www-data</code>.</p>
+<p>The same table covers the SQLite store (<code>-rw-r--r-- 1 root root</code>), and there the
+disclosure is complete rather than partial — see F2.</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<p>Each control is paired with the positive control that proves its detector can
+fire. A control that has never reported a success is not a control, so the
+positive ran <strong>before</strong> each negative and, where the oracle is cheap, <strong>after</strong> it
+as well.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Held?</th>
+<th>Positive control that proves this detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HTTP Basic gate over the whole docroot</td>
+<td><strong>yes</strong></td>
+<td><code>curl -u httpadmin:wrong</code> → <code>401</code>, 457 B, <code>WWW-Authenticate: Basic realm=&quot;Zona restringida&quot;</code>; the correct-credential probe below returns <code>200</code>, 2798 B</td>
+</tr>
+<tr>
+<td><code>AllowOverride All</code> is real, not decorative</td>
+<td>yes</td>
+<td>the gate fires on 5 of 8 probed paths with a consistent <code>401</code>+<code>WWW-Authenticate</code> pair, and the 3 <code>403</code>s are explained by <code>Files</code>/autoindex rules, not by the authz gate</td>
+</tr>
+<tr>
+<td>Apache does not enumerate usernames over HTTP</td>
+<td>yes</td>
+<td>3 cases × 200 requests: present+wrong, absent, present+correct. Bodies 457/457/457 <strong>byte-identical</strong>; medians 0.0003/0.0002/0.0004 s — not separable</td>
+</tr>
+<tr>
+<td><code>mod_status</code> is restricted</td>
+<td>yes</td>
+<td><code>GET /server-status</code> → <code>403</code>, <code>AH01630: client denied by server configuration</code></td>
+</tr>
+<tr>
+<td>dotfiles are not served</td>
+<td>yes</td>
+<td><code>GET /.htaccess</code> → <code>403</code>, <code>AH01630</code> — the gate config is not itself readable</td>
+</tr>
+<tr>
+<td><code>login.php</code>'s query is parameterised — <strong>no SQLi</strong></td>
+<td>yes</td>
+<td>control fired <strong>twice</strong>, before and after: <code>admin</code>/<code>chocolate</code> → <code>200</code>, 2943 B, <code>alert-success</code> <strong>both times</strong>. Between them, 5 injection payloads all → <code>200</code>, 2866 B, <code>alert-danger</code>: <code>' OR 1=1-- </code> on username, on password, <code>admin' OR '1'='1</code>, <code>' UNION SELECT 1,2-- </code>, and <code>chocolate'</code>. Bracketing the negatives with two firings of the oracle is stronger than one</td>
+</tr>
+<tr>
+<td>No non-root identity can write any file on a privilege path</td>
+<td>yes</td>
+<td>two independent tools, disagreeing is the point: <code>find / -xdev -type f -writable | wc -l</code> → <strong>12275</strong> (run as root, therefore meaningless — see defects), while <code>test -w</code> run <em>as</em> each identity says <code>NO</code> for <code>/etc/passwd</code>, <code>/etc/shadow</code>, <code>[lab-home]/.htpasswd</code>, <code>/var/www/html/database.db</code>, <code>login.php</code>, <code>.htaccess</code>, <code>apache2.conf</code>. Filtering the root-run <code>find</code> by non-root owner yields only <strong>4</strong> files, all of them <code>[lab-home]/balutin</code>'s own dotfiles</td>
+</tr>
+<tr>
+<td>Container is not privileged and exposes no socket</td>
+<td>yes</td>
+<td><code>Privileged=false CapAdd=[] SecurityOpt=[]</code>; <code>CapEff=00000000a80425fb</code> = Docker default; <code>ls /var/run/docker.sock</code> → absent. <strong>Contrast lab 141</strong>, where the socket was exposed and a container <em>with</em> the socket was the positive control</td>
+</tr>
+<tr>
+<td>No setuid-to-root path</td>
+<td>yes</td>
+<td><code>find / -xdev -type f -perm -4000 | wc -l</code> → <strong>10</strong>, all enumerated by <code>stat</code> above, all stock, none with a non-root-writable parent; <code>getcap -r /</code> → empty</td>
+</tr>
+<tr>
+<td>The archive is not holding a secret</td>
+<td>yes</td>
+<td><code>docker history --no-trunc</code> → 3 rows, one <code>bash</code> squash layer of 230 MB plus a <code>debian.sh</code> base layer; no <code>chpasswd</code>, no credential</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-two-credential-store-oracles-proved-green">The two credential-store oracles, proved green</h3>
+<p><strong>Route A</strong> — a manufactured same-code-path positive control. An entry
+<code>zzcontrol:$apr1$ZZZctrl0$…</code> was appended to <code>[lab-home]/.htpasswd</code>, then queried
+over HTTP with that same code path (<code>mod_auth_basic</code> → <code>mod_authn_file</code> →
+<code>apr1</code>):</p>
+<pre><code>POSITIVE CONTROL status=200 bytes=2798 oracle_fires=True
+body head: \n&lt;!DOCTYPE html&gt;\n&lt;html lang=&quot;es&quot;&gt;\n&lt;head&gt;\n    &lt;meta charset=&quot;UTF-8&quot;&gt;\n    &lt;title&gt;Login - Cr\xc3\xadtica a los Youtubers&lt;/title&gt;
+</code></pre>
+<p>and, to close the loop, the <em>same</em> store entry with a wrong password:</p>
+<pre><code>zzcontrol   /WRONG_PASSWORD_166   n=200 status={401: 200}  -&gt; KDF ran, result false
+zznosuch    /WRONG_PASSWORD_166   n=200 status={401: 200}  -&gt; mod_authn_file returned before the KDF
+zzcontrol   /zz_control_password_166 n=200 status={200: 200} -&gt; KDF ran, result true
+</code></pre>
+<p><strong>Route B</strong> — <code>admin</code>/<code>chocolate</code> against the real SQLite store, behind the gate:</p>
+<pre><code>user=admin  pass='chocolate'   status=200 bytes=2943 success=True  danger=False
+user=admin  pass='chocola'     status=200 bytes=2866 success=False danger=True
+user=admi   pass='chocolate'   status=200 bytes=2866 success=False danger=True
+user=admin  pass='chocolate '  status=200 bytes=2866 success=False danger=True
+</code></pre>
+<p><strong>Both control entries were removed and the store was byte-verified afterwards.</strong>
+This is the discipline, not a formality — the mutation is recorded here with its
+checksum:</p>
+<pre><code>before:  2b102cb638ef39066188ab952f27634fe19d81dedd2fe152ca78b5987c0599c1  [lab-home]/.htpasswd   (48 bytes, 644 root:root)
+after:   2b102cb638ef39066188ab952f27634fe19d81dedd2fe152ca78b5987c0599c1  [lab-home]/.htpasswd
+after:   c31f313852dcfc4fdc57d4fa48ca532f  /var/www/html/database.db
+after:   ls -la [lab-home]/ -&gt; .htpasswd only; no .htpasswd.bak, no .htpasswd.166bak
+</code></pre>
+<p>The round trip was performed <strong>four</strong> times (route-A oracle, timing probe, route-B
+ladder gate, <code>/crear_db.php</code> and <code>/database.db</code> retrieval) and the sha256 matched
+the shipped value every time. <code>crear_db.php</code> was executed once, deliberately: it
+runs <code>DROP TABLE IF EXISTS usuarios</code> followed by an identical <code>INSERT</code>, and
+<code>database.db</code>'s md5 is <strong>unchanged</strong> across it, so the store's <em>content</em> was
+value-preserving — stated here because a reader deserves to know the credential
+store was written to once and why it is still correct.</p>
+<hr />
+<h2 id="negatives-each-with-its-work-count">Negatives, each with its work count</h2>
+<p>Every negative below carries the count of work that produced it. <strong>A count of
+zero is UNTESTED and appears in the NOT-tested list, not here.</strong></p>
+<h3 id="httpadmins-password-was-not-recovered--759617-candidates-0-matches"><code>httpadmin</code>'s password was not recovered — 759,617 candidates, 0 matches</h3>
+<p>The shipped apr1 hash resisted every dictionary available on this host. All of
+it offline, at ~3,500 candidates/s, against the KDF this engagement proved is
+running:</p>
+<table>
+<thead>
+<tr>
+<th>Dictionary</th>
+<th>Bytes read</th>
+<th>Unique candidates</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PenTestMethodology/wordlists/Passwords.txt</code></td>
+<td>5,166,141</td>
+<td>421,445</td>
+<td>no hit</td>
+</tr>
+<tr>
+<td><code>PenTestMethodology/wordlists/sorted-passwords.txt</code></td>
+<td>1,093,766</td>
+<td>0 (fully contained in the above)</td>
+<td>no hit</td>
+</tr>
+<tr>
+<td><code>PenTestMethodology/wordlists/2025-sort-uniq-words.txt</code></td>
+<td>1,174,030</td>
+<td>125,472</td>
+<td>no hit</td>
+</tr>
+<tr>
+<td><code>/usr/share/nmap/nselib/data/passwords.lst</code></td>
+<td>40,146</td>
+<td>2,267</td>
+<td>no hit</td>
+</tr>
+<tr>
+<td><strong>subtotal</strong></td>
+<td></td>
+<td><strong>549,184</strong></td>
+<td><strong>NO HIT</strong> — <code>evidence/crack.out</code>, 170.16 s, 3,227.5 cand/s</td>
+</tr>
+<tr>
+<td>thematic list derived from the page text and the lab's own vocabulary</td>
+<td>—</td>
+<td>1,241</td>
+<td>no hit</td>
+</tr>
+<tr>
+<td>second thematic list (2-word combinations, case and suffix variants)</td>
+<td>—</td>
+<td>2,432</td>
+<td>no hit</td>
+</tr>
+<tr>
+<td>numeric range 0-99,999 + zero-padded + 7 stems × 0-999</td>
+<td>—</td>
+<td>117,007</td>
+<td>no hit</td>
+</tr>
+<tr>
+<td>suffix/prefix/case mutations of the top 6,000 of <code>Passwords.txt</code></td>
+<td>—</td>
+<td>89,753</td>
+<td>no hit</td>
+</tr>
+<tr>
+<td><strong>total</strong></td>
+<td></td>
+<td><strong>759,617</strong></td>
+<td><strong>0 matches</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Recomputed: <code>549,184 + 1,241 + 2,432 + 117,007 + 89,753 = 759,617</code>.</p>
+<p>One source of guesses came from the image itself:
+<code>/root/.local/share/nano/search_history</code>, 40 bytes, quoted verbatim —
+<code>youtube</code>, <code>solo</code>, <code>tutoriales</code>, <code>admin</code>, <code>fuerza</code> — the author's own notes.
+All five, and combinations, are in the 1,241 and 2,432 buckets. No hit.</p>
+<p><strong>So F1's impact rests on the absence of a rate budget, not on a recovered
+credential.</strong> The impact was established instead by a manufactured same-code-path
+control (<code>zzcontrol</code> → <code>200</code>), which is a control and is labelled as one: <strong>a
+control on an added entry is evidence that the oracle works; it is not a claim
+that the shipped credential was recovered.</strong> That distinction is lab 25's rule
+and it is why the summary row does not claim a credential.</p>
+<h3 id="other-measured-negatives">Other measured negatives</h3>
+<table>
+<thead>
+<tr>
+<th>Negative</th>
+<th>Work count</th>
+<th>How it is proven</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No <code>FLAG{}</code> or any <code>prefix{…}</code></td>
+<td><strong>12,275</strong> files searched at <code>euid=0</code>, <strong>6</strong> patterns (<code>FLAG{</code> <code>flag{</code> <code>CTF{</code> <code>WOPR{</code> <code>DL{</code> <code>dl{</code>), each a <code>grep -rIl -F</code>, <strong>0 hits each</strong></td>
+<td>searcher proven by <strong>3</strong> positive controls — see below</td>
+</tr>
+<tr>
+<td>No SQLi in <code>login.php</code></td>
+<td><strong>5</strong> injection payloads, all <code>200</code>/2866 B/<code>alert-danger</code></td>
+<td>oracle fired <strong>twice</strong> bracketing them, 2943 B each</td>
+</tr>
+<tr>
+<td>No HTTP username enumeration on route A</td>
+<td><strong>600</strong> requests, 3 cases × 200</td>
+<td>bodies byte-identical (457 B); medians 0.0003/0.0002/0.0004 s</td>
+</tr>
+<tr>
+<td>No rate limit on any of the three stores</td>
+<td><strong>20,000</strong> + <strong>20,000</strong> + <strong>540</strong> candidates/attempts across 10+6+6 rungs</td>
+<td>single-key status histograms; <code>grep -cE &quot;\&quot; 429 &quot;</code> → <strong>0</strong></td>
+</tr>
+<tr>
+<td>No usable HTTP timing oracle on route B</td>
+<td><strong>12,000</strong> + <strong>20,000</strong> POSTs, all identical bodies</td>
+<td><code>alert-danger</code> vs <code>alert-success</code> is a byte difference, not a time one</td>
+</tr>
+<tr>
+<td>No non-root-writable file on any privilege path</td>
+<td><code>find -writable</code> → 12,275 (as root), filtered by non-root owner → <strong>4</strong>, all <code>[lab-home]/balutin</code> dotfiles; <code>test -w</code> as <code>www-data</code> and <code>balutin</code> → <strong>NO</strong> on <strong>7</strong> of <strong>7</strong> target files</td>
+<td>two independent tools that disagree by design</td>
+</tr>
+<tr>
+<td>No escalation primitive</td>
+<td>sudo absent, cron daemon absent, <code>setuid -4000</code> = <strong>10</strong> stock binaries, <code>getcap</code> empty, no socket</td>
+<td>inventory, not absence of mentions</td>
+</tr>
+<tr>
+<td>No credential in the image build record</td>
+<td><code>docker history --no-trunc</code> → <strong>3</strong> rows</td>
+<td>full output quoted above</td>
+</tr>
+<tr>
+<td>No other listening port, UDP included</td>
+<td><code>/proc/net/tcp</code> → <strong>2</strong> sockets; <code>nmap -p-</code> → 65,535 ports scanned, 2 open</td>
+<td>both TCP and kernel table read</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-reward-search-and-its-positive-controls">The reward search, and its positive controls</h3>
+<p>Discipline first: <strong>the searcher's own corpus was searched for the pattern
+before the target was.</strong> <code>grep -rIn -- 'FLAG{\|flag{\|CTF{\|WOPR{\|DL{\|dl{'</code>
+over <code>/tmp/[tool]/166/</code> returned <strong>no output</strong> — my probe scripts, my ladder
+output and the downloaded <code>dl.db</code> do not contain the literal. Lab 168 found
+<code>FLAG{</code> in its own probe script, and lab 82 read a <code>.ui-icon-flag{</code> CSS rule as
+a hit; on a 12,275-file tree the pattern is distinctive enough that this check is
+not ceremonial.</p>
+<p>Then, at <code>euid=0</code>, the searcher was proved capable of firing <strong>three</strong> ways
+before its zero was believed:</p>
+<pre><code>-- control 1: a literal that IS on disk --
+$ grep -rIn -F &quot;Zona restringida&quot; /var/www/html/
+/var/www/html/.htaccess:2:AuthName &quot;Zona restringida&quot;
+
+-- control 2: a literal that IS in a shadow file --
+$ grep -c -F &quot;balutin&quot; /etc/shadow
+1
+
+-- control 3: a marker only I can create, created then removed --
+$ printf &quot;166_probe_marker_CONTROL\n&quot; &gt; /root/.166_control
+$ grep -rIl -F &quot;166_probe_marker_CONTROL&quot; /root
+/root/.166_control
+$ rm -f /root/.166_control
+$ grep -rIl -F &quot;166_probe_marker_CONTROL&quot; /root     # must be silent again
+(no output)
+
+-- then the negative, re-run after the marker was removed --
+FLAG{ -&gt; 0    flag{ -&gt; 0    CTF{ -&gt; 0    WOPR{ -&gt; 0    DL{ -&gt; 0    dl{ -&gt; 0
+files searched: 12275
+</code></pre>
+<p><strong>Result: no reward.</strong> Not &quot;no <code>FLAG{}</code>&quot; as a claim about the platform — a
+measured absence over 12,275 files, six patterns, at <code>euid=0</code>, with the searcher
+proven green three separate ways including a marker round-trip.</p>
+<hr />
+<h2 id="not-tested--separated-from-what-was-discarded-and-why">NOT tested — separated from what was discarded, and why</h2>
+<ul>
+<li><strong>Isolating the yescrypt cost on port 22 from the PAM and transport cost.</strong>
+Measured: 2.687–2.714 s median per attempt, flat across 32× concurrency. Not
+measured: how much of that 2.7 s is the KDF. <strong>Reason:</strong> this host has no
+yescrypt implementation to measure offline — no <code>hashcat</code>, no <code>john</code>, no
+<code>passlib</code>, and Python 3.14 has <strong>removed</strong> the <code>crypt</code> module
+(<code>ModuleNotFoundError: No module named 'crypt'</code>); the container has no
+<code>python3</code> at all. A per-user comparison was attempted instead and <strong>failed to
+attribute the difference to the KDF</strong>: <code>balutin</code> 2.691 s, absent user 2.336 s,
+<code>root</code> 1.920 s — and <code>root</code> <em>exists with a yescrypt hash</em> yet is the fastest,
+so the ordering does not follow existence. n=60 per user, with <code>MaxStartups</code>
+drops mixed in. The honest statement is the whole per-attempt cost, not the
+KDF's marginal share.</li>
+<li><strong>Whether any SSH credential exists that survives a real dictionary.</strong> Port 22
+was measured for its <strong>rate budget</strong> (the brief's question) and not cracked;
+<code>/etc/shadow</code> is <code>640 root:shadow</code> and the intended third route is not in the
+catalogue. <strong>Reason:</strong> no yescrypt cracker available (above), and a 540-attempt
+ladder is not a dictionary.</li>
+<li><strong>Identifying the 192-byte-header variant</strong> behind the 357 <code>3058</code> rows
+(0.47%). <strong>Reason:</strong> not isolated; recorded as a residue with its count in F5
+rather than guessed at. The body size is unaffected either way.</li>
+<li><strong><code>nmap -sU</code> and <code>/proc/net/udp</code> as an explicit pair.</strong> The kernel's TCP table
+was read (<code>/proc/net/tcp</code>, 2 sockets) and <code>nmap -p-</code> covered all 65,535 TCP
+ports. UDP was not enumerated directly; <strong>the claim is bounded to &quot;2 listening
+TCP sockets&quot;, not to &quot;no UDP service exists&quot;.</strong></li>
+<li><strong>Executing <code>crear_db.php</code> under concurrency</strong>, and whether the concurrent
+<code>DROP TABLE</code>/<code>INSERT</code> window can be caught mid-flight to deny route B. It was
+executed <strong>once</strong>, deliberately, with the content verified value-preserving by
+md5. Racing it was not attempted.</li>
+<li><strong>Any exploitation of F5, F6 or F4.</strong> None of them is attacker-reachable from
+outside the container without already holding F1, and the engagement's scope is
+the credential stores. <strong>Stated so a reader does not infer more than is there.</strong></li>
+</ul>
+<h3 id="discarded-with-the-reason">Discarded, with the reason</h3>
+<ul>
+<li><strong><code>docker history</code> as a credential source.</strong> Not pursued past the first read:
+three rows, one squash layer, no <code>chpasswd</code>. Unlike lab 188, there is nothing
+there. <em>Discarded on evidence, not on assumption.</em></li>
+<li><strong><code>/root/.local/share/nano/search_history</code> as a credential source rather than a
+wordlist.</strong> Used as candidates (all 5 tried, no hit), <strong>not</strong> reported as a
+disclosure finding: it is the author's editor state in an image layer, it
+contains no credential, and calling it a leak would be lab 188's mistake
+repeated.</li>
+<li><strong>Hydra as the ladder instrument.</strong> Discarded in favour of a purpose-built
+harness because <code>-W</code>/<code>-T</code> is the exact mechanism of lab 118's false negative.
+<code>hydra -V</code> confirms it is present and was not used.</li>
+</ul>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>Four of these are mine and shaped like results. Three of the four would have
+deleted or invented a finding. This is the section worth reading.</p>
+<h3 id="1-an-always-true-oracle-that-reported-100-success">1. An always-true oracle that reported 100% success</h3>
+<p>Revision 1 of the ladder harness asserted, for route A:</p>
+<pre><code class="language-python">return r.status, len(b), time.perf_counter() - t, b&quot;[response-cookie-header]&quot; in r.headers or r.status
+</code></pre>
+<p><code>r.status</code> is the integer <code>401</code> for a rejected candidate, and <code>401</code> is truthy.
+The oracle fired on <strong>600 of 600</strong> candidates and printed <code>hits=600</code>. Read
+naively that is a total compromise of the credential gate. It was caught because
+the number was implausible in the wrong direction and because the same harness's
+route-B mode used a different, correct oracle — two oracles disagreeing is the
+tell.</p>
+<p>This is <code>method/self-corrections.md</code> §6 and §1 in one shape: <strong>an oracle that
+always resolves the same way is a bias wearing the shape of an answer.</strong> The fix
+was a strict predicate (<code>r.status == 200</code>) <em>and</em> a manufactured positive control
+run before any negative was believed — which is the only reason the negative is
+worth anything.</p>
+<h3 id="2-a-partition-that-overlapped-left-holes-and-then-reported-a-candidate-count-anyway">2. A partition that overlapped, left holes, and then reported a candidate count anyway</h3>
+<pre><code class="language-python">for a, b in ((w, w + (n // workers + 1)) for w in range(0, n, max(1, n // workers)))
+</code></pre>
+<p>with <code>step = max(1, n // workers)</code> and <code>width = n // workers + 1</code>. For
+<code>n=1200, workers=64</code> that is <code>step=18, width=19</code> — 67 chunks of 19 covering
+[0, 670) for 1,200 slots: <strong>overlapping and gapped simultaneously.</strong> And the
+function returned <code>len(out)</code> as the work count, where <code>out</code> was a list
+pre-filled with <code>n</code> <code>None</code>s, so <code>done</code> was <strong><code>n</code> by construction</strong> regardless of
+how many slots were actually filled. The reported &quot;candidates=1200&quot; was fiction
+at every worker count above 4, and the rate derived from it was an upper bound of
+unknown tightness.</p>
+<p>Fixed by an exact partition with an assertion that fails loudly:</p>
+<pre><code class="language-python">step = -(-n // w)
+parts = [list(range(i, min(i + step, n))) for i in range(0, n, step)]
+flat = [i for p in parts for i in p]
+assert sorted(flat) == list(range(n)) and len(flat) == len(set(flat)) == n
+</code></pre>
+<p>…plus <code>assert len(vals) == N</code> on the filled results, so a rung that does less
+work than it claims <strong>aborts the ladder</strong> instead of printing a rate. That
+assertion then fired for real on the first keep-alive revision's port exhaustion
+(item 4) rather than letting a fake number through.</p>
+<h3 id="3-route-b-measured-12000-times-and-did-zero-work">3. Route B measured 12,000 times and did zero work</h3>
+<p>The first route-B ladder sent <code>POST /login.php</code> with <strong>no</strong> Basic credential.
+Every rung reported <code>status={401: 1200}</code>, <code>hits=0</code> — a clean, quiet, entirely
+uninformative negative, of exactly the family <code>method/self-corrections.md</code> §14
+catalogue. The tell was <strong>the byte count</strong>: 457 bytes, not 2866. 457 is Apache's
+stock 401 page. <strong>PHP never executed once across 12,000 requests.</strong></p>
+<p>Under <code>method/self-corrections.md</code> §14 that negative is not a negative at all; it
+is zero work and belongs in NOT-tested. Had the harness only asserted on status
+code, this would have been filed as &quot;the login form resists 12,000 candidates&quot;,
+which is a claim about a class wearing the clothes of a claim about an instance.</p>
+<p>Fixed by gating route B and by making the ladder report a <strong>byte histogram per
+rung</strong>, so a response that never reached the sink is visible as a byte count
+rather than inferred. <code>457 = Apache, 2866/2943 = login.php</code> is now the first
+thing every route-B number is checked against.</p>
+<h3 id="4-host-port-exhaustion-which-reads-exactly-like-a-target-refusal">4. Host port exhaustion, which reads exactly like a target refusal</h3>
+<p>After ~22,500 connections (revisions 1–3 each opened a fresh TCP connection per
+candidate), the <strong>operator's host</strong> ran out of ephemeral ports and every worker
+above 4 raised:</p>
+<pre><code>OSError: [Errno 99] Cannot assign requested address
+</code></pre>
+<p><code>ss -s</code> at that moment: <code>TCP: 28393 (timewait 28261)</code> against
+<code>/proc/sys/net/ipv4/ip_local_port_range</code> = <code>32768 60999</code> — 28,232 ports,
+28,261 sockets in <code>TIME_WAIT</code>. <strong>The instrument failed, not the target.</strong> Read
+as a target result it says &quot;the host refuses concurrent authentication at
+workers≥8&quot;, which would have become a finding about the target that is entirely
+about the laptop.</p>
+<p>Fixed by one keep-alive connection per worker — which is also what a real
+credential-attack tool does, and which is why the final numbers (15,126.2 cand/s)
+are 4× the earlier ones (3,836 cand/s) for the same target: <strong>removing the
+TCP-setup cost from my own harness changed the measured rate by a factor of four.</strong>
+Any rate figure from a connection-per-candidate harness is a measurement of the
+harness.</p>
+<h3 id="5-the-summarising-docker-logs-wrapper">5. The summarising <code>docker logs</code> wrapper</h3>
+<p><code>docker logs influencerhate_container</code> returned a summary and nothing else:</p>
+<pre><code>Log Summary
+   [error] 0 errors (0 unique)
+   [warn] 0 warnings (0 unique)
+   [info] 0 info messages
+</code></pre>
+<p>The container was, at that moment, writing thousands of <code>AH01617</code> lines a second
+into its error log — the line my entire KDF-running proof depends on. The
+wrapper is <code>method/self-corrections.md</code> §7: a container-management wrapper is a
+filter, and a filter is an instrument. Reading the raw stream with
+<code>PATH=/usr/bin:/bin docker logs</code> produced the real two lines. Every log read in
+this writeup was taken from the file inside the container, not through the
+wrapper.</p>
+<h3 id="6-grep-429-on-a-rate-limit-hunt-matched-559-timestamps">6. <code>grep 429</code> on a rate-limit hunt matched 559 timestamps</h3>
+<p>Not a target property — a defect in my own reasoning, recorded because it is the
+exact shape the corpus keeps producing. Searching for rate limiting:</p>
+<pre><code>$ grep -ciE &quot;429|too many|locked out|limit|MaxStartups|dropping&quot; /var/log/apache2/error.log
+559
+</code></pre>
+<p>Decomposed: <code>429</code> → 559; <code>too many</code> → 0; <code>locked out</code> → 0; <code>limit</code> → 0;
+<code>MaxStartups</code> → 0; <code>dropping</code> → 0. The lines:</p>
+<pre><code>[Thu Oct 01 00:11:34.424299 2026] [auth_basic:error] [pid 32:tid 32] [client [net-0-1]:55540] AH01617: user httpadmin: authentication failure for &quot;/login.php&quot;: Password Mismatch
+[Thu Oct 01 00:11:34.429072 2026] [auth_basic:error] [pid 30:tid 30] [client [net-0-1]:55772] AH01617: user httpadmin: authentication failure for &quot;/login.php&quot;: Password Mismatch
+</code></pre>
+<p>Every match was the digits <code>429</code> inside the <strong>microsecond field of the
+timestamp</strong>. Corrected checks: <code>grep -cE &quot;\b429\b&quot;</code> → <strong>0</strong>,
+<code>grep -cE &quot;\&quot; 429 &quot; /var/log/apache2/access.log</code> → <strong>0</strong>. <strong>A timestamp fraction
+is not a status code.</strong> Read as a sweep result, this would have been filed as
+&quot;559 rate-limit events observed&quot; on a host that has no rate limiter at all —
+i.e. it would have <em>manufactured the control</em> that my no-rate-budget finding
+denies.</p>
+<h3 id="7-find--writable-as-root-and-faillog-beside-492-real-failures">7. <code>find -writable</code> as root, and <code>faillog</code> beside 492 real failures</h3>
+<p>Two tools in this engagement answered a question they were not asked.</p>
+<p><code>find / -xdev -type f -writable | wc -l</code> → <strong>12,275</strong>, run through <code>docker exec</code>
+as root. Every file root can write is &quot;writable&quot;, so the number is a fact about
+root, not about the target. Cross-checked with <code>test -w</code> run as the identity
+whose capability actually matters — <code>www-data</code> and <code>balutin</code> — which answered
+<strong><code>NO</code></strong> on 7 of 7 target files. <code>find -writable</code> is not even busybox here
+(<code>rc=0</code>, and it did read something), so this is <code>method/self-corrections.md</code> §2
+without the §11 excuse: the predicate was correct, the identity was wrong.</p>
+<p><code>faillog -a</code>, same instant as a <code>btmp</code> holding <strong>492</strong> failure records:</p>
+<pre><code>Login       Failures Maximum Latest                   On
+root            0        0   01/01/70 00:00:00 +0000
+balutin         0        0   01/01/70 00:00:00 +0000
+</code></pre>
+<p><code>/var/log/faillog</code> is <strong>0 bytes</strong>; <code>last -b</code> prints <strong>0</strong> lines; <code>/var/log/wtmp</code>
+is <strong>0 bytes</strong>; and there is no <code>/var/log/auth.log</code> and no journald. So the
+492-record <code>btmp</code> is the <em>only</em> readable failed-login accounting on this host,
+and the tool a reader would reach for first reports zero. That is
+<code>method/self-corrections.md</code> §16 — a tool reporting nothing beside data that
+exists. It is also F-adjacent as a <em>defensive</em> gap: <strong>an operator attacking port
+22 here leaves exactly one audit trail, and the conventional one is absent.</strong></p>
+<h3 id="8-a-first-apr1-implementation-that-did-not-match-twice">8. A first apr1 implementation that did not match, twice</h3>
+<p>Worth one line each, because both times the mismatch was caught by an external
+oracle rather than by inspection. The first transcription of <code>apr_md5_encode()</code>
+used <code>md5(pw || &quot;$apr1$&quot; || salt || pw)</code> for the inner digest; the second got
+the 1000-iteration loop's update order right but still had the magic string in
+the wrong place. Both produced well-formed 22-character <code>$apr1$</code> strings that
+matched <strong>nothing</strong>. They were caught because the check was
+<code>openssl passwd -apr1</code> — a <em>different</em> implementation — rather than a second run
+of my own code. The final transcription is pinned with line references into
+<code>apr_md5.c</code> and matches <code>openssl</code> on <strong>7 of 7</strong> cases including the empty
+password and an 80-byte password.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>None.</strong> No <code>FLAG{}</code>, and no <code>prefix{…}</code> token of any format.</p>
+<p>The search that establishes it: <strong>12,275</strong> regular files at <code>euid=0</code>, six
+patterns (<code>FLAG{</code>, <code>flag{</code>, <code>CTF{</code>, <code>WOPR{</code>, <code>DL{</code>, <code>dl{</code>), each searched with
+<code>grep -rIl -F</code>, <strong>0 files matched for every pattern</strong>. The searcher's own corpus
+was searched for the same patterns first and was clean, so no hit is my own
+artefact. The searcher was proven capable of firing three ways beforehand,
+including a marker file created at <code>/root/.166_control</code>, found by the pattern,
+removed, and confirmed gone.</p>
+<p>Per <code>corpus/INDEX.md</code>, the <code>FLAG{}</code> column is the single source for this
+question; no position is claimed in any sequence.</p>
+<hr />
+<h2 id="lab-design-observation">Lab-design observation</h2>
+<p>The lab is well-constructed as two separate credential stores and it is
+<strong>broken as two brute-force challenges</strong>, for a reason worth recording:</p>
+<ol>
+<li><strong>Route B's &quot;brute force&quot; is unnecessary and the lab ships the answer.</strong> The
+password is in cleartext in <code>crear_db.php:6</code>, in cleartext in the database
+row, and <code>GET /crear_db.php</code> and <code>GET /database.db</code> both serve it over HTTP
+behind the gate. The only <em>forced</em> work in the whole lab is route A, whose
+password resisted 759,617 candidates here.</li>
+<li><strong>The nesting inverts the intended order.</strong> The catalogue presents route A
+then route B. But route B sits <em>behind</em> route A, and route A is the hard one.
+An attacker who solves route A by reading source never needs route B at all.
+The natural fix — remove the <code>.htaccess</code> — is the one action that makes route
+B reachable by an unauthenticated client, so the lab's own remediation
+guidance is not obvious and is not stated anywhere in the image.</li>
+<li><strong>The gate is untestable by design as shipped.</strong> <code>AllowOverride All</code> plus
+<code>AuthUserFile [lab-home]/.htpasswd</code> is a correct, working control; the defect is
+the <em>absence of a counter</em>, which is Apache's default, not a lab error. A
+solver can therefore prove F1 without ever recovering the password — which is
+the honest shape of this engagement.</li>
+</ol>
+<p>Not filed as a lab-design <em>defect</em> in the corpus's sense (112's chain cannot run,
+220's reward is unreachable): the lab runs, its advertised steps are reachable,
+and nothing about it is broken. It is a design that is stricter than its own
+description.</p>
+<hr />
+<h2 id="cross-read-against-sibling-writeups">Cross-read against sibling writeups</h2>
+<p>Per <code>method/self-corrections.md</code> §21 — a rule sampled once has not been tested —
+lab 166 agrees with and extends two siblings, and contradicts none.</p>
+<ul>
+<li><strong>Lab 243 (Duque)</strong>, whose discriminator is <em>&quot;dos bugs web, y son
+independientes&quot;</em> — tested with &quot;the admin logs in with no injection at all, so
+fixing the SQLi does not fix the other&quot;. Lab 166 applies the same test to two
+credential stores and reaches the same verdict by a different route: fixing
+<code>.htaccess</code> does not fix <code>login.php:9</code>, and vice versa. <strong>Lab 243 supplies the
+test; lab 166 extends it with a case 243 did not have — two findings that are
+independent in store but NESTED in reach</strong>, where fixing the outer one
+<em>widens</em> the inner one's exposure. That combination is not in the corpus and
+is worth a row.</li>
+<li><strong>Lab 118 (los40ladrones)</strong>, the corpus's other credential-attack row, whose
+brute force was cut short by the operator's own <code>-W 3</code>. Lab 166 reaches the
+opposite operational state — <strong>no client-side throttle at all, and still no
+target-side one</strong> — and reaches it by ladder first, so the negative cannot be
+the harness. The two are compatible: 118 documents a false negative from an
+operator's throttle, 166 documents what is left when the throttle is removed.</li>
+<li><strong>Lab 36 (Verdejo)</strong> establishes that the rate is the standing measurement for
+&quot;was the KDF running&quot;, via a yescrypt scanner that reported <code>10705.7 candidates/s</code> because it never executed <code>crypt()</code>. Lab 166 runs the same test
+in the other direction and against a <em>different</em> KDF: <code>apr1</code> at <strong>3,577.4/s</strong>
+against a single MD5 at **3,263,628.2/s`, a ratio of <strong>912.3</strong> where the
+iteration count is 1000. Both the &quot;KDF skipped&quot; signature and the &quot;KDF ran&quot;
+signature are now measured on the same harness, in one table.</li>
+<li><strong>Lab 102 (Escolares)</strong> found a login returning HTTP 200 with an error body, so
+a status-code detector reports success as failure. Lab 166 is the mirror image
+and the reason the rule generalises: <code>login.php</code> returns <strong>200 on both
+success and failure</strong> (2943 vs 2866 bytes), so a status-code detector reports
+failure as success. <strong>The transferable sentence is not &quot;watch for 200&quot; but
+&quot;a status code is not an oracle for a login form; name the body marker.&quot;</strong></li>
+<li><strong>Lab 141 (DockerLabs)</strong> is the container-security control this lab passes:
+<code>Privileged=false</code>, Docker's default <code>CapEff</code>, no socket. Recorded here so the
+contrast is on the record rather than assumed.</li>
+</ul>
+<p><strong>No sibling contradicts lab 166.</strong> Where a sibling and this lab touch the same
+rule, they agree.</p>
+<hr />
+<h2 id="restore">Restore</h2>
+<p>Stage 9: recreated from the image, not by undoing edits, and verified
+<strong>positively</strong> — the check is that the service answers and the checksums match,
+not that the command exited 0.</p>
+<pre><code>$ docker rm -f influencerhate_container &amp;&amp; docker run -d --name influencerhate_container influencerhate:latest
+$ docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' influencerhate_container
+[net-0-3]
+
+$ docker exec influencerhate_container sha256sum [lab-home]/.htpasswd
+2b102cb638ef39066188ab952f27634fe19d81dedd2fe152ca78b5987c0599c1  [lab-home]/.htpasswd     &lt;- shipped value
+$ docker exec influencerhate_container md5sum /var/www/html/database.db
+c31f313852dcfc4fdc57d4fa48ca532f  /var/www/html/database.db        &lt;- shipped value
+$ docker exec influencerhate_container ls -la [lab-home]/ /var/www/html/
+-rw-r--r-- 1 root root  48 .htpasswd        (no .bak, no .166bak, no control entry)
+drwx------ 2 balutin balutin 4096 balutin    (only the three stock dotfiles)
+
+$ curl -s -o /dev/null -w '%{http_code} %{size_download}B' http://[net-0-3]/
+401 457B                                                          &lt;- the shipped state
+$ bash -c 'exec 3&lt;&gt;/dev/tcp/[net-0-3]/22 &amp;&amp; head -1 &lt;&amp;3'
+SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u6                             &lt;- the shipped banner
+</code></pre>
+<p>Reclaimed by name only, never with a global prune: this lab's docker image and
+its extracted archive. No <code>docker system prune</code>, no <code>docker image prune -a</code>, no
+<code>docker volume prune</code> — seven <code>cybervault-*</code> containers from another project are
+running on the same host and a volume prune would destroy their databases.</p>
+<hr />
+<h2 id="feed-forward">Feed-forward</h2>
+<p>Per <code>RUNBOOK.md</code> stage 10, checked against <code>INDEX.md</code> first:</p>
+<ul>
+<li><strong>Credential attack</strong> — the class <strong>already exists</strong> (<code>RUNBOOK.md</code> §5, row
+<em>&quot;Is there a rate budget? → A ladder of rates against a latency baseline&quot;</em>).
+Lab 166 is a <strong>fresh case that the row survives</strong>, so the row is extended
+rather than a new class added. Two things the existing row does not yet say,
+which this lab measured:
+<ol>
+<li><strong>A ladder of rates does not tell you which of two web routes you are
+looking at.</strong> Route A ran a KDF at 15,126.2 cand/s and route B ran none at
+8,858.5 cand/s — route A is <em>faster</em>. The discriminator is the store, not
+the rate, and the two differ by a non-finite factor (3,577 candidate
+evaluations per sweep vs zero).</li>
+<li><strong>A ladder measured without a gate credential measures zero work.</strong> 12,000
+requests answered <code>401</code>/457 bytes and PHP never executed. A per-rung <strong>byte
+histogram</strong>, not just a status histogram, is what exposes it.</li>
+</ol>
+</li>
+<li><strong>Two web bugs that are independent but nested</strong> — lab 243's discriminator,
+extended with the nesting case. This lab shows that <em>independence of defects</em>
+and <em>parallelism of reach</em> are separate properties, and that fixing the outer
+defect can widen the inner one's exposure.</li>
+<li><strong>Platform fingerprinting / queue-entry accuracy</strong> — lab 166's headline is a
+<strong>second instance</strong> of the <code>method/self-corrections.md</code> §28 family, different
+mechanism: no acronym to expand, but the queue paraphrased the catalogue and
+changed the class of the second route from <em>brute force</em> to <em>escalation</em>.
+The existing rule covers abbreviations; this case shows the rule needs its
+sibling sentence too: <strong>compare the manifest's paraphrase against the
+catalogue's original text before believing the paraphrase.</strong></li>
+<li><strong>A new observation, with no existing row to extend</strong>: Debian bookworm's Apache
+<code>LogFormat</code> uses <code>%O</code> rather than <code>%b</code>, so the access-log size column includes
+response headers (F5). Any byte-count discriminator that reads the log is
+wrong by a constant. Small, cheap, and it bit me — worth one line in the
+retrieval-hazards table rather than a new class.</li>
+</ul>
+<p><strong>No new class.</strong> Four of the classes this lab touches already have rows, and
+duplicating them would be the failure the runbook warns about.</p>
+<hr />
+<h2 id="evidence-index">Evidence index</h2>
+<p>Everything below is in <code>corpus/166/evidence/</code>.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>server-side-capture-pre-restore.txt</code></td>
+<td>Server-side counts and log lines read from the live container <strong>before</strong> the stage-9 restore, with the exact command and the reconciliation for each. Includes the refutation of the <code>429</code> grep.</td>
+</tr>
+<tr>
+<td><code>final_basic.out</code></td>
+<td>Route A ladder, final: 3 rungs × 20,000 candidates, keep-alive. 15,126.2 cand/s peak.</td>
+</tr>
+<tr>
+<td><code>final_form.out</code></td>
+<td>Route B ladder, final, behind the gate: 3 rungs × 20,000 candidates. 8,858.5 cand/s peak.</td>
+</tr>
+<tr>
+<td><code>ladder4_form_gated.out</code></td>
+<td>Route B ten-rung ladder, workers 1→512, 1,200 candidates per rung.</td>
+</tr>
+<tr>
+<td><code>ladder2_basic.out</code></td>
+<td>Route A ten-rung ladder, workers 1→512.</td>
+</tr>
+<tr>
+<td><code>ladder_basic.out</code></td>
+<td>Route A ladder, <strong>revision 1, kept deliberately</strong> — its <code>hits=600</code> is the always-true oracle of defect 1.</td>
+</tr>
+<tr>
+<td><code>ssh_balutin.out</code></td>
+<td>Port 22 ladder, 6 rungs, 540 attempts.</td>
+</tr>
+<tr>
+<td><code>crack.out</code></td>
+<td>The 549,184-candidate offline sweep: byte counts per dictionary, total, elapsed, rate, <code>NO HIT</code>.</td>
+</tr>
+<tr>
+<td><code>apr1.py</code></td>
+<td>Transcription of <code>apr_md5_encode()</code> with per-line references into <code>apr_md5.c</code>, and the openssl cross-check.</td>
+</tr>
+<tr>
+<td><code>ladder4.py</code></td>
+<td>The final harness, whose docstring carries the three earlier defects.</td>
+</tr>
+<tr>
+<td><code>sshladder.py</code></td>
+<td>The port-22 harness. No hydra <code>-W</code>/<code>-T</code>, by construction.</td>
+</tr>
+<tr>
+<td><code>dl.db</code></td>
+<td>The 8,192-byte SQLite credential store, downloaded over HTTP from <code>GET /database.db</code>, opening to the single cleartext row.</td>
+</tr>
+</tbody>
+</table>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

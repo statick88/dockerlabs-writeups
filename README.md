@@ -8,6 +8,25 @@ happened**. The methodology repo holds **what to conclude next time**. They are
 separate on purpose: the methodology has to stay portable and citable, and the
 evidence has to stay specific and unedited by summary.
 
+## The site
+
+A browsable version of the corpus lives at
+**https://statick88.github.io/dockerlabs-writeups/** — the root cause, the
+evidence discipline, all 34 instrument defects, the 13 retrieval hazards as a
+reference table, and every engagement indexed and filterable by class.
+
+It is generated, not hand-written:
+
+```bash
+python3 tooling/build-site.py     # writes _site/, deterministic
+git subtree push --prefix _site origin gh-pages
+```
+
+The repository's markdown is the authority. If the site and the repo ever
+disagree, the repo is right.
+
+---
+
 ## Why they are separate
 
 The methodology cites cases as `file:line` so a future reader can re-verify a

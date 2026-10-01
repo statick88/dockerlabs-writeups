@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 78 Bypassme &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Bypassme</p><h1 id="78-bypassme--writeup">78 Bypassme — writeup</h1>
+<p><strong>Difficulty:</strong> <em>fácil</em> · <strong>Catalogue line:</strong> <code>78|Bypassme|facil|information disclosure, web fuzzing, credential leakage</code></p>
+<p><strong>Headline: the catalogue named one of the three things this lab actually
+contains, and the two things it does contain that matter are not on the list.</strong>
+&quot;Web fuzzing&quot; is a method, not a vulnerability. &quot;Credential leakage&quot; is a real
+defect and is <strong>not on the path of anything</strong> — I removed it and the entire chain
+was unchanged. The load-bearing disclosure is named. The two entry points that
+make the whole thing reproducible with zero knowledge — a hardcoded credential
+and a substring-match authentication bypass — are <strong>not</strong> in the catalogue at
+all.</p>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- --open [net-0-2]
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.11 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+Not shown: 65533 closed tcp ports (conn-refused)
+</code></pre>
+<p><strong>Second instrument on the sockets</strong>, so an absent surface is measured and not
+inferred (<code>/proc/net/tcp</code>, <code>/proc/net/tcp6</code>, <code>/proc/net/udp</code>, <code>/proc/net/udp6</code>,
+one header line counted on each):</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Listeners (<code>st 0A</code>)</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/proc/net/tcp</code></td>
+<td><strong>2</strong> — <code>00000000:0016</code> (22), <code>00000000:0050</code> (80)</td>
+<td>6 further rows are <code>st 06</code> (TIME_WAIT) to <code>[net-0-1]</code></td>
+</tr>
+<tr>
+<td><code>/proc/net/tcp6</code></td>
+<td><strong>1</strong> — <code>[::]:0016</code> (22)</td>
+<td>same sshd, v6</td>
+</tr>
+<tr>
+<td><code>/proc/net/udp</code></td>
+<td><strong>0</strong></td>
+<td>header only</td>
+</tr>
+<tr>
+<td><code>/proc/net/udp6</code></td>
+<td><strong>0</strong></td>
+<td>header only</td>
+</tr>
+</tbody>
+</table>
+<p><code>nmap -p-</code> and <code>/proc/net/tcp*</code> agree exactly: 2 TCP services, <strong>0 UDP</strong>. No
+management plane, no BMC.</p>
+<p><strong>Hidden surface found, and how:</strong> none beyond the process list. The entrypoint
+<code>/etc/.start_services</code> names four things —</p>
+<pre><code>#!/bin/bash
+
+service apache2 start
+service ssh start
+service cron start
+su - conx -c &quot;[lab-home]/conx/.s&quot;
+tail -f /dev/null
+</code></pre>
+<p>— of which the fourth launches a <strong>world-rw Unix socket</strong>, <code>[lab-home]/conx/.cache/.sock</code>
+(<code>srwxrw-rw-</code>, <code>chmod 766</code> at <code>[lab-home]/conx/.s:11</code>), served by
+<code>socat UNIX-LISTEN:&quot;$SOCKET&quot;,fork EXEC:/bin/bash</code>. It is unreachable from any
+identity I could obtain: <code>[lab-home]/conx</code> is <code>710 conx:albert</code> and <code>[lab-home]/conx/.cache</code>
+is <code>770 conx:albert</code>, so only <code>conx</code> and group <code>albert</code> can traverse, and
+<code>www-data</code> is in neither (<code>id www-data</code> → <code>groups=33(www-data)</code>).</p>
+<hr />
+<h2 id="stack-and-versions--read-from-version-bearing-files-before-anything-else">Stack and versions — read from version-bearing files, before anything else</h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Version</th>
+<th>Source line, verbatim</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Ubuntu 24.04.2 LTS</td>
+<td><code>/etc/os-release</code>: <code>PRETTY_NAME=&quot;Ubuntu 24.04.2 LTS&quot;</code></td>
+</tr>
+<tr>
+<td>Web server</td>
+<td>Apache <strong>2.4.58</strong></td>
+<td><code>dpkg-query</code>: <code>apache2 2.4.58-1ubuntu8.6</code>; <code>apache2ctl -v</code>: <code>Server version: Apache/2.4.58 (Ubuntu)</code></td>
+</tr>
+<tr>
+<td>Language runtime</td>
+<td>PHP <strong>8.3.6</strong></td>
+<td><code>php -v</code>: <code>PHP 8.3.6 (cli) 8.3.6-0ubuntu0.24.04.4</code>; <code>dpkg-query</code>: <code>php8.3-cli 8.3.6-0ubuntu0.24.04.4</code></td>
+</tr>
+<tr>
+<td>SSH</td>
+<td>OpenSSH <strong>9.6p1</strong></td>
+<td><code>dpkg-query</code>: <code>openssh-server 1:9.6p1-3ubuntu13.11</code>; <code>sshd -V</code>: <code>OpenSSH_9.6p1 Ubuntu-3ubuntu13.11, OpenSSL 3.0.13 30 Jan 2024</code></td>
+</tr>
+<tr>
+<td>Scheduler</td>
+<td>cron 3.0pl1</td>
+<td><code>dpkg-query</code>: <code>cron 3.0pl1-184ubuntu2</code></td>
+</tr>
+<tr>
+<td>Helper</td>
+<td>socat 1.8.0.0</td>
+<td><code>dpkg-query</code>: <code>socat 1.8.0.0-4build3</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Was the manifest's label right? It never claimed a platform, so there is
+nothing to be wrong about — and I am recording that rather than manufacturing a
+mislabelling.</strong> The manifest's fourth field is
+<code>information disclosure, web fuzzing, credential leakage</code>; it names three
+<em>classes</em>, not a product. The artefact is a <strong>three-file PHP application</strong> —
+<code>/var/www/html/index.php</code>, <code>login.php</code>, <code>welcome.php</code>, plus <code>logs/.htaccess</code> and
+<code>logs/logs.txt</code>. <code>find /var/www -mindepth 1</code> returns <strong>7 entries</strong> and that is
+the entire webroot. No CMS, no framework, no <code>composer.json</code>, no <code>vendor/</code>, no
+plugin directory. This is the <em>small hand-written PHP app</em> shape, not the
+WordPress shape (the shape labs 32 and 220 were queued as and turned out to be
+Joomla 4.0.3 and a plain PHP app), and I checked for it rather than assuming it
+from the difficulty label.</p>
+<hr />
+<h2 id="the-class-and-the-general-statement-it-contributes">The class, and the general statement it contributes</h2>
+<blockquote>
+<p><strong>An information disclosure is only a finding when it is not what the artefact
+is supposed to serve.</strong></p>
+</blockquote>
+<p>What makes it a finding rather than a smell: <strong>there is a decision somewhere in
+the deployment that says this must not be readable, and a path that does not
+consult that decision.</strong> A <code>Server:</code> banner or an <code>X-Powered-By</code> header is
+hygiene — nothing ever decided the version was secret. Here the deployment made
+an explicit, written decision and then shipped a second reader inside the same
+server that ignores it:</p>
+<pre><code>/var/www/html/logs/.htaccess:1  &lt;Files &quot;*&quot;&gt;
+/var/www/html/logs/.htaccess:2    Require all denied
+/var/www/html/logs/.htaccess:3  &lt;/Files&gt;
+</code></pre>
+<p>That is the finding. Not &quot;a log file is in the docroot&quot; — the docroot is where
+Apache serves from, and a file being <em>in</em> the docroot is exactly what it is
+supposed to do. The finding is that the authorisation decision is enforced by
+<strong>the HTTP request path</strong>, and <code>include()</code> is not that path.</p>
+<p>The same class, same structure, one lab over: a source file served with its
+original content type, a <code>.git</code> directory, a backup, an env file, a stack trace
+carrying a path, a comment naming an internal host. <strong>Something the deployment
+assumed was not readable became readable.</strong> The discriminator that separates this
+class from &quot;an ugly artefact&quot; is one question: <em>name the control that was
+supposed to hold, and name the path that bypasses it.</em> Here both names are
+<code>logs/.htaccess:2</code> and <code>index.php:24</code>.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>One path, two independent entries, one hop. Every identity measured.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>unauthenticated HTTP client <code>[net-0-1]</code></td>
+<td>any client can obtain a session: <code>POST /login.php</code> with <code>password='1'='1</code></td>
+<td>the <strong>negative control</strong> — <code>admin</code>/<code>wrongpass</code> → <code>302 Location: login.php?fail=1</code>; and <strong>no session at all</strong> → <code>302</code>/0 B on <code>index.php?page=logs/logs.txt</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td>&quot;admin&quot; session</td>
+<td><code>login.php:14</code> grants <code>$_SESSION['loggedin']=true</code></td>
+<td><code>[response-cookie-header]: PHPSESSID=…; path=/</code> + <code>Location: index.php?page=welcome</code>, <code>302</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>full disclosure of <code>logs/logs.txt</code></td>
+<td><code>index.php:24</code> <code>include($target)</code> — a filesystem include, not an HTTP request, so <code>.htaccess</code> never runs</td>
+<td><code>200</code> / <strong>1 639 B</strong> / md5 <code>a8e6f6d5c1d2ec8013c13b3a58e86560</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>id</code> was measured at every hop that had an identity to measure:</p>
+<pre><code>$ docker exec bypassme_container id
+uid=0(root) gid=0(root) groups=0(root)          &lt;- OPERATOR-SIDE, how I read the artefact
+$ docker exec -u www-data bypassme_container id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)   &lt;- the identity that EXECUTES the include
+$ id albert
+uid=1001(albert) gid=1001(albert) groups=1001(albert)
+$ id conx
+uid=1002(conx) gid=1002(conx) groups=1002(conx)
+$ id www-data
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+</code></pre>
+<p><strong>Label the reads.</strong> Everything under &quot;artefact&quot; below — <code>/etc/shadow</code>,
+<code>/root/</code>, <code>[lab-home]/conx/.s</code>, the mode tables — was read as <code>uid=0(root)</code> through
+<code>docker exec</code>. That is the <strong>operator</strong> identity, not something the target
+granted. The exploit chain and every oracle in the Findings section were proven
+<strong>over HTTP and SSH from outside the container</strong>, by an ordinary network client
+at <code>[net-0-1]</code>, with no <code>docker exec</code> in the path. Two different claims, two
+different identities, kept apart.</p>
+<p><strong>There is no <code>Uid:</code>/<code>Euid:</code> transition anywhere in this chain</strong>, and I am not
+summarising it as &quot;no escalation&quot; — there is no escalation <em>to</em> attempt. No
+setuid path is reachable from a session.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="f1--cwe-798--cwe-259-hardcoded-administrative-credential">F1 — CWE-798 / CWE-259, hardcoded administrative credential</h3>
+<p><code>/var/www/html/login.php:14</code>, verbatim:</p>
+<pre><code class="language-php">    // Simula una inyección lógica
+    if (($u === &quot;admin&quot; &amp;&amp; $p === &quot;IsAdminInThisPage&quot;) || strpos($p, &quot;'1'='1&quot;) !== false) {
+</code></pre>
+<ul>
+<li><strong>CWE-798</strong> (Use of Hard-coded Credentials) for the <code>admin</code> /
+<code>IsAdminInThisPage</code> pair; <strong>CWE-259</strong> (Use of Hard-coded Password) because the
+string is a password checked with <code>===</code> and it is the whole authentication
+decision.</li>
+<li><strong>Evidence, literal.</strong> <code>POST /login.php</code> with <code>username=admin&amp; password=IsAdminInThisPage</code> →
+<code>HTTP/1.1 302 Found</code> / <code>[response-cookie-header]: PHPSESSID=l3autvndpkesdtl0ps0u71kok2; path=/</code> /
+<code>Location: index.php?page=welcome</code> / <code>Content-Length: 0</code>.</li>
+<li><strong>Negative control, byte-distinguishable.</strong> <code>username=admin&amp;password=wrongpass</code>
+→ <code>302</code> / <code>Location: login.php?fail=1</code> / <code>Content-Length: 0</code>. Both are <code>302</code>
+with <code>Content-Length: 0</code>, so <strong>the status and the length are identical</strong> — the
+discriminator had to be the <code>Location</code> header. Recorded because a status sweep
+would have called both a success.</li>
+<li><strong>Impact:</strong> full administrative panel to anyone who reads the file, forever,
+with no rotation path and no rate limit. In this lab it is also a <strong>host
+credential shape</strong>, which makes it worse than a web-only one: see the SSH
+negative below.</li>
+<li><strong>Root cause:</strong> the credential is a literal inside the request handler and
+there is no credential store anywhere in the image — <code>php -m</code> lists
+<code>PDO</code> and no driver, and the artefact contains no <code>mysqli</code>, <code>pgsql</code> or
+<code>sqlite3</code> reference anywhere in <code>/var/www</code> (grep for those three: <strong><code>/var/www</code> → 0
+files</strong>; <code>/etc/php</code> → <strong>2</strong> files, both the stock <code>php.ini</code>).</li>
+<li><strong>Fix:</strong></li>
+<li><strong>Fix:</strong> move authentication to a store with per-user hashed secrets; if a
+bootstrap account is unavoidable, source it from an environment secret and
+force rotation.</li>
+</ul>
+<h3 id="f2--cwe-287--cwe-697-authentication-bypass-by-substring-match-with-no-sql-anywhere-in-the-application">F2 — CWE-287 / CWE-697, authentication bypass by substring match, with <strong>no SQL anywhere in the application</strong></h3>
+<p>The second half of the same line:</p>
+<pre><code class="language-php">|| strpos($p, &quot;'1'='1&quot;) !== false) {
+</code></pre>
+<ul>
+<li>
+<p><strong>CWE-697</strong> (Incorrect Comparison) is the mechanism; <strong>CWE-287</strong> (Improper
+Authentication) is the consequence. <strong>This is not SQL injection</strong>, and the lab
+names it &quot;Simula una inyección lógica&quot; / a &quot;simulated logical injection&quot; —
+the author is honest that it is simulated.</p>
+</li>
+<li>
+<p><strong>The proof that it is not SQL: the application has no database.</strong>
+<code>php -m</code> → <code>PDO</code> is present, <strong>no <code>pdo_mysql</code>, <code>pdo_pgsql</code>, <code>pdo_sqlite</code>,
+<code>mysqli</code>, <code>pgsql</code> or <code>sqlite3</code> driver</strong>; the process list contains <strong>no
+<code>mariadbd</code>, <code>mysqld</code>, <code>postgres</code> or <code>mongod</code></strong>; grepping <code>/var/www</code> and
+<code>/etc/php</code> for <code>mysqli|pgsql|sqlite</code> → <strong>2</strong> files, both the stock
+<code>php.ini</code>, and the same grep over <code>/var/www</code> → <strong>0</strong>. There is nothing to
+inject <em>into</em>. The substring test runs before
+anything else and short-circuits the <code>&amp;&amp;</code>.</p>
+</li>
+<li>
+<p><strong>Evidence, literal, three probes that show it is a substring and not a
+grammar:</strong></p>
+<table>
+<thead>
+<tr>
+<th><code>password</code> value</th>
+<th><code>Location</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>x' OR '1'='1</code></td>
+<td><code>index.php?page=welcome</code></td>
+</tr>
+<tr>
+<td><code>'1'='1</code></td>
+<td><code>index.php?page=welcome</code></td>
+</tr>
+<tr>
+<td><code>'1'='1zzz</code></td>
+<td><code>index.php?page=welcome</code> ← <strong>trailing garbage still authenticates</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The third row is the discriminator: no SQL engine would accept <code>'1'='1zzz</code>.
+The username is irrelevant — <code>zz</code> and <code>anything</code> both authenticate on this
+string. (<code>admin</code> + <code>'1'='1</code> was <strong>not</strong> probed; it would take the same branch
+by the short-circuit, but I am not counting an unrun probe.)</p>
+</li>
+<li>
+<p><strong>Impact:</strong> the administrative panel, with <strong>zero knowledge and zero
+credentials</strong>, to any anonymous client, in one HTTP request. On its own this
+makes F1 redundant, and it makes the disclosure in F3 reachable by anyone who
+has never seen a password.</p>
+</li>
+<li>
+<p><strong>Root cause:</strong> a magic string used as an authentication decision, with
+<code>strpos(...) !== false</code> where a comparison against a presented secret belongs.</p>
+</li>
+<li>
+<p><strong>Fix:</strong> delete the branch. There is no legitimate reason for a substring of
+the password field to grant a session; if a backdoor must exist for testing, it
+must be behind a build flag that is off in production.</p>
+</li>
+</ul>
+<h3 id="f3--cwe-22--cwe-538-the-disclosure-include-is-a-second-reader-that-does-not-consult-the-servers-authorisation-decision">F3 — CWE-22 / CWE-538, the disclosure: <code>include()</code> is a second reader that does not consult the server's authorisation decision</h3>
+<p><strong>This is the load-bearing finding of the engagement.</strong></p>
+<p><code>/var/www/html/index.php:9-27</code>, verbatim:</p>
+<pre><code class="language-php">$page = $_GET['page'] ?? 'welcome';
+
+// Agrega automáticamente extensión .php si no tiene punto (opcional)
+if (!str_contains($page, '.') &amp;&amp; !str_starts_with($page, 'php://')) {
+    $page .= '.php';
+}
+
+$base_dir = realpath(__DIR__);
+$target = realpath($base_dir . '/' . $page);
+
+if (
+    $target &amp;&amp;
+    str_starts_with($target, $base_dir) &amp;&amp;
+    is_file($target)
+) {
+    include($target);
+} else {
+    echo &quot;&lt;h2&gt;Access denied or file not found.&lt;/h2&gt;&quot;;
+}
+</code></pre>
+<ul>
+<li>
+<p><strong>Evidence, literal, side by side. Same file, same server, same request
+identity, two answers:</strong></p>
+<pre><code>$ curl -s -o /dev/null -w '%{http_code} %{size_download}\n' \
+    http://[net-0-2]/logs/logs.txt                      # DIRECT, over HTTP
+403 275
+
+$ curl -s -b &lt;session&gt; -w '%{http_code} %{size_download}\n' \
+    'http://[net-0-2]/index.php?page=logs/logs.txt'   # VIA THE APPLICATION
+200 1639
+</code></pre>
+<p>The direct request is refused by the <code>.htaccess</code>. The application request
+returns the file. <strong>1 639 B</strong> of the log, verbatim, md5 of the response body
+<code>a8e6f6d5c1d2ec8013c13b3a58e86560</code>.</p>
+</li>
+<li>
+<p><strong>Attribution of the 403, from the server's own error log — not from the
+status code</strong> (a <code>403</code> cannot tell you which directive fired, and lab 218
+established that two layers can return two different 403s):</p>
+<pre><code>[Wed Sep 30 14:44:50 2026] [authz_core:error] [pid 31] [client [net-0-1]:46998]
+    AH01630: client denied by server configuration: /var/www/html/logs/logs.txt
+</code></pre>
+<p>And <code>AllowOverride</code> really does let that file speak —
+<code>/etc/apache2/apache2.conf:170-172</code>: <code>&lt;Directory /var/www/&gt;</code> … <code>AllowOverride All</code>.
+So the control is live, correctly configured, and it holds — on the request path.</p>
+</li>
+<li>
+<p><strong>The oracle, green in both directions.</strong> A name that <strong>cannot exist</strong>,
+<code>page=logs/zzq7x9impossible91.txt</code>, returns <code>200</code> / <strong>43 B</strong> /
+md5 <code>a9836630f40c55a9c03a326c09902921</code> — <code>&lt;h2&gt;Access denied or file not found.&lt;/h2&gt;</code> — byte-distinguishable from 1 639 B. A real file I created and
+then deleted, <code>logs/probe78.txt</code>, returned <code>200</code> / <strong>26 B</strong> /
+md5 <code>ffb545ffd14a90be04881ffc37b4d41d</code>, containing my marker. <strong>Three
+distinct bodies, so the 200-status sweep is not the detector here — the byte
+count and the md5 are.</strong></p>
+</li>
+<li>
+<p><strong>Byte accounting, computed rather than read.</strong> The file on disk is <strong>1 637 B</strong>
+(<code>md5 56dcce057bac00214b79f5c1bc13a8a8</code>). The HTTP body is <strong>1 639 B</strong>. Delta
+<strong>+2</strong>, which is exactly what <code>index.php</code> emits after its closing tag: line 28 is
+<code>?&gt;</code>, lines 29-30 are blank, giving <code>?&gt;\n\n\n</code> — and PHP swallows the one
+newline immediately following <code>?&gt;</code>, so the output gains <strong>two</strong>. 1 637 + 2 =
+1 639. <code>diff</code> against a <code>docker cp</code> of the file reports exactly two added <code>\n</code>
+at the end and nothing else.</p>
+</li>
+<li>
+<p><strong>The same dead code class as labs 146 and 243, in a new costume.</strong>
+<code>index.php:12</code> explicitly <em>permits</em> <code>php://</code> — <code>!str_starts_with($page, 'php://')</code> is there to stop the <code>.php</code> suffix being appended. <strong><code>realpath()</code>
+returns <code>false</code> for every stream-wrapper path</strong>, so the exception the author
+wrote can never be reached. Measured, not inferred, from the interpreter:</p>
+<pre><code>$ php -r '$b=realpath(&quot;/var/www/html&quot;); foreach([... ] as $t){...}'
+input                                                    realpath guard(target,base)
+logs/logs.txt                                            '/var/www/html/logs/logs.txt' INCLUDE
+../../etc/passwd                                         false    DENY
+/var/www/html/logs/logs.txt                              false    DENY
+php://filter/convert.base64-encode/resource=logs/logs.txt false    DENY
+php://filter/convert.base64-encode/resource=/etc/passwd  false    DENY
+</code></pre>
+<p><strong>The framework never calls what the file contains.</strong> The file reads as though
+it permits <code>php://filter</code>; <code>realpath()</code> ignores it. Over HTTP, all four
+<code>php://</code> spellings plus <code>pHp://</code>, <code>....//....//</code>, an absolute path, a trailing
+<code>/</code>, and <code>\0.php</code> returned the identical 43 B denial body — <strong>10 negatives, 1
+distinguishable negative signature, 0 hits.</strong></p>
+</li>
+<li>
+<p><strong>The guard is a string prefix, not a path-component prefix — latent, not
+exploitable here.</strong> <code>str_starts_with($target, $base_dir)</code> returns <strong>true</strong> for
+<code>/var/www/html_evil/x.php</code>; measured in isolation with the same predicate.
+<code>ls -la /var/www/</code> shows only <code>html</code>, so no sibling directory exists and there
+is no route. Reported as a hardening note, <strong>not</strong> as a finding: the
+difference between those two things is whether a measurable path exists, and
+here it does not.</p>
+</li>
+<li>
+<p><strong>No write primitive, so no RCE — and I did not claim one.</strong> <code>www-data</code> is the
+identity that executes the include. Read as <strong>that identity</strong>, via
+<code>su -s /bin/sh www-data -c &quot;touch …&quot;</code>:</p>
+<pre><code>/var/www/html             NOT-writable   (755 root:root)
+/var/www/html/logs        WRITABLE       (755 www-data:www-data)
+</code></pre>
+<p>So a write into <code>logs/</code> would have been includable. <strong>No write primitive
+exists in this chain, 0 attempts.</strong> The RCE is under NOT tested with a count,
+not in the negatives.</p>
+</li>
+<li>
+<p><strong>Impact:</strong> the application's access-control decision is not the deployment's
+access-control decision. Anything placed in a <code>Require all denied</code> directory
+under the docroot is readable by any session, and by F2 any anonymous client
+can obtain a session.</p>
+</li>
+<li>
+<p><strong>Fix:</strong> do not let a request value reach <code>include()</code> at all. If page selection
+is required, resolve it against a fixed allowlist of page identifiers mapped to
+known files — not against a filesystem path.</p>
+</li>
+</ul>
+<h3 id="f4--cwe-312-credentials-at-rest-in-a-reversible-encoding">F4 — CWE-312, credentials at rest in a reversible encoding</h3>
+<p>Inside the disclosed file, <code>/var/www/html/logs/logs.txt</code>:</p>
+<pre><code>[2024-03-29 12:04:12] DEBUG: Trying password 'YWRtaW4xMjM='
+[2024-03-29 12:04:14] DEBUG: Trying password 'dGVzdDEyMw=='
+[2024-03-29 12:04:24] DEBUG: Trying password 'NGxiM3J0MTIz'
+[2024-03-29 12:04:25] SUCCESS: Auth success for user 'albert'
+</code></pre>
+<ul>
+<li>
+<p><strong>CWE-312</strong> (Cleartext Storage of Sensitive Information) — base64 is an
+encoding, not a protection, and a log line is the worst place for a secret.</p>
+</li>
+<li>
+<p><strong>Three values, three decodes, computed and not guessed:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Literal</th>
+<th><code>base64 -d</code></th>
+<th>length</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>YWRtaW4xMjM=</code></td>
+<td><code>admin123</code></td>
+<td>8</td>
+</tr>
+<tr>
+<td><code>dGVzdDEyMw==</code></td>
+<td><code>test123</code></td>
+<td>7</td>
+</tr>
+<tr>
+<td><code>NGxiM3J0MTIz</code></td>
+<td><code>4lb3rt123</code></td>
+<td>9</td>
+</tr>
+</tbody>
+</table>
+<p><strong>I want to be explicit about the third one, because it is where this finding
+nearly became a fabricated one.</strong> The surrounding log line says
+<code>Auth success for user 'albert'</code>, so the natural reading of <code>NGxiM3J0MTIz</code> is
+<code>albert123</code>, and that is what I had written down before running the decoder.
+It is <strong>not</strong> <code>albert123</code>. It is <code>4lb3rt123</code> — leetspeak. Had I reported the
+context-derived guess, I would have filed a credential that was never in the
+file, and my later &quot;it does not authenticate&quot; test would have been testing the
+wrong string and would have been meaningless.</p>
+</li>
+<li>
+<p><strong>Impact:</strong> three passwords, in a file the deployment explicitly declared
+unreadable. Two of the three (<code>admin123</code>, <code>test123</code>) name accounts that <strong>do
+not exist</strong> on this host — <code>/etc/passwd</code> has 25 lines and contains no <code>admin</code>
+and no <code>test</code> (<code>root</code>, <code>albert</code>, <code>conx</code> and <strong>21</strong> accounts
+whose shell is <code>nologin</code>). One names a real account.</p>
+</li>
+<li>
+<p><strong>This finding is <strong>not load-bearing</strong>. Nothing in this engagement depends on
+it.</strong> See the load-bearing section.</p>
+</li>
+<li>
+<p><strong>Fix:</strong> never write a candidate or accepted secret to a log, in any encoding.
+Log the event and the outcome; log a salted hash or nothing.</p>
+</li>
+</ul>
+<h3 id="f5--cwe-384-session-fixation-found-not-chained-delivery-unproven">F5 — CWE-384, session fixation (found, <strong>not</strong> chained, delivery unproven)</h3>
+<p><strong>A correction to my own instrument, before the finding.</strong> My first source for
+this was <code>php -i</code>, and <code>php -i</code> on this host reports the <strong>CLI SAPI</strong>, loading
+<code>/etc/php/8.3/cli/php.ini</code> — <em>not</em> the <code>apache2</code> SAPI that serves the
+application. §22 says a control must exercise the same code path as the target,
+and a config dump from a neighbouring SAPI is the same mistake. So the value
+that matters here is <strong>the value the framework consumes</strong>, and for a cookie flag
+that value is observable on the wire:</p>
+<pre><code>$ curl -s -i -X POST -d 'username=admin&amp;password=IsAdminInThisPage' http://[net-0-2]/login.php
+HTTP/1.1 302 Found
+[response-cookie-header]: PHPSESSID=l3autvndpkesdtl0ps0u71kok2; path=/
+</code></pre>
+<p>No <code>HttpOnly</code>, no <code>Secure</code>, no <code>SameSite</code>. <strong>That header is the measurement, and
+it is the finding</strong> — the <code>php.ini</code> value is only corroboration. For
+<code>use_strict_mode</code> the consumed value is behavioural, and step 3 of the table
+below measures it: a session id PHP had never seen was adopted and honoured.
+(Corroborating CLI-SAPI readings, quoted only because they agree and only with
+that label: <code>session.cookie_httponly =&gt; Off</code>, <code>session.cookie_secure =&gt; Off</code>,
+<code>session.use_strict_mode =&gt; Off</code>, <code>session.name =&gt; PHPSESSID</code>.)</p>
+<ul>
+<li>
+<p><strong>CWE-384</strong> (Session Fixation); <strong>CWE-1004</strong> (Sensitive Cookie Without
+<code>HttpOnly</code>).</p>
+</li>
+<li>
+<p><strong>Evidence, executed, not inferred.</strong> With <code>session.use_strict_mode=Off</code>, PHP
+adopts an attacker-supplied session id:</p>
+<table>
+<thead>
+<tr>
+<th>step</th>
+<th>request</th>
+<th>result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>GET /login.php</code> with <code>Cookie: PHPSESSID=zzq7x9FIXEDBYATTACKER0001</code></td>
+<td><code>200</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>POST /login.php</code> <code>password='1'='1</code> with the same cookie</td>
+<td><code>302</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>fresh client</strong>, same cookie, <strong>no login performed</strong> → <code>GET /index.php?page=welcome</code></td>
+<td><strong><code>200</code> / 1 332 B</strong>, body contains <code>Welcome, admin!</code></td>
+</tr>
+<tr>
+<td>control</td>
+<td>fresh client, <code>PHPSESSID=zzq7x9NEVERUSED0002</code>, never authenticated</td>
+<td><strong><code>302</code> / 0 B</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Byte-distinguishable in both directions (1 332 vs 0).</p>
+</li>
+<li>
+<p><strong>Delivery is NOT proven — it is stated as not proven.</strong> I did <strong>not</strong> test for XSS, an open redirect, or any
+attacker-controlled <code>[response-cookie-header]</code> — <strong>0 probes for each</strong>, and they belong under
+NOT tested. What I can say from the source read is that the three response
+writers are <code>login.php:5,16,19</code> (fixed <code>Location</code> values) and <code>index.php:5</code> /
+<code>welcome.php:4</code> (fixed <code>Location</code> values): <strong>no response value the request
+controls reaches a <code>Location</code> or a header</strong>, so there is no obvious delivery
+primitive in the code as shipped. &quot;No obvious&quot; is an inference from a source
+read, not a measurement, and it is labelled as one. The
+<em>fixation</em> is proven; <em>placing the chosen id in a victim's browser</em> is not.
+Filing them together would tell a client that patching one fixed the other,
+which is the lab-243 fusion error.</p>
+</li>
+<li>
+<p><strong>And it changes nothing here anyway:</strong> F2 gives an attacker the panel with no
+session of their victim's, at any id they like.</p>
+</li>
+<li>
+<p><strong>Fix:</strong> <code>session.use_strict_mode=1</code>, <code>session_regenerate_id(true)</code> on
+privilege change, <code>session.cookie_httponly=1</code>, <code>session.cookie_secure=1</code>.</p>
+</li>
+</ul>
+<h3 id="two-disclosures-that-are-real-but-are-hygiene-filed-so-the-report-is-not-padded">Two disclosures that are real but are <strong>hygiene</strong>, filed so the report is not padded</h3>
+<p>The brief's class statement names &quot;a comment naming an internal host&quot; as a
+member of the class. It is worth being precise about the threshold, because both
+of these are <em>in</em> the served page:</p>
+<pre><code>/var/www/html/welcome.php:9   &lt;!-- dev note: remember to secure logs.txt path before deploy --&gt;
+/var/www/html/welcome.php:57  &lt;p class=&quot;danger&quot;&gt;[!] Warning: System error logs are exposed to the public folder&lt;/p&gt;
+</code></pre>
+<p>Both are served to <strong>any session holder</strong>, including one obtained with zero
+credentials via F2 — I read them out of the 1 332 B panel body at offset lines 2
+and 50. So they are genuine disclosures of an internal filename and of the
+architecture. They are <strong>not findings</strong>, for two measurable reasons:</p>
+<ol>
+<li>Neither is load-bearing. <code>GET /logs.txt</code> (the name the comment gives, with no
+directory) returns <strong><code>404</code> / 272 B</strong> — the name alone does not locate the file.
+The comment is a signpost; the fuzzing did the work.</li>
+<li>Line 57 is the <strong>application telling the truth about itself in its own UI</strong>.
+An app that announces its own exposure has not been exploited, and a
+disclosure that the deployment already published is not a disclosure <em>to</em> the
+deployment.</li>
+</ol>
+<p>Filed as observation, not as a finding. That is the threshold stated as a rule:
+<strong>name the control that should have held and the path that bypasses it.</strong> For
+the comment there is no such path — it is prose.</p>
+<hr />
+<h2 id="which-disclosure-is-load-bearing-and-which-one-i-would-delete">Which disclosure is load-bearing, and which one I would delete</h2>
+<p>The catalogue declares three things. Here is the honest shape of them.</p>
+<table>
+<thead>
+<tr>
+<th>Declared item</th>
+<th>Is it a finding?</th>
+<th>Load-bearing?</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>information disclosure</strong></td>
+<td><strong>Yes</strong> — F3</td>
+<td><strong>YES</strong> — it is the entire payload of the chain</td>
+<td>keep</td>
+</tr>
+<tr>
+<td><strong>web fuzzing</strong></td>
+<td><strong>No</strong> — it is a <em>method</em>. I used 68 candidates to find a path I then had to <em>prove</em> with a second instrument. A method is not a vulnerability and belongs in a technique section, not a findings list.</td>
+<td>n/a</td>
+<td><strong>delete — nothing changes</strong></td>
+</tr>
+<tr>
+<td><strong>credential leakage</strong></td>
+<td><strong>Yes</strong> — F4, CWE-312, three reversible secrets in a file</td>
+<td><strong>NO.</strong> See below</td>
+<td>keep as a defect; it is not a link in the chain</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The chain, stated as a graph rather than a list:</strong></p>
+<pre><code>                    ┌─ F1 hardcoded admin/IsAdminInThisPage ─┐
+anonymous client ───┤                                        ├──&gt; &quot;admin&quot; session ──&gt; F3 include() ──&gt; logs/logs.txt (1 639 B)
+                    └─ F2 strpos($p,&quot;'1'='1&quot;) ───────────────┘                                          │
+                                                  (zero credentials)                                   └──&gt; F4 three base64 secrets
+</code></pre>
+<p><strong>F1 and F2 are alternative entries for the same node.</strong> Either one reaches the
+session; they are independent, in the lab-243 sense — but unlike lab 243 they are
+<em>both</em> real, and fixing either one ships nothing against the other, because F2
+needs no secret to remove. <strong>Neither F1 nor F2 is named by the catalogue.</strong></p>
+<p><strong>F3 is the only load-bearing disclosure.</strong> It is the reason the lab is called
+<code>Bypassme</code>: the one control that was written down (<code>Require all denied</code>) is
+genuinely enforced, and there is a second reader inside the same process that
+does not go through it.</p>
+<p><strong>F4 is the one I would delete from the report and nothing would change.</strong>
+Delete F4 entirely and the chain — anonymous client → session → disclosure — is
+byte-for-byte identical, because F4 sits <em>downstream</em> of the disclosure as a
+<strong>consequence</strong>, not <em>upstream</em> of it as a <strong>credential source</strong>. Nothing in
+this lab is unlocked by <code>4lb3rt123</code> or <code>admin123</code>. I proved that rather than
+asserting it:</p>
+<ul>
+<li><code>4lb3rt123</code> against <code>albert</code> over SSH → <code>AUTH_FAIL</code>.</li>
+<li><code>admin123</code> against <code>admin</code> over SSH → <code>AUTH_FAIL</code> (and <code>admin</code> is not an
+account).</li>
+<li><code>IsAdminInThisPage</code> against <code>albert</code> → <code>AUTH_FAIL</code>.</li>
+<li><code>4lb3rt123</code> against <code>root</code> → <code>AUTH_FAIL</code> (<code>PermitRootLogin no</code>).</li>
+</ul>
+<p><strong>So: the credential leakage is real, reportable, and buys the attacker nothing
+— because the same artefact's sibling defect already gives the panel away for
+free.</strong> That is the single most useful thing this lab has to say about the
+catalogue's framing, and it is the opposite of lab 243. In 243 the two bugs are
+independent and both are needed to reach different outcomes. Here the two are
+<strong>ordered</strong>, and the downstream one is redundant.</p>
+<h3 id="the-version-of-the-class-this-lab-contributes-for-the-methodology">The version of the class this lab contributes, for the methodology</h3>
+<p>Extend the information-disclosure row rather than adding one:</p>
+<blockquote>
+<p>An information disclosure is a finding <strong>iff</strong> a control elsewhere in the
+deployment decided the object was unreadable <strong>and</strong> a second, ungoverned read
+path returns it. State both names: the control, and the path that bypasses it.
+<code>logs/.htaccess:2</code> (<code>Require all denied</code>) and <code>index.php:24</code> (<code>include($target)</code>)
+are the two names in lab 78. <strong>A credential recovered from a disclosure is not
+automatically load-bearing</strong> — lab 78's three base64 secrets are downstream
+dead ends, because the same application's auth bypass hands over the panel with
+no secret at all. Before filing a credential-leakage finding as part of a
+chain, ask what it unlocks and <strong>measure whether it unlocks anything.</strong></p>
+</blockquote>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves this detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>logs/.htaccess</code> — <code>Require all denied</code></strong></td>
+<td><strong>Held on the HTTP path, and the denial is attributable.</strong> Server error log: <code>AH01630: client denied by server configuration: /var/www/html/logs/logs.txt</code>. <code>AllowOverride All</code> at <code>apache2.conf:172</code> means the file is actually read, so it is not inert. <strong>The detector fired 7 times on the same path</strong>: <code>GET /logs/logs.txt</code> directly (in two separate batches), via <code>/logs/./logs.txt</code>, and via <code>//logs//logs.txt</code> — every one <code>403</code> / 275 B / md5 <code>0a0ce486142867ee709125cd88f1dd10</code>. The normalisation variants do <strong>not</strong> bypass it. <strong>What it does not hold against:</strong> <code>include()</code>.</td>
+</tr>
+<tr>
+<td><strong><code>realpath()</code> + <code>str_starts_with($target, $base_dir)</code> — path traversal</strong></td>
+<td><strong>Held, and the negative is not a zero-work negative.</strong> Oracle green in both directions on the same request path: <code>page=logs/logs.txt</code> → 200/1 639 B; <code>page=logs/zzq7x9impossible91.txt</code> → 200/<strong>43 B</strong> — two different bodies. <strong>10 further traversal and stream-wrapper spellings</strong> all returned the identical 43 B body (<code>../../etc/passwd</code>, <code>../../../etc/passwd</code>, absolute <code>/var/www/html/logs/logs.txt</code>, <code>....//....//etc/passwd</code>, 3 × <code>php://</code> plus <code>pHp://</code>, <code>logs/logs.txt/</code>, <code>logs/logs.txt\0.php</code>). <strong>Count: 12 include-path probes, 2 readable, 10 negatives, all one signature, 0 hits.</strong> A separate PHP-CLI harness reproduced all five of the same predicates against <code>realpath()</code> directly, which is why the 43 B is a measurement and not an untested guess.</td>
+</tr>
+<tr>
+<td><strong>The 404 detector</strong></td>
+<td><strong>Proven green before any belief about absence.</strong> <code>zzq7x9impossiblecontrol01.php</code>, <code>zzq7x9impossiblecontrol02.log</code>, <code>zzq7x9impossiblecontrol03.txt</code> and <code>thispathcannotexist4d7b1a9e</code> were planted in the wordlist; all four returned <strong>404 / 272 B / md5 <code>7139ceb6…</code></strong>, byte-identical to 47 genuinely-absent names. Server-side confirmation from the error log: <code>script '/var/www/html/zzq7x9impossiblecontrol01.php' not found or unable to stat</code>. A 404 sweep on this target is trustworthy.</td>
+</tr>
+<tr>
+<td><strong>Null-byte truncation on the denial</strong></td>
+<td><code>GET /logs/logs.txt%00</code> → <strong>404 / 272 B</strong>, i.e. it falls through to the <em>global</em> 404 baseline and does <strong>not</strong> reach the <code>.htaccess</code>. Contrast lab 188, where <code>^\.ht</code> being case-sensitive let <code>.HTACCESS</code> return 200/36 B: <code>&lt;Files &quot;*&quot;&gt;</code> matches every name, so that bypass class is closed here. Measured, one probe.</td>
+</tr>
+<tr>
+<td><strong>SSH password authentication</strong></td>
+<td><strong>Oracle proven in both directions before believing any of the 9 negatives.</strong> A disposable account <code>oracle78</code> with a known password → <strong><code>AUTH_OK</code> at 0.13 s</strong>; the same account one character off → <code>AUTH_FAIL</code> at 2.37 s; a bare wrong password → <code>AUTH_FAIL</code> at 2.33 s. The ~2.2 s gap is the KDF running on failure and being skipped on success — the §36 signature, in the correct direction, and the tell that the instrument is measuring something. <code>/etc/shadow</code> prefix for the control was <code>$y$</code> (yescrypt), so the KDF is real and <code>crypt()</code> never silently fell back to DES. <strong>Restore verified byte-exact:</strong> <code>/etc/passwd</code> md5 <code>b665e525b3e22f32a3b462205a2b8994</code>, <code>/etc/shadow</code> md5 <code>99d016c2e3e7caf9ec3b2a9b5ff93c06</code>, 25 lines each — identical to the pre-test values, and <code>grep -c oracle78</code> returns <strong>0</strong> in <code>passwd</code>, <code>shadow</code>, <code>group</code>, <code>gshadow</code>, <code>subgid</code>, <code>subuid</code>.</td>
+</tr>
+<tr>
+<td><strong><code>PermitRootLogin no</code></strong></td>
+<td>Firewalls the obvious move: <code>root</code>/<code>4lb3rt123</code> → <code>AUTH_FAIL</code> at 3.20 s (a real KDF, not an instant reject — the existing-account latency band).</td>
+</tr>
+<tr>
+<td><strong>The session gate on <code>index.php</code> and <code>welcome.php</code></strong></td>
+<td>Real, and stated as such: with <strong>no cookie</strong>, <code>index.php?page=logs/logs.txt</code> → <strong>302 / 0 B</strong>. The disclosure is <strong>post-authentication</strong>. It does not pretend to be pre-auth — but the authentication is free (F2), so the gate buys nothing.</td>
+</tr>
+<tr>
+<td><strong>Not a control, and reported as a defect: <code>logs/logs.txt</code> narrates its own exposure</strong></td>
+<td><code>logs.txt:24-25</code> contains <code>[!!!] SECURITY ALERT: logs/logs.txt is PUBLICLY EXPOSED</code> and <code>[!!!] Use this file with caution credentials may be compromised</code>. That is a <strong>constant, not an oracle</strong>: 3 identical requests returned 43 B / md5 <code>0a0ce486…</code>. The lab's own log asserts a state (<code>PUBLICLY EXPOSED</code>) that is <strong>false for the HTTP path</strong> and <strong>true only for the <code>include()</code> path</strong>. Same shape as lab 188's <code>Associated name: Joshua</code> finding — filed as an artefact defect, not as a result.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="not-tested--separate-from-discarded-with-a-reason">NOT tested — separate from &quot;discarded with a reason&quot;</h2>
+<p>Per the brief's rule, <strong>a count of zero means UNTESTED, and it belongs here, not
+in the negatives.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Work count</th>
+<th>Why untested</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Remote code execution.</strong> Write a <code>.php</code> file into <code>logs/</code> (which <code>www-data</code> <strong>can</strong> write: measured, <code>WRITABLE</code> via <code>su -s /bin/sh www-data</code>, vs the docroot root <code>NOT-writable</code> at <code>755 root:root</code>) and include it.</td>
+<td><strong>0 attempts</strong></td>
+<td>No write primitive exists anywhere in this chain. The app has no upload handler, no SQL, no template injection, no deserialisation point, and no reachable path traversal. I did not look for a way to obtain one and did not find one; I am not claiming the RCE is impossible, I am saying it was never attempted because the primitive is absent.</td>
+</tr>
+<tr>
+<td><strong>The <code>conx</code> socat socket</strong> <code>[lab-home]/conx/.cache/.sock</code> (<code>srwxrw-rw-</code>, <code>socat … EXEC:/bin/bash</code>).</td>
+<td><strong>0 connections</strong></td>
+<td>Unreachable from any identity I could obtain. <code>[lab-home]/conx</code> is <code>710 conx:albert</code>, <code>.cache</code> is <code>770 conx:albert</code>; <code>www-data</code> is in neither group and <code>conx</code>'s and <code>albert</code>'s passwords are unknown (both <code>AUTH_FAIL</code> on SSH, <code>albert</code> tested with 3 candidates, <code>conx</code> with 0). Reachable <strong>only</strong> after a foothold in <code>conx</code> or <code>albert</code>, which this engagement did not obtain.</td>
+</tr>
+<tr>
+<td><strong>Cracking <code>albert</code>'s or <code>conx</code>'s real password.</strong></td>
+<td><strong>0 wordlist candidates run</strong></td>
+<td>No cracking was attempted and none is claimed. Total SSH traffic for the whole engagement: <strong>10 attempts over 9 distinct (user, password) pairs</strong> — 5 target pairs (<code>albert</code>/<code>albert123</code>, <code>albert</code>/<code>4lb3rt123</code>, <code>albert</code>/<code>IsAdminInThisPage</code>, <code>admin</code>/<code>admin123</code>, <code>root</code>/<code>4lb3rt123</code>), 3 oracle-control pairs on <code>oracle78</code>, 1 impossible-user control, and 1 repeat of <code>albert</code>/<code>4lb3rt123</code> in the second batch. All 10 rows are itemised in Controls.</td>
+</tr>
+<tr>
+<td><strong>Whether <code>admin</code>/<code>IsAdminInThisPage</code> is reused as a <em>host</em> password for any account.</strong></td>
+<td><strong>2 accounts × 1 value = 2 probes</strong> (<code>albert</code>, <code>root</code>); <code>conx</code> <strong>not tested</strong> with it</td>
+<td>Both tested were <code>AUTH_FAIL</code>. <code>conx</code> was not tried with this value — that is an untested cell, not a negative.</td>
+</tr>
+<tr>
+<td><strong><code>/etc/cron.d</code>, per-user crontabs, and any writable-by-me cron path.</strong></td>
+<td>Files enumerated: <code>/var/spool/cron/crontabs/</code> = <strong>0 entries</strong>, <code>crontab -l</code> for root = <code>no crontab for root</code>, <code>/etc/cron.d</code> contents read (system jobs only, all root). <strong>0 write attempts.</strong></td>
+<td><code>sudo</code> is <strong>not installed</strong> on this image (<code>sh: sudo: not found</code>, <code>/etc/sudoers</code> does not exist, <code>/etc/sudoers.d/</code> does not exist, the <code>sudo</code> group has <strong>0</strong> members), so there is no escalation surface of the lab-93 shape here at all.</td>
+</tr>
+<tr>
+<td><strong>Timing/content side channels on the login comparison.</strong></td>
+<td><strong>0 probes</strong></td>
+<td>Not attempted. The auth decision is a constant-time-irrelevant <code>===</code> on two short literals; there is nothing here a side channel would add that a two-request read did not already give.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="discarded-with-a-reason--findings-i-dropped-and-why">Discarded with a reason — findings I dropped, and why</h2>
+<table>
+<thead>
+<tr>
+<th>Dropped candidate</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SQL injection in <code>login.php</code></strong></td>
+<td><strong>There is no database.</strong> No <code>mysqli</code>/<code>pgsql</code>/<code>sqlite3</code>/<code>pdo_*</code> driver in <code>php -m</code>; no database process in the process list; zero such references in <code>/var/www</code>. The <code>'1'='1</code> string is a <code>strpos()</code> substring test and <code>password='1'='1zzz</code> still authenticates, which no SQL engine would accept. Reported as <strong>F2, auth bypass</strong>, under the right CWE — the lab's own comment calls it <em>&quot;Simula una inyección lógica&quot;</em>, a simulated injection. Reporting it as SQLi would have been the most attractive wrong finding available.</td>
+</tr>
+<tr>
+<td><strong>Information disclosure via <code>Server: Apache/2.4.58 (Ubuntu)</code></strong></td>
+<td><code>ServerTokens</code> is at its distro default. No deployment decision says this version is secret, so it fails the class's own threshold — a banner is hygiene. Recorded in Stack and versions, not in Findings.</td>
+</tr>
+<tr>
+<td><strong><code>session.cookie_secure=Off</code> as a standalone finding</strong></td>
+<td>Folded into <strong>F5</strong> rather than filed separately: with the app served over plain HTTP on port 80 and <strong>no TLS listener in the image</strong> — <code>/etc/apache2/ports.conf:7-13</code> puts both <code>Listen 443</code> lines inside <code>&lt;IfModule ssl_module&gt;</code> / <code>&lt;IfModule mod_gnutls.c&gt;</code>, and `apache2ctl -M</td>
+</tr>
+<tr>
+<td><strong>A second credential from <code>logs.txt</code> line 16: <code>DEBUG: User 'albert' added to sudo group</code></strong></td>
+<td><strong>The artefact's claim is false.</strong> <code>grep -E &quot;sudo|admin&quot; /etc/group</code> → <code>sudo:x:27:</code> with <strong>zero</strong> members, and <code>sudo</code> is not installed. The log line narrates a privilege grant that does not exist. Reported as an <strong>artefact defect</strong> under Controls, not as a finding — an escalation that is written in a log file but not in the system is not an escalation.</td>
+</tr>
+<tr>
+<td><strong>A stack-trace / <code>display_errors</code> disclosure</strong></td>
+<td><strong>The measurement is the served body, not the ini.</strong> The PHP notices this application provably raises — <code>session_start(): Ignoring session_start() because a session is already active</code> — exist in <code>/var/log/apache2/error.log</code>, and I read the served bodies of all three pages (<code>login.php</code> 1 826 B, the panel 1 332 B, the disclosure 1 639 B) and found <strong>no notice and no path in any of them</strong>. <strong>0 disclosed traces.</strong> Corroboration only, and labelled as the CLI SAPI again: <code>display_errors =&gt; Off</code>, <code>log_errors =&gt; On</code>.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>Six, and <strong>three of them would have produced a finding that does not exist</strong>.</p>
+<h3 id="d1--the-403-bucket-would-have-reported-13-of-13-present-when-2-files-and-1-directory-exist">D1 — The 403 bucket would have reported 13 of 13 present, when 2 files and 1 directory exist</h3>
+<p>The <code>&lt;Files &quot;*&quot;&gt;</code> directive in <code>logs/.htaccess</code> is <strong>evaluated by name before the
+file is checked for existence</strong> — the same mechanism as lab 188's
+<code>&lt;FilesMatch &quot;^\.ht&quot;&gt;</code>. Every one of these returned <code>403</code> / <strong>275 B</strong> /
+md5 <code>0a0ce486142867ee709125cd88f1dd10</code>, byte-identical:</p>
+<pre><code>/logs/logs.txt          /logs/index.html      /.htaccess          /.htpasswd
+/index.phps             /server-status        /logs/              /logs/access.log
+/logs/error.log         /logs/auth.log        /logs/logs          /logs/log
+/logs/logs.html
+</code></pre>
+<p><code>/logs/index.html</code>, <code>/logs/access.log</code>, <code>/.htpasswd</code>, <code>/server-status</code> — <strong>none
+of these exist.</strong> The second instrument says so: <code>find /var/www -mindepth 1</code>
+returns <strong>7 entries</strong> total, of which the ones reachable at a <code>/logs/</code> URL are
+the directory <code>logs/</code> and exactly <strong>2</strong> files, <code>logs.txt</code> and <code>.htaccess</code>. So a
+status sweep reports <strong>13 present, 3 real (2 files + 1 directory), 10 phantoms</strong> —
+and the phantoms include <code>.htaccess</code>, <code>.htpasswd</code> and <code>server-status</code>, the three
+highest-value names in any wordlist.</p>
+<p><strong>What caught it, in order:</strong> the <strong>four</strong> impossible-name controls I planted in
+the wordlist before running it (<code>zzq7x9impossiblecontrol01.php</code>,
+<code>…02.log</code>, <code>…03.txt</code>, <code>thispathcannotexist4d7b1a9e</code> — all four landed in the 404
+bucket, so the sweep's <em>absent</em> answer was trustworthy while its <em>present</em> answer
+was not); then the server's own error log naming <code>nonexistent91.txt</code> as denied;
+then <code>find</code> as an independent second instrument. The Apache log is decisive and cheap:</p>
+<pre><code>AH01630: client denied by server configuration: /var/www/html/logs/nonexistent91.txt
+</code></pre>
+<p>The server denied a file it could not have found. <strong>A 403 from this directory
+carries zero information about whether the file exists</strong>, and I did not treat one
+as a discovery until the include-path oracle gave me a byte-distinguishable
+answer.</p>
+<h3 id="d2--i-nearly-filed-albert123-a-credential-that-is-not-in-the-file">D2 — I nearly filed <code>albert123</code>, a credential that is not in the file</h3>
+<p><code>logs.txt:12-13</code> puts <code>NGxiM3J0MTJz</code> on the line above
+<code>SUCCESS: Auth success for user 'albert'</code>. Context supplies the answer:
+<code>albert123</code>. The base64 answer is <code>4lb3rt123</code>. I wrote the context-derived value
+down first and only caught it by running the decoder.</p>
+<p>This is the brief's <em>&quot;compute your arithmetic, do not read it&quot;</em> applied to a
+decode: <strong>I had substituted a plausible reading for a computation.</strong> Had it
+shipped, the report would have carried a credential the file does not contain,
+and every downstream claim about it — including the <code>AUTH_FAIL</code> negative — would
+have been about a string nobody ever wrote down. The three decodes are now in a
+table in F4 with their lengths, and the SSH negative in Controls is against the
+<strong>decoded</strong> value.</p>
+<h3 id="d3--test--w-through-docker-exec-would-have-reported-the-wrong-docroot-writable">D3 — <code>test -w</code> through <code>docker exec</code> would have reported the wrong docroot writable</h3>
+<p>My first pass at the RCE question was <code>docker exec … test -w /var/www/html</code> —
+which is <strong>root</strong>, and would have answered &quot;WRITABLE&quot; for a directory that
+<code>www-data</code> cannot write. Re-run as the identity that actually executes the
+include:</p>
+<pre><code>$ su -s /bin/sh www-data -c &quot;touch /var/www/html/probe78_w&quot;
+touch: cannot touch '/var/www/html/probe78_w': Permission denied     NOT-writable
+$ su -s /bin/sh www-data -c &quot;touch /var/www/html/logs/probe78_w&quot;
+                                                                  WRITABLE
+</code></pre>
+<p><code>/var/www/html</code> is <code>755 root:root</code>; <code>/var/www/html/logs</code> is <code>755 www-data:www-data</code>.
+The root reading would have produced the <strong>more</strong> alarming answer and the <strong>wrong</strong>
+one, and it would have turned a 0-attempt RCE into an apparent 1-step one. This
+is the thirteenth-plus-one instance of the <code>test -w</code> defect, and the writeability
+in the Findings section is quoted from the <code>su</code> run, not the <code>docker exec</code> run.</p>
+<h3 id="d4--my-own-positive-control-mutated-the-files-under-test">D4 — My own positive control mutated the files under test</h3>
+<p>Certifying the SSH oracle green required a known-good credential, so I created
+<code>oracle78</code>. <code>useradd</code>/<code>userdel</code> then left <strong><code>/etc/passwd-</code>, <code>/etc/shadow-</code>,
+<code>/etc/group-</code>, <code>/etc/gshadow-</code>, <code>/etc/subgid-</code>, <code>/etc/subuid-</code></strong> behind, and the
+<code>-</code> copies <strong>contained <code>oracle78</code></strong> while the live files did not. A password-file
+diff taken at the wrong moment would have shown the target credentialed account
+as changed. Handled: <code>cp -a</code> backups taken first, restore verified by <strong>md5 and
+line count</strong> on both files (identical to the pre-test values), <code>userdel -r</code>,
+and the six <code>-</code> artefacts located with <code>find / -xdev -newermt</code> and removed.</p>
+<p>The family resemblance to lab 129 is exact: <code>chpasswd</code> on a new account replaced
+the shadow line of the account being cracked, and the cracker would have reported
+&quot;no match&quot; against its own canary with a green control and a plausible rate.</p>
+<h3 id="d5--bc-is-not-installed-a-blank-count-is-not-a-zero">D5 — <code>bc</code> is not installed; a blank count is not a zero</h3>
+<pre><code>find / -xdev -type f -printf &quot;%s\n&quot; | paste -sd+ | bc
+sh: 4: bc: not found
+</code></pre>
+<p>The corpus byte total came back <strong>empty</strong>. §19's shape: blank and zero are
+identical on the page, and &quot;0 bytes searched&quot; would have been filed as a
+measured property. Recomputed with <code>awk</code>: <strong>812 440 752 bytes across 13 782
+files</strong>. The reward conclusion below rests on the <code>awk</code> number.</p>
+<h3 id="d6--two-readings-of-the-same-byte-count-and-i-used-neither-as-evidence">D6 — Two readings of the same byte count, and I used neither as evidence</h3>
+<p>The Apache access log's <code>%b</code> for <code>GET /index.php?page=logs/logs.txt</code> is <code>1922</code>;
+<code>curl</code>'s <code>size_download</code> for the same request is <code>1639</code>. The deltas are not
+constant across requests — <code>1615</code> vs <code>1332</code> (+283), <code>301</code> vs <code>43</code> (+258),
+<code>339</code> vs <code>0</code>, <code>436</code> vs <code>275</code> (+161). I did not resolve the cause and I am not
+guessing at one. <strong>Every byte count in this writeup is <code>curl</code>'s</strong>, and the
+access log was used only for the <code>AH01630</code> attribution lines, which is the use
+the RUNBOOK prescribes for it. A sweep that had taken its counts from the access
+log would have been wrong by 17% on the decisive request.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>There is no reward in this lab.</strong> Measured, not assumed.</p>
+<pre><code>$ find / -xdev -type f 2&gt;/dev/null | wc -l
+13782
+$ find / -xdev -type f -printf &quot;%s\n&quot; 2&gt;/dev/null | awk '{s+=$1} END {print s}'
+812440752                       # 812 440 752 bytes
+</code></pre>
+<p><strong>The positive control ran first, on the same sweep, before I believed the
+negative</strong> (§26 and §12 — a sweep that has never found anything is not a sweep):</p>
+<pre><code>$ grep -rIlE &quot;logs/logs\.txt is&quot; / --exclude-dir=proc --exclude-dir=sys
+/var/www/html/logs/logs.txt          &lt;- 1 of 13 782 files, exactly the file I knew contained it
+</code></pre>
+<p>The detector works and can see into files. Then the target sweep, same corpus,
+same tool — one regex, brace-delimited, so it cannot be inflated by ordinary
+English or build vocabulary:</p>
+<pre><code>$ grep -rIlE &quot;(FLAG|flag|WOPR|DL|dl|CTF|ctf|token|secret|reward)\{&quot; / \
+      --exclude-dir=proc --exclude-dir=sys | wc -l
+0
+</code></pre>
+<p><strong>0 files of 13 782.</strong> Nine prefixes, case-variant, both braces.</p>
+<p><strong>A second, deliberately sloppier sweep — and why it was the wrong instrument.</strong>
+Dropping the braces and searching the bare word <code>flag</code> returns <strong>741 files</strong>:</p>
+<pre><code>$ grep -rIoh -E &quot;[A-Za-z_-]*[Ff][Ll][Aa][Gg][A-Za-z_-]*&quot; \
+      /usr/bin/c_rehash /usr/bin/bashbug /etc/default/useradd | sort -u
+CFLAGS
+flag
+flags
+</code></pre>
+<p><strong>I did not read all 741, and I am not claiming to have.</strong> I classified the
+three files in the head of the list, and the entire extracted token set from
+them is <code>CFLAGS</code>, <code>flag</code>, <code>flags</code> — the <strong>word</strong> <code>flag</code> in compiler and
+command-line vocabulary, plus <code>bashbug</code>'s uppercase <code>FLAG</code> inside its own
+<code>--flag</code>-style option help. That is enough to show the number is an artefact of
+the pattern, not a property of the corpus: this is lab 168's shape exactly — a
+distinctive pattern in a searcher becomes a liability the moment the pattern is
+a plain English word. The brace-delimited form is what makes the number mean
+something, and it is why I quote <code>0 files of 13 782</code> and not <code>741</code>. The honest
+statement is: <strong>the bare-word sweep is not a usable instrument here, and the
+usable one returned zero.</strong></p>
+<p><strong>And I read the corpus for my own artefacts before believing that zero</strong> (§26 —
+lab 168 found its own probe script because the script contained the pattern in
+its search pattern). Everything I created in the container was: <code>probe78.txt</code>
+and <code>probe78_w</code> (deleted), <code>/root/BACKUP78_passwd</code> and <code>/root/BACKUP78_shadow</code>
+(deleted), the account <code>oracle78</code> (deleted, 0 references in 6 files), and the six
+<code>/etc/*-</code> backups (deleted). <strong>None contains any of the nine reward prefixes</strong>,
+and none of my probes were written into the container's filesystem at all — every
+probe file is on the host under <code>/tmp/[tool]/lab78/</code>, outside the searched
+corpus. <code>find / -xdev -newermt &quot;2026-09-30&quot; -type f</code>, filtered for Docker's own
+<code>/var/lib</code>, <code>/var/log</code>, <code>/run</code>, <code>/tmp</code>, <code>/proc</code>, <code>/sys</code> churn, returned <strong>10
+paths, all <code>/etc/{group,gshadow,passwd,shadow,subgid,subuid}</code> and their <code>-</code>
+copies</strong> — every one of them mine, every one of them removed.</p>
+<p><strong>No <code>FLAG{}</code> and none of the nine searched prefixes in <code>prefix{}</code> form.</strong> I am
+not claiming to have swept <em>every</em> token format that could exist — I am claiming
+nine prefixes, two case variants, both braces, 0 hits, 13 782 files, with the
+sweep's detector proven live first. The point at
+<a href="../labs.html"><code>../INDEX.md</code></a>'s <code>FLAG{}</code> column is the single source for this
+corpus-wide property; this row contributes an absence with a count behind it.</p>
+<hr />
+<h2 id="restore">Restore</h2>
+<p>Recreated from the image, not by undoing edits.</p>
+<pre><code>$ docker rm -f bypassme_container &amp;&amp; docker run -d --name bypassme_container bypassme:latest
+$ docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' bypassme_container
+[net-0-2]                        # same address, so every cited probe reproduces
+</code></pre>
+<p><strong>Positive verification after restore</strong> — the service answering again with its
+shipped values, not a <code>docker ps</code> line:</p>
+<pre><code>GET /login.php                          -&gt; 200 1826
+POST /login.php  password='1'='1'       -&gt; 302        (F2 still fires)
+GET /index.php?page=logs/logs.txt       -&gt; 200 1639    (F3 still fires)
+GET /logs/logs.txt                      -&gt; 403  275    (the control still holds)
+md5sum /etc/passwd  -&gt; b665e525b3e22f32a3b462205a2b8994   (identical to pre-test)
+md5sum /etc/shadow  -&gt; 99d016c2e3e7caf9ec3b2a9b5ff93c06   (identical to pre-test)
+md5sum logs.txt     -&gt; 56dcce057bac00214b79f5c1bc13a8a8   (identical to pre-test)
+grep -c oracle78    -&gt; 0 0 0             (no trace of the oracle account)
+find /var/www -mindepth 1 | wc -l -&gt; 7  (the shipped webroot, unchanged)
+</code></pre>
+<h2 id="artifacts-left-in-this-engagement">Artifacts left in this engagement</h2>
+<ul>
+<li><code>[lab-home]/dockerlabs/labs/78/bypassme.tar</code> (136.9 MB) and the
+<code>bypassme:latest</code> image (1.67 GB) — <strong>left in place</strong>, re-obtainable from the
+archive, and other workers are running concurrently. Reclaim by <strong>image
+name</strong> only; never <code>docker system prune</code>.</li>
+<li><code>/tmp/[tool]/lab78/</code> — host-side probe scripts and captured bodies, outside
+the searched container corpus. Nothing of mine is inside the container.</li>
+</ul>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

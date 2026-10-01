@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 115 Master &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Master</p><h1 id="115-master--writeup">115 Master — writeup</h1>
+<p><strong>Engagement outcome: PARTIAL.</strong> Unauthenticated access to the application was
+reached and measured, and a WordPress privilege escalation was executed and
+measured. <strong>Code execution was not achieved, and neither <code>root</code> nor a reward
+was obtained.</strong> The sections below separate what was executed from what was
+read, and what was not tested from what was discarded.</p>
+<p>Everything quoted here was read or executed during this engagement. This
+repository holds no lab artefacts, so a reader can check the reasoning and the
+quoted evidence but cannot re-run the target — see <code>README.md</code>, &quot;What
+'resolvable' means here, precisely&quot;.</p>
+<hr />
+<h2 id="what-the-artefact-actually-is">What the artefact actually is</h2>
+<p>The queue line is <code>115|Master|medio|WordPress platform; admin-reach chain</code>
+(<code>tooling/labs.manifest:60</code>). <strong>The manifest's platform label is correct, and
+that was verified from a version-bearing file in the artefact rather than
+inherited.</strong></p>
+<p>Platform description as published (<code>tooling/download-labs.sh list</code>, id 115):</p>
+<blockquote>
+<p><code>115|Master|medio|Laboratorio para practicar la explotación de un WordPress vulnerable y escalada de privilegios en Linux.</code></p>
+</blockquote>
+<p>Read out of the artefact, layer
+<code>97818003ffa808be6a4005bbbc712637838925c2d4245a8d1cbf416cf47d8ae0/layer.tar</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Fact</th>
+<th>Value</th>
+<th>Source (verbatim)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base OS</td>
+<td>Ubuntu 24.04</td>
+<td>image config label <code>org.opencontainers.image.version</code> = <code>24.04</code></td>
+</tr>
+<tr>
+<td>Services started</td>
+<td><code>service apache2 start &amp;&amp; service mariadb start &amp;&amp; tail -f /dev/null</code></td>
+<td>image <code>Cmd</code></td>
+</tr>
+<tr>
+<td>Docroot</td>
+<td><code>/var/www/html</code></td>
+<td><code>etc/apache2/sites-available/000-default.conf:12</code> — <code>	DocumentRoot /var/www/html</code></td>
+</tr>
+<tr>
+<td><strong>WordPress (shipped)</strong></td>
+<td><strong>6.5.5</strong></td>
+<td><code>var/www/html/wp-includes/version.php:19</code> — <code>$wp_version = '6.5.5';</code></td>
+</tr>
+<tr>
+<td><strong>WordPress (live at first request)</strong></td>
+<td><strong>7.1.2</strong></td>
+<td>same file, live container — <code>$wp_version = '7.1.2';</code></td>
+</tr>
+<tr>
+<td><strong>Vulnerable plugin</strong></td>
+<td><strong>MasterStudy LMS 3.3.25</strong></td>
+<td><code>wp-content/plugins/masterstudy-lms-learning-management-system/masterstudy-lms-learning-management-system.php:10</code> — <code> * Version: 3.3.25</code>; <code>:18</code> — <code>define( 'MS_LMS_VERSION', '3.3.25' );</code>; plugin <code>readme.txt:8</code> — <code>Stable tag: 3.3.25</code></td>
+</tr>
+<tr>
+<td>Other active plugins</td>
+<td><code>elementor</code>, <code>header-footer-elementor</code>, <code>akismet</code>, <code>wp-automatic</code>, <code>hello.php</code></td>
+<td><code>wp_options.active_plugins</code></td>
+</tr>
+<tr>
+<td>Base image</td>
+<td>single container, default bridge, no macvlan, no second host</td>
+<td><code>auto_deploy.sh:131</code> — <code>docker run -d --name $CONTAINER_NAME $IMAGE_NAME</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The two WordPress numbers are different facts and both are recorded.</strong> The
+artefact ships 6.5.5. The running instance read 7.1.2 within minutes of the
+first request, because nothing disables the automatic updater and the container
+reaches the update API:</p>
+<ul>
+<li><code>grep -cE &quot;AUTOMATIC_UPDATER_DISABLED|DISALLOW_FILE_MODS&quot; /var/www/html/wp-config.php</code> → <strong>0</strong> (neither constant is defined)</li>
+<li><code>getent hosts api.wordpress.org</code> inside the container → <code>2620:109:b00a::4206:2afb api.wordpress.org</code></li>
+</ul>
+<p>Core auto-updated 6.5.5 → 7.1.2. The <strong>plugin did not move</strong>:
+<code>grep -nE &quot;MS_LMS_VERSION| \* Version:&quot;</code> on the live plugin file still returned
+<code>3.3.25</code> on both lines. Only the two core numbers differ, and they mean
+different things: 6.5.5 is what the image contains, 7.1.2 is what the target
+was serving by the time it was attacked.</p>
+<p><strong>A second WordPress tree is present and is not the target.</strong>
+<code>home/ubuntu/wordpress/</code> is a complete, separate WordPress installation owned
+by <code>nobody:nogroup</code>, alongside <code>home/ubuntu/latest.tar.gz</code> (24,696,391 bytes,
+<code>root/root</code>) — the tarball it was unpacked from. <code>/var/www/html</code> is the served
+docroot; nothing in the Apache configuration points at <code>[lab-home]/ubuntu</code>.</p>
+<h3 id="the-escalation-surface-read-off-the-artefact">The escalation surface, read off the artefact</h3>
+<p><code>etc/sudoers</code>, the last three lines, verbatim:</p>
+<pre><code>www-data ALL=(pylon) NOPASSWD: /usr/bin/php
+pylon ALL=(mario) NOPASSWD: /bin/bash [lab-home]/mario/pingusorpresita.sh
+mario ALL=(root) NOPASSWD: /bin/bash [lab-home]/pylon/pylonsorpresita.sh
+</code></pre>
+<p>(<code>etc/sudoers:59</code>, <code>:61</code>, <code>:63</code>)</p>
+<p>Identities involved (<code>etc/passwd:13</code>, <code>:22</code>, <code>:23</code>):</p>
+<pre><code>www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+mario:x:1001:1001:mario,,,:[lab-home]/mario:/bin/bash
+pylon:x:1002:1002:pylon,,,:[lab-home]/pylon:/bin/bash
+</code></pre>
+<p><strong>Two of the three rungs are not walkable, from the modes in the artefact.</strong>
+Directory and file metadata read from the layer tar headers:</p>
+<pre><code>0750  1001/1001    home/mario
+0664  1001/1001    home/mario/pingusorpresita.sh
+0750  1002/1002    home/pylon
+0664  1002/1002    home/pylon/pylonsorpresita.sh
+</code></pre>
+<p><code>etc/group:37</code> is <code>users:x:100:mario,pylon</code> — both users share group <code>users</code>,
+which grants nothing here: <code>[lab-home]/mario</code> is <code>0750</code> owned <code>mario:mario</code>, so
+<code>pylon</code> cannot even traverse it, and neither script is group- or
+world-writable. So <code>pylon → mario</code> requires writing a file <code>pylon</code> cannot
+reach, and <code>mario → root</code> requires writing a file <code>mario</code> cannot reach.</p>
+<p>The only rung reachable from the webserver identity is
+<code>www-data → pylon</code>, and it was <strong>not exercised</strong> — see <em>NOT tested</em>.</p>
+<h3 id="why-a-php-write-would-be-code-execution-had-one-been-obtained">Why a <code>.php</code> write would be code execution, had one been obtained</h3>
+<p>Read from the artefact, not assumed:</p>
+<ul>
+<li><code>etc/apache2/mods-available/php8.3.conf:3-4</code><pre><code>&lt;FilesMatch &quot;.+\.ph(?:ar|p|tml)$&quot;&gt;
+    SetHandler application/x-httpd-php
+</code></pre>
+A <strong>server-level <code>FilesMatch</code></strong>, outside every <code>&lt;Directory&gt;</code>. <code>.php</code>,
+<code>.phtml</code> and <code>.phar</code> all execute anywhere under the docroot.</li>
+<li><code>etc/apache2/apache2.conf:170-174</code><pre><code>&lt;Directory /var/www/&gt;
+	Options Indexes FollowSymLinks
+	AllowOverride None
+	Require all granted
+&lt;/Directory&gt;
+</code></pre>
+<code>AllowOverride None</code> means a per-directory <code>.htaccess</code> cannot speak for
+itself — the correct half of the lab-146 discriminator.</li>
+<li>The lab-146 trick itself is <strong>absent</strong>, with a count: <code>grep -rc &quot;AddType.*x-httpd-php&quot;</code>
+across the 34 config files under <code>etc/apache2/</code> returned <strong>0 files with a
+non-zero count</strong>. There is no global <code>AddType</code> mapping another extension to
+the PHP handler.</li>
+</ul>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap-equivalent: listening sockets, read from inside the container
+tcp   LISTEN 0 511   0.0.0.0:80    0.0.0.0:*  users:((&quot;apache2&quot;,pid=24,fd=3))
+tcp   LISTEN 0 80    127.0.0.1:3306 0.0.0.0:*
+</code></pre>
+<p>Two sockets. <strong>No SSH and no other host</strong>, so the sudoers ladder is only
+reachable from a webserver-side execution primitive. <code>3306</code> is bound to
+loopback, not <code>0.0.0.0</code>. Checked beyond the TCP scan: no UDP listeners were
+looked for with a protocol exchange — see <em>NOT tested</em>.</p>
+<p>Apache workers run as <code>www-data</code>; the master runs as <code>root</code>:</p>
+<pre><code>$ ps -eo user,pid,comm | grep -E &quot;apache2|PID&quot;
+USER         PID COMMAND
+root          24 apache2
+www-data      29 apache2
+www-data      30 apache2
+...
+</code></pre>
+<p>REST is reachable <strong>only</strong> through <code>?rest_route=</code>. The pretty form
+<code>/wp-json/wp/v2/users</code> returns <code>404</code> (273 bytes) while
+<code>/?rest_route=/wp/v2/users</code> returns <code>200</code> (1065 bytes) — a blind spot that
+reads exactly like &quot;the REST API is off&quot;.</p>
+<pre><code>$ curl -s &quot;http://[net-0-11]/?rest_route=/&quot;   →  217 routes
+namespaces: ['oembed/1.0', 'masterstudy-lms/v2', 'stm-lms/v1', 'lms',
+             'elementor/v1', 'wp/v2', 'wp-site-health/v1',
+             'wp-block-editor/v1', 'wp-abilities/v1']
+</code></pre>
+<p>Route counts, computed from the index: <code>/masterstudy-lms/v2</code> = 58,
+<code>/lms</code> = 10, <code>/stm-lms/v1</code> = 2.</p>
+<p>Unauthenticated WordPress user enumeration, unauthenticated, count returned = 1:</p>
+<pre><code>$ curl -s &quot;http://[net-0-11]/?rest_route=/wp/v2/users&amp;per_page=100&quot;
+[{&quot;id&quot;:1,&quot;slug&quot;:&quot;mario&quot;,&quot;name&quot;:&quot;Mario&quot;, ... }]
+</code></pre>
+<p>The single WordPress administrator is <strong><code>mario</code></strong> — the same identity as Linux
+uid 1001. The WordPress surface and the sudoers ladder are about the same two
+people.</p>
+<hr />
+<h2 id="the-class">The class</h2>
+<p><strong>Entry criterion:</strong> the queue claims an &quot;admin-reach chain&quot;. The question that
+started it was <em>what does an unauthenticated visitor get, and how far does it
+go?</em></p>
+<p><strong>Source that settled it:</strong> <code>includes/Plugin.php:48</code>. The whole plugin REST
+API is registered with the permission callback defaulted open:</p>
+<pre><code class="language-php">					array_merge(
+						array(
+							'methods'                     =&gt; $route-&gt;methods,
+							'callback'                    =&gt; array( $this-&gt;router, 'handle' ),
+							'permission_callback'         =&gt; '__return_true',
+</code></pre>
+<p><code>__return_true</code> is the <strong>default for every route</strong> in the router, not a
+per-route decision. Access control for all 58 <code>masterstudy-lms/v2</code> routes is
+delegated entirely to a middleware pipeline (<code>includes/routes.php:10-19</code>).
+That is a fragile design — the gate is nowhere in the route definition — and it
+is the reason the controls had to be verified separately.</p>
+<p>The namespace is <code>masterstudy-lms/v2</code>, not <code>stm-lms/v1</code>
+(<code>includes/init.php:7-8</code>). I guessed <code>stm-lms/v1</code> first and got 404 on routes
+that exist. That is recorded as an instrumentation defect, not as an absence.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>Every hop below was executed and every identity was <strong>measured</strong>, not assumed.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof (verbatim)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>anonymous</td>
+<td>HTTP to <code>admin-ajax.php</code></td>
+<td>no <code>Cookie</code> header sent; response <code>200</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>subscriber</code> (WP id 3)</td>
+<td><code>stm_lms_fast_register</code> creates an account <strong>and signs the caller in</strong></td>
+<td><code>[response-cookie-header]: [wordpress-session-cookie]=probe115bexample-invalid%7C...; path=/; HttpOnly</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>subscriber</code> → <code>stm_lms_instructor</code></td>
+<td><code>stm_lms_become_instructor</code></td>
+<td><code>{&quot;errors&quot;:[],&quot;status&quot;:&quot;success&quot;}</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>stm_lms_instructor</code> (14 caps)</td>
+<td>plugin REST + AJAX surface reachable</td>
+<td><code>users/me</code> → <code>id=3 roles=['stm_lms_instructor'] caps=14</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="hop-2--unauthenticated-account-creation-with-a-returned-session">Hop 2 — unauthenticated account creation with a returned session</h3>
+<p>Nonce <code>stm_lms_fast_register</code> is served to anonymous visitors (§ <em>Controls</em>).
+The handler (<code>_core/lms/classes/guest_checkout.php:97-98</code>, <code>:176</code>, <code>:185-193</code>):</p>
+<pre><code class="language-php">	public function fast_register() {
+		check_ajax_referer( 'stm_lms_fast_register', 'nonce' );
+</code></pre>
+<pre><code class="language-php">		$user = wp_create_user( sanitize_title( $data['email'] ), $data['password'], $data['email'] );
+</code></pre>
+<pre><code class="language-php">			wp_signon(
+				array(
+					'user_login'    =&gt; $data['email'],
+					'user_password' =&gt; $data['password'],
+				),
+				is_ssl()
+			);
+</code></pre>
+<p>Executed:</p>
+<pre><code>$ curl -X POST &quot;http://[net-0-11]/wp-admin/admin-ajax.php?action=stm_lms_fast_register&amp;nonce=0d71518d6c&quot; \
+       -H 'Content-Type: application/json' \
+       --data-binary '{&quot;email&quot;:&quot;probe115b@example.invalid&quot;,&quot;password&quot;:&quot;Pr0be115xyz&quot;,&quot;additional&quot;:{}}'
+{&quot;status&quot;:&quot;success&quot;,&quot;items&quot;:[]}          [200, 31 bytes]
+</code></pre>
+<p>The same call also proves <code>wp-login.php</code> accepts the credential afterwards
+(<code>[wordpress-session-cookie]</code> cookie count = 1). <strong>No capability of the site
+administrator is required at any point in this hop.</strong></p>
+<h3 id="hop-3--self-promotion-to-instructor">Hop 3 — self-promotion to instructor</h3>
+<p><code>{&quot;errors&quot;:[],&quot;status&quot;:&quot;success&quot;}</code>, and the identity changed. Measured before
+and after on the same account:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>roles</code></th>
+<th>capabilities</th>
+<th><code>manage_options</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>after registration</td>
+<td><code>['subscriber']</code></td>
+<td><strong>3</strong></td>
+<td><code>None</code></td>
+</tr>
+<tr>
+<td>after <code>stm_lms_become_instructor</code></td>
+<td><code>['stm_lms_instructor']</code></td>
+<td><strong>14</strong></td>
+<td><code>None</code></td>
+</tr>
+</tbody>
+</table>
+<p>The 14 granted capabilities, read from <code>users/me?context=edit</code>:</p>
+<pre><code>delete_stm_lms_post True      edit_stm_lms_post True       read True
+delete_stm_lms_posts True     edit_stm_lms_posts True      stm_lms_instructor True
+list_users True               publish_stm_lms_posts True   upload_files True
+delete_others_stm_lms_posts False  edit_others_stm_lms_posts False
+read_private_stm_lms_posts False
+</code></pre>
+<p>Root cause: <code>_core/lms/classes/user.php:566-580</code> grants the role from the
+request body when two options permit it, and neither is a control the caller
+can be expected to know about:</p>
+<pre><code class="language-php">	public static function stm_lms_set_user_role( $user, $data ) {
+		if ( ! empty( $data['become_instructor'] ) &amp;&amp; $data['become_instructor'] ) {
+			$register_as_instructor   = STM_LMS_Options::get_option( 'register_as_instructor', false );
+			$instructor_premoderation = STM_LMS_Options::get_option( 'instructor_premoderation', false );
+
+			if ( $register_as_instructor &amp;&amp; ! $instructor_premoderation ) {
+				wp_update_user(
+					array(
+						'ID'   =&gt; $user,
+						'role' =&gt; 'stm_lms_instructor',
+					)
+				);
+			}
+		}
+	}
+</code></pre>
+<p><code>upload_files</code> and <code>list_users</code> are the two that matter downstream.</p>
+<h3 id="hop-4--what-the-instructor-identity-reaches">Hop 4 — what the instructor identity reaches</h3>
+<p>Sweep of the plugin's <strong>privileged</strong> (<code>wp_ajax_</code>) actions, caller =
+<code>stm_lms_instructor</code>, session verified live immediately before and after.
+57 actions × 1 request each — the 57 for which I held a matching nonce.
+Buckets reconcile exactly (18+23+5+11 = 57):</p>
+<table>
+<thead>
+<tr>
+<th>Response shape</th>
+<th>Count</th>
+<th>Reading</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>200</code> with a substantive body (&gt;0 bytes)</td>
+<td><strong>18</strong></td>
+<td>handler executed and did work</td>
+</tr>
+<tr>
+<td><code>200</code> with a <strong>0-byte</strong> body</td>
+<td><strong>23</strong></td>
+<td>capability-denied <code>die</code>, <strong>not</strong> execution</td>
+</tr>
+<tr>
+<td><code>403</code> / <code>-1</code></td>
+<td><strong>5</strong></td>
+<td>registered, nonce gate fired</td>
+</tr>
+<tr>
+<td><code>400</code> / <code>0</code></td>
+<td><strong>11</strong></td>
+<td><code>has_action()</code> false in that request</td>
+</tr>
+</tbody>
+</table>
+<p>The 18 that returned data include:</p>
+<pre><code>stm_lms_ban_user                             &quot;saved&quot;
+stm_lms_get_users_submissions                {&quot;total&quot;:1,&quot;users&quot;:[{&quot;id&quot;:3,...,&quot;user_email&quot;:&quot;probe115b@example.invalid&quot;,...
+stm_lms_enterprise                           {&quot;errors&quot;:[{&quot;id&quot;:&quot;required&quot;,&quot;field&quot;:&quot;enterprise_name&quot;,...
+stm_lms_update_user_status                   []
+stm_lms_toggle_buying                        {&quot;next&quot;:&quot;&quot;,&quot;message&quot;:&quot;All courses in the selected categories are enabl...
+stm_lms_total_progress                       {&quot;course&quot;:{&quot;progress_percent&quot;:0},...
+stm_lms_get_user_quizzes                     {&quot;posts&quot;:[{&quot;course_id&quot;:&quot;0&quot;,...
+stm_lms_logout                               &quot;http:\/\/[net-0-11]\/index.php\/user-account\/&quot;
+</code></pre>
+<p><code>stm_lms_ban_user</code> returning <code>&quot;saved&quot;</code> and <code>stm_lms_get_users_submissions</code>
+returning another user's email address are the reportable ones: a
+self-promoted instructor reaches a user-moderation action and a user-enumeration
+action.</p>
+<p><strong>Correction to my own reading of this sweep, applied above:</strong> I first counted
+all 41 <code>200</code>s as &quot;executed&quot;. Twenty-three of them have an empty body, and this
+plugin denies by <code>die</code> on a failed <code>current_user_can()</code> — for example
+<code>_core/includes/user_manager/UserManager.ImportUsers.php:12-14</code>:</p>
+<pre><code class="language-php">		if ( ! current_user_can( 'manage_options' ) ) {
+			die;
+		}
+
+		check_ajax_referer( 'stm_lms_dashboard_import_users_to_course', 'nonce' );
+</code></pre>
+<p>A 0-byte <code>200</code> is a <strong>silent denial</strong> and is indistinguishable from a no-op at
+the status-code level. The finding above uses the 18, not the 41.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="f1--unauthenticated-account-creation-returning-a-live-session">F1 — Unauthenticated account creation returning a live session</h3>
+<p><strong>CWE-306</strong> (missing authentication for critical function), <strong>CWE-862</strong>
+(missing authorization).
+<code>stm_lms_fast_register</code> creates a WordPress account and immediately calls
+<code>wp_signon</code>, returning three <code>[response-cookie-header]</code> headers including a
+<code>[wordpress-session-cookie]*</code> cookie. The only gate is a WordPress nonce, which for
+a logged-out user is a constant derived from uid 0 and the action string — it
+is published in the page source (§ F3) and is not a secret.
+<em>Evidence:</em> response quoted in Hop 2; source at <code>guest_checkout.php:176</code>,
+<code>:185-193</code>.
+<em>Impact:</em> any anonymous internet client obtains an authenticated session on the
+platform hosting the lab's content.
+<em>Root cause:</em> a guest-checkout convenience function performs account creation
+as a side effect of adding to a cart.
+<em>Fix:</em> require an authenticated session, or at minimum an email-verification
+step before the session is established; do not treat a uid-0 nonce as a gate.</p>
+<h3 id="f2--unauthenticated-privilege-escalation-subscriber--lms-instructor">F2 — Unauthenticated privilege escalation: subscriber → LMS instructor</h3>
+<p><strong>CWE-269</strong> (improper privilege management).
+One unauthenticated POST creates a <code>subscriber</code>; a second promotes it to
+<code>stm_lms_instructor</code>, tripling its capabilities from 3 to 14 and granting
+<code>upload_files</code> and <code>list_users</code>. Measured before/after in the table in Hop 3.
+<em>Impact:</em> the plugin's instructor surface — 18 privileged actions returning
+data, including user moderation and user enumeration — becomes reachable by an
+anonymous client.
+<em>Root cause:</em> self-service role assignment gated on two stored options rather
+than on approval (<code>user.php:566-580</code>).
+<em>Fix:</em> require an administrator (or a moderated queue) to grant the instructor
+role; never let the request body decide a role at registration time.</p>
+<h3 id="f3--full-administrative-action-token-bundle-served-to-anonymous-visitors">F3 — Full administrative action-token bundle served to anonymous visitors</h3>
+<p><strong>CWE-200</strong> (information exposure).
+The public homepage embeds <code>stm_lms_nonces</code>, <strong>119 entries</strong>, covering the
+plugin's entire administrative surface — including <code>stm_lms_ban_user</code>,
+<code>stm_lms_save_user_info</code>, <code>wpcfto_save_settings</code>, <code>stm_lms_import_groups</code>,
+<code>stm_lms_become_instructor</code>. Extracted: <strong>119 keys, 119 values, 0 missing.</strong>
+<em>Impact:</em> removes the CSRF token as an obstacle to every one of these actions.
+A nonce is a CSRF token, not an authentication control, but a token that is
+published for every administrative action turns &quot;possession of a token&quot; into
+&quot;possession of the ability to call the endpoint&quot; for anyone who is willing to
+pass the capability checks.
+<em>Root cause:</em> the nonce map is printed unconditionally rather than scoped to
+the actions the current user may perform.
+<em>Fix:</em> emit only the nonces for actions the current user is entitled to.</p>
+<h3 id="f4--blanket-__return_true-permission-callback-on-the-entire-plugin-rest-api">F4 — Blanket <code>__return_true</code> permission callback on the entire plugin REST API</h3>
+<p><strong>CWE-862</strong>.
+<code>includes/Plugin.php:48</code> sets <code>'permission_callback' =&gt; '__return_true'</code> as the
+<strong>default</strong> for every route the router registers, so all 58
+<code>masterstudy-lms/v2</code> routes are declared public and rely entirely on a
+middleware pipeline for access control. Nothing in the route definition states
+that a route is protected.
+<em>Impact:</em> measured as <strong>not</strong> exploitable in this engagement — the middleware
+held (see <em>Controls</em>) — but the design makes a single mis-scoped route
+unauthorised by default, and one already exists in the older namespace (F5).
+<em>Fix:</em> default the callback to a denial and require each route to opt in to
+public access.</p>
+<h3 id="f5--unauthenticated-information-disclosure-no-ownership-predicate">F5 — Unauthenticated information disclosure, no ownership predicate</h3>
+<p><strong>CWE-639</strong> (authorisation bypass through user-controlled key),
+<strong>CWE-200</strong>.
+<code>_core/lms/route.php:53-58</code> registers a course-list endpoint whose permission
+callback is unconditional and which takes an arbitrary author id:</p>
+<pre><code class="language-php">		register_rest_route(
+			'lms',
+			'/stm-lms-user/course-list',
+			array(
+				'permission_callback' =&gt; '__return_true',
+</code></pre>
+<p>Executed, unauthenticated, no cookies:</p>
+<pre><code>$ curl -s &quot;http://[net-0-11]/?rest_route=/lms/stm-lms-user/course-list&amp;author_id=1&quot;
+[200, 225 bytes]
+[{&quot;id&quot;:&quot;19&quot;,&quot;title&quot;:&quot;Curso de Python desde cero e intensivo&quot;},
+ {&quot;id&quot;:&quot;36&quot;,&quot;title&quot;:&quot;Curso de bases de datos Mong...&quot;}]
+</code></pre>
+<p>The same shape at <code>_core/lms/classes/course.php:62-68</code> exposes course search
+(<code>__return_true</code>) — <code>GET /?rest_route=/stm-lms/v1/courses&amp;search=a</code> → <code>200</code>,
+549 bytes, unauthenticated.
+<em>Impact:</em> any visitor can enumerate the course catalogue attributed to any
+author id. Verified for <code>author_id=1</code>; ids were <strong>not</strong> swept exhaustively.
+<em>Root cause:</em> a public callback with a user-controlled lookup and no
+authorisation check on the object.
+<em>Fix:</em> gate on the object's own visibility rules, or drop the endpoint.</p>
+<h3 id="f6--missing-php-extension-causes-unauthenticated-reachable-500s">F6 — Missing PHP extension causes unauthenticated-reachable 500s</h3>
+<p><strong>CWE-1104</strong> / availability defect in the shipped configuration.
+<code>php -m</code> inside the running container lists no <code>mbstring</code>. The plugin calls
+<code>mb_strlen()</code> and <code>mb_strimwidth()</code> unconditionally in
+<code>_core/lms/helpers.php:232-235</code>:</p>
+<pre><code class="language-php">	if ( ! empty( intval( $length ) ) ) {
+		$w_length = mb_strlen( $word );
+		if ( $w_length &gt; $length ) {
+			$word = mb_strimwidth( $word, 0, $length, $affix );
+</code></pre>
+<p>Apache error log, verbatim, first line only:</p>
+<pre><code>[Wed Sep 30 10:32:30.165822 2026] [php:error] [pid 288] [client [net-0-1]:55882] PHP Fatal error:  Uncaught Error: Call to undefined function mb_strimwidth() in /var/www/html/wp-content/plugins/masterstudy-lms-learning-management-system/_core/lms/helpers.php:235
+</code></pre>
+<p>Reached through <code>stm_lms_minimize_word()</code> ←
+<code>themes/ms-lms-starter-theme/templates/header/parts/authorization-links.php:58</code>
+← the theme header, i.e. <strong>any page render for a signed-in user</strong>. The
+homepage returned <code>500</code> at one point during the engagement and <code>200</code> at
+another.
+<em>Impact:</em> availability, and — more damaging for an assessment — the target's
+own behaviour becomes <strong>non-deterministic</strong>, which silently corrupts every
+before/after measurement taken against it (see <em>Instrumentation defects</em>).
+<em>Root cause:</em> the plugin declares <code>Requires PHP: 7.4</code> (plugin <code>readme.txt:7</code>)
+and calls <code>mb_*</code> without checking the extension is loaded.
+<em>Fix:</em> install <code>php8.3-mbstring</code>, and guard the <code>mb_*</code> calls with
+<code>function_exists()</code>.</p>
+<h3 id="f7--privileged-action-reachability-is-non-deterministic">F7 — Privileged-action reachability is non-deterministic</h3>
+<p><strong>CWE-670</strong> (always-incorrect control flow) / design defect.
+The plugin's privileged AJAX actions are registered as a <strong>side effect of a
+class file being loaded</strong> — <code>_core/lms/classes/user.php:4</code> is
+<code>STM_LMS_User::init();</code> executed at file scope, and that file is pulled in by
+an autoloader. Whether <code>has_action(&quot;wp_ajax_stm_lms_change_avatar&quot;)</code> is true at
+the moment <code>admin-ajax.php</code> evaluates it therefore depends on whether something
+earlier in the same request happened to reference the class.</p>
+<p>Measured, same user, same role, same nonces, two sessions:</p>
+<table>
+<thead>
+<tr>
+<th>Measurement</th>
+<th>Session A</th>
+<th>Session B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>privileged actions returning <code>200</code> with a body</td>
+<td><strong>41</strong></td>
+<td><strong>1</strong></td>
+</tr>
+<tr>
+<td>returning <code>400</code> / <code>0</code> (<code>has_action()</code> false)</td>
+<td>0</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td>re-test of the 41 that worked in A</td>
+<td>—</td>
+<td><strong>40 of 41 regressed</strong></td>
+</tr>
+</tbody>
+</table>
+<p>A control action that provably executed in session A
+(<code>stm_lms_become_instructor</code>, <code>200 {&quot;errors&quot;:[],&quot;status&quot;:&quot;success&quot;}</code>) returned
+<code>400</code> / <code>0</code> in session B. Repeated trials, N=5 per action, then showed the
+whole class stably flipped — so this is a <strong>state</strong> difference between sessions,
+not per-request jitter. Core version and plugin version were identical in both
+(<code>7.1.2</code> and <code>3.3.25</code>), and the plugin was active with all 1,276 PHP files
+present, so the plugin was loading: the REST namespace was present and its
+middleware returned its normal <code>401</code>.
+<em>Impact:</em> an endpoint's reachability cannot be assessed from a single probe, and
+an assessor can easily record the wrong answer in either direction. This is a
+finding about the target, not only about my tooling.
+<em>Root cause:</em> registering hooks as a side effect of lazy class loading rather
+than from an explicit, unconditional bootstrap.
+<em>Fix:</em> register all actions from a file that is always included.</p>
+<h3 id="f8--default-wordpress-salts-shipped-in-the-docroot-configuration">F8 — Default WordPress salts shipped in the docroot configuration</h3>
+<p><strong>CWE-798</strong> (hard-coded credentials).
+<code>var/www/html/wp-config.php:51-58</code> ships all eight secret keys as
+<code>put your unique phrase here</code>, and <code>:29</code> ships a plaintext database password:</p>
+<pre><code>define( 'AUTH_KEY',         'put your unique phrase here' );
+define( 'DB_PASSWORD', 'si1VxJ242Gqyv9e' );
+</code></pre>
+<p>With default salts, the values that sign <code>[wordpress-session-cookie]*</code> cookies are
+derived from constants an attacker already knows, so a cookie can be forged for
+any user id without the password. <strong>This was not exploited</strong> — it is reported
+because it is present in the artefact and is a real weakness of the
+configuration, not of my chain. Its exploitability was <strong>not tested</strong>.
+<em>Fix:</em> generate unique salts at install time; never ship placeholder values.</p>
+<h3 id="f9--database-credentials-and-platform-details-in-a-version-controlled-looking-config">F9 — Database credentials and platform details in a version-controlled-looking config</h3>
+<p>Not filed as a separate finding: <code>wp-config.php</code> is served through the PHP
+handler and is not readable over HTTP (verified: the request returns the
+application, not the file). It became reachable only because F8's salts and
+the plugin's <code>wp-config</code> handling put it in scope. Recorded here so it is not
+mistaken for a web-exposed secret.</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<p>Each control is listed with the positive control that proves the detector can
+fire. A negative from a detector that has never seen a success is not evidence.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>How it was proven to work</th>
+<th>Measured result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>REST authentication middleware (<code>Authentication.php:9</code>, <code>if ( ! is_user_logged_in() )</code>)</td>
+<td>The <code>Guest</code> group gives a <strong>byte-distinguishable</strong> second shape (<code>403</code>, 77 bytes, <code>rest_nonce_missed</code>) on the same unauthenticated request class, so a <code>401</code> is attributable to the auth middleware and not to a blanket block</td>
+<td><strong>21 of 21</strong> probed <code>masterstudy-lms/v2</code> routes returned <code>401</code> with a byte-stable 93-byte body <code>{&quot;error_code&quot;:&quot;unauthorized_access&quot;,&quot;message&quot;:&quot;Only authorized Users can access this route!&quot;}</code>. Anonymity was the treatment; the <code>403</code>/<code>77</code>-byte <code>Guest</code> response is the positive control that a different gate is distinguishable</td>
+</tr>
+<tr>
+<td>AJAX nonce gate</td>
+<td>A deliberately nonexistent action name is the control: it must return the <em>other</em> shape</td>
+<td><code>__control_nonexistent_115</code> → <code>400</code> / <code>0</code> / 1 byte. All <strong>23 of 23</strong> <code>nopriv</code> plugin actions returned <code>403</code> / <code>-1</code> (handler reached, nonce check fired). Discriminator proven in both directions</td>
+</tr>
+<tr>
+<td>Object-ownership middleware (<code>PostGuard.php:15</code>)</td>
+<td>A <strong>positive</strong> case: a course I own must be allowed, otherwise &quot;403 everywhere&quot; would be indistinguishable from a correct guard</td>
+<td>Course <strong>46</strong> (created by me) → <code>200</code>; course <strong>19</strong> (owned by <code>mario</code>) → <code>403 {&quot;error_code&quot;:&quot;forbidden&quot;,&quot;message&quot;:&quot;Forbidden!&quot;}</code>. The 200 is the control that proves the 403 is a decision and not a blanket denial</td>
+</tr>
+<tr>
+<td>Role separation</td>
+<td><code>manage_options</code> absent while <code>upload_files</code> present shows the caps are a real, differentiated set</td>
+<td><code>manage_options = None</code>, <code>upload_users/edit_users/install_plugins/edit_plugins = None</code> — <strong>8 named capabilities checked, 7 absent</strong>, <code>read</code> and the 11 <code>stm_lms_*</code> caps present</td>
+</tr>
+<tr>
+<td><code>manage_options</code> gate on bulk user import</td>
+<td>The endpoint is reachable and returns a body, so a denial is visible rather than silent</td>
+<td><code>stm_lms_dashboard_import_users_to_course</code> → <code>200</code> with a <strong>0-byte</strong> body = <code>die</code> at <code>ImportUsers.php:12</code>. I hold no <code>manage_options</code>, so the gate held</td>
+</tr>
+<tr>
+<td>WordPress upload type restriction</td>
+<td>Tried the four suffixes the server would execute, and checked the <strong>filesystem</strong>, not just the response</td>
+<td>4 filenames (<code>.php</code>, <code>.phtml</code>, <code>.phar</code>, <code>.php5</code>) → 4 × <code>rest_upload_unknown_error</code>; <code>find</code> for <code>*.php</code>, <code>*.phtml</code>, <code>*.phar</code> under <code>wp-content/uploads</code> → <strong>0 files</strong></td>
+</tr>
+<tr>
+<td>Avatar upload extension allowlist</td>
+<td>The validator is reached and returns a structured error, so the check is live</td>
+<td><code>_core/lms/classes/user.php:1681-1683</code> — `'file' =&gt; 'required_file</td>
+</tr>
+<tr>
+<td>Absence of a global <code>AddType</code> PHP mapping (the lab-146 shape)</td>
+<td>Read the whole server config tree</td>
+<td><code>grep -rc &quot;AddType.*x-httpd-php&quot;</code> over 34 files under <code>etc/apache2/</code> → <strong>0 files with a non-zero count</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="not-tested">NOT tested</h2>
+<p>A count of zero means the check is <strong>untested</strong>, not that it found nothing.</p>
+<ol>
+<li><strong>The <code>www-data → pylon</code> sudoers rung was never executed.</strong> No code
+execution as <code>www-data</code> was obtained, so <code>sudo -u pylon /usr/bin/php</code> was
+never run and the <code>uid</code>/<code>euid</code> pair at that hop is <strong>unmeasured</strong>. Ids
+tried: 0. The rung's existence is read from <code>etc/sudoers:59</code>; its
+exploitability is untested.</li>
+<li><strong>The <code>pylon → mario</code> and <code>mario → root</code> rungs were never executed.</strong> Not
+attempted, because the prerequisite hop was never reached. Ids tried: 0.
+Their apparent non-walkability is an <strong>inference from file modes in the
+artefact</strong>, not a measured result.</li>
+<li><strong>No setuid binary audit.</strong> <code>find</code> for mode-4xxx executables was not run.
+Candidates examined: 0.</li>
+<li><strong>No UDP enumeration.</strong> <code>ss -lntup</code> was read (2 TCP listeners, 0 UDP) but
+<code>/proc/net/udp</code> was not parsed and no protocol exchange was attempted.
+Bindings checked: 0 of the UDP table.</li>
+<li><strong>No credential attack</strong> against WordPress login, <code>xmlrpc.php</code>, or the
+database. Candidates tested: 0. <code>xmlrpc.php</code> exists in the docroot and was
+<strong>not</strong> probed.</li>
+<li><strong><code>wp-automatic</code> and <code>elementor</code> were not assessed.</strong> Their versions were
+not read from the artefact and their surfaces were not swept.</li>
+<li><strong>F8 (default salts → cookie forgery) was not exploited.</strong> No forged cookie
+was attempted. Forgeries attempted: 0.</li>
+<li><strong>The 54 privileged actions for which I held no nonce were never called.</strong>
+111 privileged <code>wp_ajax_</code> actions exist in the plugin source; I had nonces
+for 57 and tested 57. <strong>54 are untested</strong>, not negative.</li>
+<li><strong>F5 was verified for <code>author_id=1</code> only.</strong> Author ids tried: 1. Whether
+the endpoint exposes other objects, or accepts ids that do not exist, is
+untested.</li>
+<li><strong>The second WordPress tree at <code>[lab-home]/ubuntu/wordpress</code> was not assessed.</strong>
+It is present, owned <code>nobody:nogroup</code>, and not served by the Apache
+configuration read. Whether anything reaches it is untested.</li>
+<li><strong>The four <code>Pro</code> add-on classes</strong> whose absence caused fatals
+(<code>MasterStudy\Lms\Pro\addons\...</code>, seen in the error log) were not
+investigated beyond the fatal messages.</li>
+</ol>
+<hr />
+<h2 id="discarded-with-reason">Discarded with reason</h2>
+<table>
+<thead>
+<tr>
+<th>Discarded</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.htaccess</code> in <code>wp-content/uploads</code> to enable the PHP handler</td>
+<td><code>apache2.conf:172</code> is <code>AllowOverride None</code>. A per-directory override cannot speak. Ruled out from the config, with the directive quoted</td>
+</tr>
+<tr>
+<td>Uploading a <code>.php</code> avatar</td>
+<td><code>user.php:1681-1683</code> restricts the extension to <code>png;jpg;jpeg</code> before the sink at <code>:1729-1737</code> is reached</td>
+</tr>
+<tr>
+<td><code>POST /masterstudy-lms/v2/courses/{id}/curriculum/import</code> as a file-write</td>
+<td>Read the controller. It validates <code>material_ids</code> + <code>section_id</code> and calls <code>CurriculumMaterialRepository::import()</code>; <code>grep</code> for `wp_remote_get</td>
+</tr>
+<tr>
+<td>Role injection through the registration JSON body</td>
+<td>Both registration paths call <code>wp_create_user($login, $pass, $email)</code> with no role argument (<code>guest_checkout.php:176</code>, <code>user.php:389</code>). Measured outcome was <code>subscriber</code>; <code>user.php:314</code>'s <code>extract($data)</code> did not yield a role write</td>
+</tr>
+<tr>
+<td>Mass assignment of arbitrary user meta</td>
+<td><code>user.php:1249-1252</code> gates on <code>current_user_can( 'edit_user', $user_id )</code> before the <code>update_user_meta</code> loop</td>
+</tr>
+<tr>
+<td><code>stm_lms_dashboard_import_users_to_course</code> for privilege escalation</td>
+<td>Gated by <code>current_user_can('manage_options')</code> at <code>ImportUsers.php:12</code>; and <code>update_user_names()</code> writes only <code>first_name</code>/<code>last_name</code> (<code>:75-80</code>), no role</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>The most valuable section, per the runbook. Five of these produced a
+well-formed answer that was wrong.</p>
+<h3 id="d1--my-harness-silently-dropped-the-session-cookie-and-57-endpoints-answered-0">D1 — My harness silently dropped the session cookie, and 57 endpoints answered <code>0</code></h3>
+<p><code>http.cookiejar.MozillaCookieJar</code> was loaded from a curl cookie file and
+silently produced an <strong>empty</strong> cookie set. I verified this only because I
+printed the request: <code>has_cookie_header = False</code>. The entire 57-action
+privileged sweep therefore ran <strong>as an anonymous visitor</strong>, and returned
+<code>400</code> / <code>0</code> — the exact shape that means &quot;no such action&quot;. I had drafted the
+reading &quot;43 privileged actions are not registered&quot;, with a plausible mechanism
+ready to explain it, before the cookie check caught it.
+The 13 actions that <em>did</em> answer <code>403</code> / <code>-1</code> were exactly the 13 that have
+<code>nopriv</code> variants — which is the tell, and it is the same tell as the
+method's §1: an instrument that has only ever seen one class of target
+generalises that class into a conclusion.
+<strong>Rule:</strong> a session must be asserted per request, not per script. A harness
+that cannot prove it is authenticated must refuse to produce an authorisation
+negative. The fixed harness asserts a non-empty <code>Cookie</code> header and prints its
+length before the first request.</p>
+<h3 id="d2--400--0-read-as-not-registered-without-a-control">D2 — <code>400</code> / <code>0</code> read as &quot;not registered&quot; without a control</h3>
+<p><code>400</code> with a 1-byte body is WordPress's <code>has_action()</code> miss, and it is
+<strong>byte-identical</strong> to a capability-denied or no-op response from some handlers.
+I confirmed the body is genuinely 1 byte with <code>curl</code> (and noted that Apache's
+access log records <code>473</code> for the same responses — the log and the wire
+disagree, and I relied on the wire). Every <code>400</code> / <code>0</code> in this writeup is
+reported only because a nonexistent-action control returns the same shape, so
+the reading is &quot;this request did not reach a handler&quot;, never &quot;this handler
+denied me&quot;.</p>
+<h3 id="d3--a-0-byte-200-counted-as-execution">D3 — A 0-byte <code>200</code> counted as execution</h3>
+<p>I reported 41 of 57 privileged actions as &quot;200 OK&quot; for a self-promoted
+instructor. Twenty-three of those bodies are <strong>0 bytes</strong>, and this plugin
+denies with a bare <code>die</code> (<code>ImportUsers.php:12-14</code>). A 0-byte <code>200</code> is a silent
+denial that is indistinguishable from a no-op by status code alone. The finding
+was rewritten to the <strong>18</strong> actions that returned substantive bodies.
+<strong>Rule:</strong> bucket by body length, not by status. <code>200</code> is not &quot;it worked&quot;.</p>
+<h3 id="d4--i-guessed-the-rest-namespace-and-read-404s-as-a-missing-surface">D4 — I guessed the REST namespace and read 404s as a missing surface</h3>
+<p><code>includes/routes.php</code> is full of <code>$router-&gt;get(...)</code> calls, and the older
+namespace <code>stm-lms/v1</code> also exists, so I probed <code>stm-lms/v1</code> first and got
+<code>404</code> on routes that genuinely exist. The namespace is
+<code>masterstudy-lms/v2</code> (<code>includes/init.php:7-8</code>). The correct enumeration —
+<code>GET /?rest_route=/</code> and reading the index — showed <strong>58</strong> v2 routes that my
+guess had hidden entirely.
+<strong>Rule:</strong> enumerate the index before probing paths. A <code>404</code> from a guessed path
+is a statement about the guess.</p>
+<h3 id="d5--i-read-the-tail-of-a-function-and-missed-the-guard-above-it">D5 — I read the tail of a function and missed the guard above it</h3>
+<p><code>stm_lms_change_avatar</code> ends in an extension taken verbatim from the client
+filename and a <code>move_uploaded_file()</code> into the docroot
+(<code>user.php:1729-1737</code>) — and with a server-level <code>FilesMatch</code> making <code>.php</code>
+execute (<code>php8.3.conf:3-4</code>), that reads like an immediate RCE. I was about to
+file it. The allowlist is <strong>48 lines earlier</strong>, at <code>user.php:1681-1683</code>:
+<code>'file' =&gt; 'required_file|extension,png;jpg;jpeg'</code>.
+<strong>Rule:</strong> read the whole handler, from the hook registration down, before
+naming a sink. A sink is only a sink once every guard above it is accounted
+for.</p>
+<h3 id="d6--the-target-changed-under-me-twice-and-i-nearly-measured-a-moving-object">D6 — The target changed under me, twice, and I nearly measured a moving object</h3>
+<p><code>wp-cron.php</code> auto-updated WordPress core from the shipped 6.5.5 to 7.1.2
+before the first attack request, because nothing sets
+<code>AUTOMATIC_UPDATER_DISABLED</code> and the container resolves <code>api.wordpress.org</code>.
+The plugin did not move (still 3.3.25), and both core numbers are recorded
+because they mean different things. Separately, the missing <code>mbstring</code> (F6)
+made the homepage alternate between <code>200</code> and <code>500</code> mid-engagement.
+<strong>Rule:</strong> pin and record the version from the artefact, record the live version
+separately, and re-read the version after any long gap before comparing two
+measurements.</p>
+<h3 id="d7--nonces-are-bound-to-the-session-token-and-i-attributed-the-failure-to-the-target">D7 — Nonces are bound to the session token, and I attributed the failure to the target</h3>
+<p>Mid-engagement I re-logged-in and reused the previous session's nonce bundle.
+Every action then returned <code>403</code> / <code>-1</code>, which reads as &quot;the controls tightened&quot;.
+It was my stale bundle. The giveaway was the opposite of what I assumed: a
+nonce failure returns <code>403</code>, whereas &quot;unregistered&quot; returns <code>400</code>, so the two
+were distinguishable the whole time and I had collapsed them.
+<strong>Rule:</strong> after any re-authentication, regenerate tokens. A <code>403</code> that appears
+en masse after a login is your own session, not a new control.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>No <code>FLAG{}</code> or equivalent reward exists on this lab.</strong> Measured, not assumed.</p>
+<p>Positive control first, so the search is known to be capable of finding a
+string that is present:</p>
+<pre><code>$ grep -rl &quot;wp_version&quot; /var/www/html/wp-includes/version.php
+/var/www/html/wp-includes/version.php
+CONTROL-FIRED
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Search</th>
+<th>Work count</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Filesystem sweep for <code>FLAG{</code>, <code>flag{</code>, <code>CTF{</code>, <code>HTB{</code> across <code>/var/www</code>, <code>/home</code>, <code>/root</code>, <code>/opt</code>, <code>/srv</code>, <code>/etc</code></td>
+<td><strong>11,993 files, 325,435,613 bytes</strong></td>
+<td>2 files matched; <strong>both inspected and both false positives</strong> — CSS class selectors, e.g. <code>}.lms-courses-preset.status-label--type-flag{--lms-status--mask-image:url(&quot;data:image</code></td>
+</tr>
+<tr>
+<td>Database sweep of the text-bearing WordPress tables</td>
+<td><strong>392 rows scanned</strong> (<code>wp_options</code> 223, <code>wp_posts</code> 36, <code>wp_postmeta</code> 78, <code>wp_usermeta</code> 55)</td>
+<td><strong>0 hits</strong> in all four</td>
+</tr>
+<tr>
+<td>HTTP surface sweep</td>
+<td><strong>9 endpoints</strong> (home, <code>pages</code>, <code>posts</code>, <code>media</code>, <code>users</code>, <code>readme.html</code>, <code>license.txt</code>, <code>wp-admin/</code>, REST index)</td>
+<td><strong>0 endpoints</strong> containing <code>FLAG{</code></td>
+</tr>
+</tbody>
+</table>
+<p>No reward is invented to fill the gap. The authoritative column for whether a
+lab carries a reward is the <code>FLAG{}</code> column of
+<a href="../labs.html"><code>corpus/INDEX.md</code></a> — this writeup makes no claim about its
+position in any sequence, because a position inside a sequence this engagement
+is part of cannot be computed from inside it.</p>
+<hr />
+<h2 id="lab-design-observations">Lab design observations</h2>
+<ul>
+<li>The lab is thematically coherent: the flagship course is <em>&quot;Curso de Escaladas
+de Privilegios en Linux&quot;</em> (Linux privilege escalation), and the two Linux
+users, <code>mario</code> and <code>pylon</code>, own hand-written &quot;surprise&quot; scripts whose names
+(<code>pingusorpresita.sh</code>, <code>pylonsorpresita.sh</code>) are the author's own joke. The
+WordPress administrator and the Linux uid 1001 are the same person, which
+makes the narrative hang together.</li>
+<li>The intended escalation is almost certainly the three-rung sudoers ladder
+<code>www-data → pylon → mario → root</code>. As shipped, the two upper rungs point at
+scripts in directories the predecessor cannot write or even traverse
+(<code>0750</code>, <code>0664</code>, no group or world write). The lab author may intend a
+different lever to open the middle rung — for instance the <code>www-data → pylon</code>
+rule allows <code>/usr/bin/php</code> with <strong>no argument restriction</strong>, so <code>pylon</code> can be
+used to run PHP from a location <code>pylon</code> can write, which is worth a dedicated
+look. That was not tested here.</li>
+<li><code>AUTOMATIC_UPDATER_DISABLED</code> being unset makes every engagement against this
+image non-reproducible at the core-version level. This is the second corpus
+lab where the shipped and served core versions differ.</li>
+</ul>
+<hr />
+<h2 id="restore">Restore</h2>
+<p>Recreated from the image, not by undoing edits.</p>
+<pre><code>$ docker rm -f master_container &amp;&amp; docker run -d --name master_container master:latest
+</code></pre>
+<p>Verified <strong>positively</strong>, not by absence of errors:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Before</th>
+<th>After restore</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /</code></td>
+<td><code>200</code>, 79,557 bytes</td>
+<td><code>200</code>, <strong>79,557 bytes</strong> (identical)</td>
+</tr>
+<tr>
+<td>WordPress users enumerated</td>
+<td>3 (<code>mario</code> + 2 created by this engagement)</td>
+<td><strong>1</strong> (<code>mario</code>) — back to the shipped value</td>
+</tr>
+<tr>
+<td><code>id</code> inside the container</td>
+<td><code>uid=0(root) gid=0(root) groups=0(root)</code></td>
+<td>same</td>
+</tr>
+</tbody>
+</table>
+<p><code>wp-content/uploads/2026/09</code> exists after the recreate. It was <strong>not</strong> created
+by this engagement and was not deleted: it has <strong>0 entries in the shipped
+artefact</strong>, contains <strong>0 files</strong>, and its mtime is <em>after</em> the container was
+recreated, so it is WordPress creating it at runtime. A file another principal
+created is not mine to delete.</p>
+<p><strong>Reclaim:</strong> the <code>master:latest</code> image and the extracted
+<code>labs/115/master.tar</code> are re-obtainable from the verified archive
+<code>dist/master.zip</code> (260.1 MB), which was kept. No global prune was run; no
+<code>auto_deploy.sh</code> was executed; no container other than this lab's was touched.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

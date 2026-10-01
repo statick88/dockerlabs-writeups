@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 85 Aidor &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Aidor</p><h1 id="85-aidor--writeup">85 Aidor — writeup</h1>
+<p><strong>Class:</strong> IDOR / broken object-level authorization (CWE-639) — <strong>plus</strong> an
+independent unauthenticated variant and a session-hijack write path.
+<strong>Difficulty:</strong> facil. <strong>First evidence for this class in the corpus.</strong>
+<strong>Target:</strong> <code>[net-0-2]:5000</code>, single container, <code>aidor:latest</code>.</p>
+<blockquote>
+<p><code>corpus/85/</code> did not exist before this engagement. Nothing was rewritten or
+verified-in-place; this is new evidence, and it is the first IDOR writeup the
+corpus holds, so the entry criterion is stated in full below.</p>
+</blockquote>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-2]
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH 10.0p2 Debian 7 (protocol 2.0)
+5000/tcp open  http    Werkzeug httpd 3.1.3 (Python 3.13.5)
+</code></pre>
+<p><strong>Stack and versions, read from the artefact, not from memory:</strong></p>
+<ul>
+<li><code>Werkzeug httpd 3.1.3 (Python 3.13.5)</code> — nmap banner, corroborated by
+<code>/usr/lib/python3/dist-packages/flask/app.py</code> in the traceback at
+<code>app.py:43</code> and the <code>Werkzeug Debugger</code> page.</li>
+<li>Flask, single-file app. <code>app.py</code> is 150 lines, no framework extension, no ORM.</li>
+</ul>
+<p><strong>What TCP cannot see — checked, not assumed:</strong></p>
+<ul>
+<li>UDP: <code>cat /proc/net/udp /proc/net/udp6</code> inside the container returned <strong>header
+rows only, zero socket lines</strong>. No UDP management plane. <code>ExposedPorts</code> is
+empty. The only listener on the host is Flask's dev server plus <code>sshd</code>.</li>
+<li>Virtual hosts: not applicable and not assumed. The app has no <code>Host</code>-based
+dispatch (read in full, 5 routes), so vhost enumeration has no surface to
+enumerate. Recorded as read-from-source, not as a negative scan result.</li>
+<li>Entrypoint, from <code>docker inspect</code>:
+<code>Cmd=[/bin/sh -c 'service ssh start &amp;&amp; python3 app.py &amp;&amp; tail -f /dev/null']</code>,
+<code>User=</code> (empty ⇒ root), no entrypoint script, no compose file.</li>
+<li><code>auto_deploy.sh</code> <strong>read, not run</strong> (it ends in <code>while true</code> at line 145). It
+describes <strong>one</strong> container on the default bridge — no <code>macvlan</code>, no
+<code>--internal</code> segments, no second host. The lab is single-host as deployed.</li>
+</ul>
+<p><strong>Trípleta applied:</strong> reachable (5000/tcp) → body carries a per-user profile
+record including a password hash → decisive: the same request with a different
+<code>id</code> returns a <strong>different principal's</strong> record, and the <code>id</code> is the only
+difference. That third step is what separates this from &quot;the app is reachable&quot;.</p>
+<hr />
+<h2 id="the-class">The class</h2>
+<p><strong>Entry criterion.</strong> A request is IDOR — not merely unauthenticated — when
+<strong>an authenticated principal is presented and the server still returns an object
+that is not theirs.</strong> The test is not &quot;did I see data I should not&quot;; it is
+&quot;was there a subject, and did the object's owner differ from the subject&quot;.</p>
+<p>The generalisable form, and the discriminator I actually used here:</p>
+<table>
+<thead>
+<tr>
+<th>The response you get</th>
+<th>What it is</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>200 with another user's record, <strong>no session presented</strong></td>
+<td><strong>Unauthenticated BOLA</strong> (CWE-306/862)</td>
+<td>There is no subject to bypass. Different root cause in the code even when the same line is at fault.</td>
+</tr>
+<tr>
+<td>200 with another user's record, <strong>my own session presented</strong></td>
+<td><strong>IDOR proper</strong> (CWE-639)</td>
+<td>A subject exists and was not bound to the object.</td>
+</tr>
+<tr>
+<td>302 to <code>/</code></td>
+<td>No such object</td>
+<td>This is the negative, and it must be byte-distinguishable from the above or the whole finding is unfalsifiable.</td>
+</tr>
+</tbody>
+</table>
+<p>Aidor exhibits <strong>all three</strong>, and the writeup files them separately because
+merging them tells the client they patched one thing when they patched neither.
+<code>app.py:103</code> is the shared root cause:</p>
+<pre><code class="language-python">103:    user_id = request.args.get('id') or session.get('user_id')
+</code></pre>
+<p><code>request.args</code> is consulted <strong>first</strong>, before the session, and either branch
+falls through to an unscoped lookup at <code>app.py:110</code>:</p>
+<pre><code class="language-python">110:    cursor.execute('SELECT * FROM users WHERE id=?', (user_id,))
+</code></pre>
+<p>The query is keyed on <code>id</code> alone. There is no <code>AND user_id = session['user_id']</code>
+anywhere in the file — I read all 150 lines. <strong>The decisive artefact is the
+absence of the ownership predicate in the lookup</strong>, and no status code tells you
+that; the source does, in seconds.</p>
+<p><strong>A third, distinct failure sits one line later and is the reason this lab has
+teeth:</strong></p>
+<pre><code class="language-python">118:    session['user_id'] = user[0]
+</code></pre>
+<p>The handler <em>writes the victim's id back into the caller's session</em>. That turns a
+read bug into a <strong>write</strong> bug, because <code>/change_password</code> deliberately trusts the
+session and not the URL:</p>
+<pre><code class="language-python">125:    if 'user_id' not in session:
+128:    user_id = session['user_id']
+136:    cursor.execute('UPDATE users SET password=? WHERE id=?', (hashed_password, user_id))
+</code></pre>
+<p>So the IDOR is not merely confidentiality. It is a <strong>session-identity rewrite</strong>
+that the next route trusts blindly. That is the chain, and it is the part a
+scanner would never produce.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>My identity throughout is the throwaway account <strong><code>probe.aa11</code>, id 55</strong>, created
+via the app's own <code>/register</code>. The victim is <code>miguel.hernandez</code>, id 9, and the
+target is <code>admin</code>, id 27. Identity is read out of the response body
+(<code>user-id&quot;&gt;#NN</code>) at every hop, not assumed from the cookie.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>probe.aa11</code> (55)</td>
+<td><code>POST /register</code> (<code>app.py:83-95</code>), auto-logged-in at <code>app.py:94</code></td>
+<td><code>register=302</code>; dashboard renders <code>user-id&quot;&gt;#55</code>, <code>Bienvenido, probe.aa</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td>admin (27) — <strong>read</strong></td>
+<td><code>GET /dashboard?id=27</code> with my id-55 session. <code>app.py:103</code> prefers <code>request.args</code>; <code>app.py:110</code> looks up by <code>id</code> only</td>
+<td>body: <code>Bienvenido, admin</code>, <code>user-id&quot;&gt;#27</code>, <code>admin@company.com</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>admin (27) — <strong>session rewritten</strong></td>
+<td><code>app.py:118</code> sets <code>session['user_id']=27</code>. Re-reading <code>/dashboard</code> with no <code>id</code> now renders admin</td>
+<td><code>user-id&quot;&gt;#27</code> <strong>on a request that carried no <code>id</code> at all</strong> — the subject is now the victim</td>
+</tr>
+<tr>
+<td>3</td>
+<td>admin (27) — <strong>write</strong></td>
+<td><code>POST /change_password</code> reads <code>session['user_id']</code> (<code>app.py:128</code>), issues <code>UPDATE … WHERE id=27</code> (<code>app.py:136</code>)</td>
+<td><code>Location: /dashboard?id=27</code> — the redirect target is the <em>victim's</em> id, not mine</td>
+</tr>
+<tr>
+<td>4</td>
+<td>admin (27) — <strong>new credentials, fresh session</strong></td>
+<td>Fresh unauthenticated <code>POST /</code> with the password I chose</td>
+<td><code>admin_login_http=302</code> (success; failure is <code>401</code>); dashboard renders <code>user-id&quot;&gt;#27</code>, <code>Bienvenido, admin</code>, <code>admin@company.com</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>all 52 users — <strong>automated</strong></td>
+<td>One <code>GET /dashboard?id=N</code> per id, <strong>no cookie sent at all</strong></td>
+<td>53 records extracted; ids 1, 2 and ≥55 correctly return <code>302 Location: /</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Hop 2 is the load-bearing evidence and it is worth stating plainly:</strong> the
+identity changed on a request that carried no attacker-chosen parameter. That
+distinguishes &quot;I forged a cookie&quot; from &quot;the server overwrote my session&quot;, and it
+is the difference between a session-fixation story and a broken-authorization
+story.</p>
+<h3 id="the-write-closed-with-literal-evidence">The write, closed with literal evidence</h3>
+<p>I did not stop at &quot;the redirect looked right&quot;. I read the stored hash back over
+HTTP and compared it against a hash I computed locally:</p>
+<pre><code>$ python3 -c &quot;import hashlib; print(hashlib.sha256(b'ADMIN-TAKEOVER-BY-85').hexdigest())&quot;
+9c7cc5bd3399913605371ab81950b9bd38982f57c34cbfb248f28c89f418ae3f
+
+$ curl -s &quot;http://[net-0-2]:5000/dashboard?id=27&quot;   # unauthenticated
+passwordField.value = '9c7cc5bd3399913605371ab81950b9bd38982f57c34cbfb248f28c89f418ae3f'
+</code></pre>
+<p>Byte-identical. Admin's password in the database is now a value I chose. The
+victim account at id 9 closed the same way (<code>c7d11317…</code> = <code>sha256(&quot;CHAINED-OWNERSHIP-9&quot;)</code>).</p>
+<h3 id="the-automated-extraction-the-lab-asks-for">The automated extraction the lab asks for</h3>
+<p>The platform description is <em>&quot;practicar la vulnerabilidad IDOR y conseguir
+automatizar la extracción de información de distintos usuarios registrados&quot;</em>.
+Done as specified — <strong>zero credentials, zero session</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Username</th>
+<th>Email</th>
+<th>Stored hash</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3</td>
+<td>juan.perez</td>
+<td>juan.perez@example.com</td>
+<td><code>5e884898…d1542d8</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>maria.garcia</td>
+<td>maria.garcia@example.com</td>
+<td><code>5e884898…d1542d8</code></td>
+</tr>
+<tr>
+<td>…</td>
+<td>…</td>
+<td>…</td>
+<td>…</td>
+</tr>
+<tr>
+<td>9</td>
+<td>miguel.hernandez</td>
+<td>miguel.hernandez@example.com</td>
+<td><code>4fbfaa40…f5e7caed44</code> ← <strong>my write</strong></td>
+</tr>
+<tr>
+<td>27</td>
+<td>admin</td>
+<td>admin@company.com</td>
+<td><code>9c7cc5bd…f418ae3f</code> ← <strong>my write</strong></td>
+</tr>
+<tr>
+<td>52</td>
+<td>pingu</td>
+<td>pingu@pingu.es</td>
+<td><code>dd0284ae…902eb1060a3</code></td>
+</tr>
+<tr>
+<td>53</td>
+<td>pepe</td>
+<td>pepe@pepe.es</td>
+<td><code>7c9e7c14…5691834</code></td>
+</tr>
+<tr>
+<td>54</td>
+<td>aidor</td>
+<td>aidor@aidor.es</td>
+<td><code>7499aced…251e0fc35</code></td>
+</tr>
+<tr>
+<td>55</td>
+<td>probe.aa11</td>
+<td>probe@lab.local</td>
+<td><code>4fbfaa40…f5e7caed44</code> ← <strong>mine</strong></td>
+</tr>
+</tbody>
+</table>
+<p>52 pre-existing records, ids <strong>3–54</strong>. Ids 1 and 2 do not exist and return
+<code>302</code>, which is what proves the enumeration is complete rather than merely long.</p>
+<p>The same-<code>5e884898…</code> hash on 50 filler accounts is <code>sha256(&quot;password&quot;)</code>, verified
+against the library rather than assumed.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="1-idor--missing-object-level-authorization-on-the-dashboard--cwe-639">1. IDOR / missing object-level authorization on the dashboard — CWE-639</h3>
+<p><strong>Evidence</strong> (<code>app.py:100-120</code>, read from the deployed artefact):</p>
+<pre><code class="language-python">100: @app.route('/dashboard')
+103:     user_id = request.args.get('id') or session.get('user_id')
+110:     cursor.execute('SELECT * FROM users WHERE id=?', (user_id,))
+118:     session['user_id'] = user[0]
+120:     return render_template('dashboard.html', user=user)
+</code></pre>
+<p>Executed: as <code>probe.aa11</code> (id 55) → <code>GET /dashboard?id=27</code> → <code>200</code>,
+<code>Bienvenido, admin</code>, <code>user-id&quot;&gt;#27</code>, <code>admin@company.com</code>.</p>
+<p><strong>Impact.</strong> Any authenticated user reads any other user's full profile —
+username, e-mail, and password hash. 52 records in scope, including <code>admin</code>.</p>
+<p><strong>Root cause.</strong> The object lookup is keyed on a client-supplied identifier with
+no ownership predicate. The handler authenticates the <em>request</em> and then
+authorises the <em>object</em> by nothing at all.</p>
+<p><strong>Remediation.</strong> Bind the object to the subject in the query itself, never in a
+parameter that precedes the session:</p>
+<pre><code class="language-python">user_id = session.get('user_id')                      # session only
+cursor.execute('SELECT * FROM users WHERE id=? AND id=?', (user_id, user_id))
+</code></pre>
+<p>If a self-service route genuinely needs an arbitrary id, authorise it explicitly
+(ownership <strong>or</strong> an admin role) — and then remove the <code>session['user_id']=</code>
+write at line 118, which is finding 3.</p>
+<h3 id="2-unauthenticated-access-to-every-user-record--cwe-306--cwe-862">2. Unauthenticated access to every user record — CWE-306 / CWE-862</h3>
+<p><strong>Evidence.</strong> The same request, <strong>no <code>Cookie</code> header sent at all</strong>:</p>
+<pre><code>$ curl -sS -o u_admin.html -w &quot;%{http_code}\n&quot; &quot;http://[net-0-2]:5000/dashboard?id=27&quot;
+200
+$ grep -oE 'Bienvenido, [a-z.]+|user-id&quot;&gt;#[0-9]+' u_admin.html
+Bienvenido, admin
+user-id&quot;&gt;#27
+</code></pre>
+<p><code>app.py:103</code> reads <code>request.args</code> <strong>before</strong> <code>session</code>, and <code>app.py:105</code> only
+redirects when <em>both</em> are empty. No <code>?id=</code> ⇒ no authentication check ever runs.</p>
+<p><strong>Impact.</strong> This is the more severe of the two: it needs no account, no
+credential, and no prior access. Full user table disclosure to an anonymous
+client in 52 requests.</p>
+<p><strong>Root cause.</strong> Authentication is expressed as <em>fallback</em> (<code>A or B</code>) rather than
+as a <em>precondition</em>. Line 105 enforces &quot;have I got an id?&quot; and mistakes that
+for &quot;am I authenticated?&quot;.</p>
+<p><strong>Remediation.</strong> Authenticate before the object is ever resolved. A <code>login_required</code>
+decorator on the route makes the <code>?id=</code>-only case structurally impossible.</p>
+<h3 id="3-session-identity-rewritten-from-a-request-parameter--cwe-620--cwe-384-adjacent">3. Session identity rewritten from a request parameter — CWE-620 / CWE-384-adjacent</h3>
+<p><strong>Evidence.</strong> <code>app.py:118</code>, <code>session['user_id'] = user[0]</code>, executes on a
+<em>victim</em> row. Then, on a request carrying <strong>no <code>id</code> parameter</strong>, the session
+renders as the victim:</p>
+<pre><code>hop0 my own session identity:            user-id&quot;&gt;#55
+hop1 after GET /dashboard?id=27:         user-id&quot;&gt;#27
+</code></pre>
+<p>and the write that follows targets the victim, proven by the stored hash
+matching <code>sha256(&quot;ADMIN-TAKEOVER-BY-85&quot;)</code> byte-for-byte, and by hop 4 — a
+<strong>fresh, unauthenticated</strong> login as <code>admin</code> succeeding with <code>302</code>.</p>
+<p><strong>Impact.</strong> Full account takeover of any user including <code>admin</code>, from any
+starting account, in three requests. The session is laundered: the attacker's own
+identity is overwritten, so audit logs of <code>session['user_id']</code> show the victim.</p>
+<p><strong>Root cause.</strong> Assigning a <em>request-derived</em> value into the <em>session</em> is an
+unauthenticated privilege transfer. Every downstream route that reads
+<code>session['user_id']</code> inherits it; <code>/change_password</code> at <code>app.py:128</code> is the
+exploitable consumer.</p>
+<p><strong>Remediation.</strong> A handler must never write a client-supplied identifier into
+session state. <code>user_id</code> in the session must be set <strong>only</strong> at successful
+authentication (<code>app.py:55</code> and <code>app.py:94</code>, the only two legitimate sites) and
+be immutable thereafter.</p>
+<h3 id="4-password-hashes-rendered-into-the-page-and-pre-filled-into-a-visible-field--cwe-200--cwe-522">4. Password hashes rendered into the page, and pre-filled into a visible field — CWE-200 / CWE-522</h3>
+<p><strong>Evidence.</strong> <code>dashboard.html:628</code> prints <code>{{ user[2] }}</code> — the stored hash — and
+<code>dashboard.html:709-714</code> goes further, in the template's own words:</p>
+<pre><code class="language-javascript">710:  // NOTA: En un entorno real esto NO se debería hacer por seguridad
+712:  const passwordField = document.querySelector('input[name=&quot;new_password&quot;]');
+713:  passwordField.value = '{{ user[2] }}';
+714:  passwordField.type = 'text';
+</code></pre>
+<p>Retrieved unauthenticated:</p>
+<pre><code>password-hash&quot;&gt;d033e22ae348aeb5660fc2140aec35850c4da997
+passwordField.value = 'd033e22ae348aeb5660fc2140aec35850c4da997'
+</code></pre>
+<p><strong>Impact.</strong> The hash is a <code>GET</code>-parameter disclosure on its own, and it is
+<strong>one click</strong> from plaintext credentials: the app pre-fills the <em>new password</em>
+field with the hash and flips it to <code>type='text'</code>. Every one of the 50 filler
+accounts shares <code>sha256(&quot;password&quot;)</code>, so the entire user table cracks at once
+against a dictionary of size one. This is what turns finding 1/2 from a P3
+disclosure into a full-credential compromise, and it is a <strong>separate root cause</strong>
+from the missing ownership check — patching the SQL alone does not fix it.</p>
+<p><strong>Remediation.</strong> Never render a credential, in any encoding, into a response or
+a DOM value. Remove lines 709-714 entirely; the comment acknowledges the
+anti-pattern and ships it anyway.</p>
+<h3 id="5-werkzeug-interactive-debugger-exposed-to-anonymous-clients--cwe-489">5. Werkzeug interactive debugger exposed to anonymous clients — CWE-489</h3>
+<p><strong>Evidence.</strong> <code>app.py:150</code>, <code>app.run(debug=True, …)</code>. Forcing one unhandled
+exception with <code>POST /</code> missing the <code>password</code> field returns <code>500</code> whose body
+contains, for an <strong>anonymous</strong> client:</p>
+<pre><code>Traceback (most recent call last)
+  File &quot;[lab-home]/app.py&quot;, line 43, in index
+    password = request.form['password']
+SECRET = &quot;MvJLSdYSNpe9xgZz3Iyj&quot;;
+The console is locked and needs to be unlocked by entering the PIN.
+</code></pre>
+<p><strong>Impact, and the limit of it.</strong> Proven: full source disclosure, internal paths,
+the debugger <code>SECRET</code>, and a live PIN-gated console. I derived the PIN the
+running app computes — <code>906-399-845</code> — and it did <strong>not</strong> yield code execution;
+<code>/console</code> and the <code>?__debugger__=…</code> GET returned <code>400</code>, and the <code>cmd=…</code> request
+returned the ordinary login page, i.e. the parameters were ignored. <strong>I therefore
+do not claim RCE.</strong> See <em>NOT tested</em>. The exposure is real on its own terms: a
+hardcoded <code>secret_key</code> is the same line of code, and this ships both.</p>
+<p><strong>Remediation.</strong> <code>debug=False</code>. Gate on an environment flag, never on a literal
+in a lab-shaped image.</p>
+<h3 id="6-hardcoded-flask-session-secret--cwe-798">6. Hardcoded Flask session secret — CWE-798</h3>
+<p><strong>Evidence.</strong> <code>app.py:7</code>, <code>app.secret_key = 'my_secret_key'</code>.</p>
+<p><strong>Impact.</strong> The session cookie is a client-side signed blob keyed on a constant
+that is published in the image. In a real deployment this alone is session
+forgery. <strong>I did not forge a cookie</strong> — with findings 2 and 3 there is no need,
+and the honest statement is that the weakness is proven from source and its
+exploitation is <em>not</em> demonstrated here. Filed separately so that a client
+cannot read finding 3's remediation and conclude the secret key is handled.</p>
+<p><strong>Remediation.</strong> Load from environment/secret store; rotate.</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves this detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Login authentication on <code>POST /</code></td>
+<td><code>admin</code> + my chosen password → <code>302</code>; wrong password → <code>401</code>. Both seen, so the <code>401</code> is a real refusal and not a broken endpoint.</td>
+</tr>
+<tr>
+<td>The <code>302</code>-vs-<code>200</code> discriminator itself</td>
+<td>Positive: <code>id=55</code> with my session → <code>200</code>, <code>user-id&quot;&gt;#55</code>. Negative: <code>id=1</code>, <code>id=2</code>, <code>id=99999</code> → <code>302 Location: /</code>. The two are byte-distinguishable, so &quot;I got admin's page&quot; is falsifiable.</td>
+</tr>
+<tr>
+<td>Object-existence oracle</td>
+<td><code>id=27</code> → <code>200</code>; <code>id=99999</code> → <code>302</code>. A 200 therefore <em>means</em> a real object, and enumeration completeness is provable, not assumed.</td>
+</tr>
+<tr>
+<td>Write path detector</td>
+<td><code>POST /change_password</code> on my <strong>own</strong> id 55 → <code>Location: /dashboard?id=55</code>, then a fresh login with the new password → <code>302</code>. The detector fires on a legitimate write before I trust it on a cross-object one.</td>
+</tr>
+<tr>
+<td>Cross-object write is real, not a coincidence of hashing</td>
+<td>Stored hash read back equals a hash I computed <strong>locally</strong> with <code>hashlib</code>, not just &quot;login works&quot;. Two independent channels agree.</td>
+</tr>
+<tr>
+<td>Lab restore</td>
+<td><code>docker rm -f</code> + <code>docker run</code> from the image. Verified <strong>positively</strong>: <code>login_page=200</code>; id 9 back to <code>5e884898…</code>, id 27 back to <code>d033e22a…</code>; <code>probe present = False</code>; <code>max id = 54</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Controls that did <em>not</em> hold</strong> are findings 1–6. There is no fifth category
+and the two lists are not merged.</p>
+<hr />
+<h2 id="not-tested-vs-discarded-with-reason">NOT tested vs discarded with reason</h2>
+<h3 id="not-tested-no-time-no-tooling-or-out-of-scope--not-a-negative-result">NOT tested (no time, no tooling, or out of scope — not a negative result)</h3>
+<ul>
+<li><strong>SSH authentication on <code>22/tcp</code>.</strong> <code>sshpass</code> is not installed
+(<code>failed to execute process: No such file or directory (os error 2)</code> on every
+attempt), so the credential guesses never left the host. I am recording this as
+untested, <strong>not</strong> as &quot;SSH is secure&quot;. The only <code>uid&gt;=1000</code> account is <code>aidor</code>
+(<code>getent passwd</code>), whose web hash <code>7499aced…</code> did not match any candidate I
+tried. Whether the web-IDOR chain reaches SSH is <strong>unknown</strong>.</li>
+<li><strong>Crash-consistency of the SQLite writes</strong> under concurrent
+<code>/change_password</code> on the same row. Not probed; a single-writer <code>sqlite3.connect</code>
+per request, so this is a robustness question rather than a security one here.</li>
+<li><strong>Whether <code>app.py:118</code> session rewriting is exploitable across Flask's cookie
+rotation</strong> under <code>SESSION_COOKIE_SECURE</code> / a multi-worker deployment. The lab
+runs the Werkzeug dev server single-process, so the deployed topology cannot
+answer it.</li>
+<li><strong>Rate limiting / lockout on <code>/login</code></strong> and on the 52-request enumeration. The
+enumeration completed unthrottled, which is a note, not a tested control.</li>
+</ul>
+<h3 id="discarded-with-reason-tried-and-the-reason-it-was-dropped">Discarded with reason (tried, and the reason it was dropped)</h3>
+<ul>
+<li><strong><code>admin</code>'s stored hash <code>d033e22ae348aeb5660fc2140aec35850c4da997</code> is
+<code>md5(&quot;admin&quot;)</code>.</strong> Discarded — <strong>I asserted this from memory and it is false.</strong>
+<code>hashlib.md5(b&quot;admin&quot;)</code> = <code>21232f297a57a5a743894a0e4a801fc3</code>. The guess is a
+32-char MD5 while the app hashes with SHA-256 (<code>app.py:46</code>), so the two are not
+even comparable. No plaintext for <code>admin</code> was recovered by guessing. The
+takeover in finding 3 does not depend on cracking it, which is exactly why it
+is the stronger result.</li>
+<li><strong>&quot;Werkzeug <code>/console</code> gives RCE.&quot;</strong> Discarded as <strong>unproven</strong>, not as false.
+The PIN derived correctly (<code>906-399-845</code>, from <code>get_pin_and_cookie_name</code> on the
+live app) but the console returned <code>400</code> and the <code>cmd=</code> request returned the
+login page. Per the runbook's no-oracle rule I will not file a claim about the
+future as a result.</li>
+<li><strong>Python-library fingerprinting from the banner</strong> (<code>Werkzeug httpd 3.1.3</code>) as
+evidence for a CVE. Discarded: the version is a banner claim. The real version
+evidence is the traceback paths at <code>/usr/lib/python3/dist-packages/werkzeug/</code>,
+which is why finding 5 is filed on <code>app.py:150</code> and not on a CVE.</li>
+</ul>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>The most valuable section. <strong>Three of my own failures produced output that
+looked exactly like a result.</strong> All three are recorded because the reader is
+entitled to know which of the evidence above was nearly a lie.</p>
+<h3 id="1-a-cookie-jar-that-read-but-never-wrote--manufactured-a-false-negative">1. A cookie jar that read but never wrote — manufactured a <em>false negative</em></h3>
+<p>The first write attempt returned <code>Location: /dashboard?id=55</code>, and I read that as
+&quot;the write failed, the session was not poisoned&quot;. <strong>Both halves of that reading
+were wrong.</strong> I used <code>curl -b c_chain.jar</code>, which loads the jar but <strong>does not
+persist a <code>[response-cookie-header]</code> to it</strong>; the poisoned session from the preceding IDOR
+request was discarded between calls, so the POST went to my own id 55. The
+<code>id=55</code> in the redirect was not a failure signal at all — it was the successful
+write landing on my own account, verified afterwards when logging in with
+<code>CHAINED-OWNERSHIP-9</code> returned <code>302</code> where <code>ProbeAA11</code> returned <code>401</code>.</p>
+<p><strong>What caught it:</strong> the redirect target is the <em>object id the <code>UPDATE</code> used</em>, so
+an unexpected value is a claim about the write, not about the session. Re-running
+with <code>-b jar -c jar</code> produced <code>id=9</code> and the victim takeover.
+<strong>The lesson:</strong> for a stateful-cookie vector, <em>persisting the cookie is part of
+the exploit</em>, and a jar used read-only will silently convert a working attack into
+a clean-looking <code>401</code>/<code>id=own</code> result.</p>
+<h3 id="2-a-control-that-was-silently-a-second-attack">2. A control that was silently a second attack</h3>
+<p>I intended a benign control — &quot;the same <code>POST /change_password</code> on my <strong>own</strong>
+account must also work, proving the detector is not lying.&quot; I ran it with
+<code>c_chain.jar</code>, the <strong>poisoned</strong> session from finding 3. It wrote
+<code>probe-self-test</code> to <strong>victim id 9</strong> and reported <code>Location: /dashboard?id=9</code>,
+which I initially read as the control passing. Reading id 9's hash back gave
+<code>4fbfaa40…</code>, which is <code>sha256(&quot;probe-self-test&quot;)</code> — my &quot;control&quot; had mutated a
+third account.</p>
+<p><strong>What caught it:</strong> comparing the read-back hash against hashes I computed
+locally. One of them belonged to a password I had only ever sent in a <em>control</em>.
+<strong>The lesson:</strong> a control run on a session that is already in the compromised
+state is not a control, it is a second exploitation. State every control's
+starting identity explicitly or it will silently inherit the attack's state.</p>
+<h3 id="3-an-arithmetic-slip-in-my-own-restore-verification">3. An arithmetic slip in my own restore verification</h3>
+<p>I asserted the shipped database holds &quot;54 users&quot;. It holds <strong>52</strong> (ids 3–54,
+with 1 and 2 absent). The restore check printed <code>rows = 52</code>, which contradicted
+the number I had written down. The container was correct; my expectation was not.
+<strong>What caught it:</strong> <code>max id = 54</code> and <code>rows = 52</code> are consistent only if 1 and 2
+are missing — which is the same fact the <code>302</code> on <code>?id=1</code> and <code>?id=2</code> reported
+independently over HTTP. Two sources agreed; my headcount was the odd one out.</p>
+<h3 id="defect-that-did-not-mislead-me-recorded-anyway">Defect that did <em>not</em> mislead me, recorded anyway</h3>
+<p><code>sshpass</code> being absent produced six identical
+<code>failed to execute process: No such file or directory</code> lines. Six identical
+&quot;failures&quot; from six different credential guesses is the shape of an
+<strong>instrumentation</strong> failure, not six authentication refusals. Reporting them as
+six failed logins would have manufactured a negative. Listed under <em>NOT tested</em>.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>No reward exists for lab 85.</strong> Measured absence, with the search that
+established it — not an assumption:</p>
+<ol>
+<li><strong>Platform lab page.</strong> <code>GET https://dockerlabs.es/maquinas/85</code> → <code>404</code>;
+<code>GET /maquina/85</code> → <code>404</code>. No page exists from which a flag could be read.</li>
+<li><strong>Platform download page</strong>, the one endpoint that <em>is</em> authenticated and
+live: <code>GET /maquinas/85/descargar</code> → <code>200</code>, body grepped for
+<code>flag{…}</code>, <code>DL{…}</code>, <code>FLAG</code>, <code>congratul</code>, <code>reward</code>, <code>recompensa</code> → <strong>no match</strong>.</li>
+<li><strong>Full archive manifest.</strong> <code>unzip -l aidor.zip</code> contains exactly two entries:
+<code>aidor.tar</code> and <code>auto_deploy.sh</code>. No flag file, no README, no <code>.txt</code>.</li>
+<li><strong>Whole image filesystem</strong>, exhaustively and as root:
+<code>grep -rIoE &quot;(FLAG|DL|CTF|HTB)\{[^}]{1,80}\}&quot; /</code> excluding <code>/proc</code> →
+<strong>zero matches</strong>.</li>
+<li><strong>Reachability check.</strong> The only candidate privileged location is
+<code>/root</code> (<code>drwx------ root root</code>, containing <code>.ssh/</code>, <code>.sqlite_history</code>).
+Reaching it needs code execution, and I did not achieve code execution
+(finding 5). So a flag in <code>/root</code> cannot be excluded — it is <strong>absent from
+every place a flag would be published</strong>, and if one exists it is
+unreached, not undiscovered.</li>
+</ol>
+<p>This is consistent with the corpus: 22 of 27 previous engagements had no
+<code>FLAG{}</code> either. <strong>The IDOR is the lab's deliverable</strong> — the platform description
+asks for automated extraction of registered users' data, and §Chain delivers
+exactly that, 52 records, unauthenticated. No reward was invented to fill the gap.</p>
+<hr />
+<h2 id="feed-forward">Feed-forward</h2>
+<p>Per RUNBOOK stage 10, <code>INDEX.md</code> was checked before writing. <strong>IDOR is absent
+from the class catalogue</strong> (<code>RUNBOOK.md:121-133</code>) — no row, no heading. This is
+a genuinely new class, and the row that should land in <code>api_web.md</code> is the
+<strong>entry criterion</strong>, not the payload:</p>
+<blockquote>
+<p>A request is IDOR — not merely unauthenticated — when an authenticated
+principal is presented and the server returns an object that is not theirs.
+The discriminator is the presence of a subject, so an auditor must run three
+requests, not two: an object you own (<code>200</code>, positive control), an object you
+do not own (<code>200</code> ⇒ IDOR), and an object that does not exist (<code>302</code> ⇒ the
+oracle is live and the 200s are real). A route that returns <code>200</code> for
+<code>?id=&lt;other&gt;</code> <strong>without any session</strong> is a <em>different finding</em> — unauthenticated
+BOLA — and merging the two tells the client they patched one thing.</p>
+<p>Read the <code>WHERE</code> clause, not the <code>WHERE</code> <em>guard</em>. <code>?id</code> outranking the session
+in an <code>A or B</code> is unauthenticated by construction; and a handler that writes a
+request-derived id back into <code>session</code> (<code>app.py:118</code>) converts a read bug into
+account takeover on the next route that trusts the session — which no status
+code will show you.</p>
+</blockquote>
+<p>Two rules this lab adds that the runbook does not yet carry:</p>
+<ul>
+<li><strong>A stateful-cookie vector has a step the payload does not.</strong> Persisting the
+<code>[response-cookie-header]</code> between the poisoning request and the next one <em>is</em> part of the
+exploit. A jar used read-only converts a working attack into a clean negative
+(defect 1). And no control may run on a session already in the compromised
+state, or it becomes a second attack (defect 2).</li>
+<li><strong>Close a write with a value you computed, not a status code.</strong> <code>302</code> proves
+the endpoint responded. Comparing the stored hash against a locally computed
+hash proves the write landed where I claim, on an independent channel.</li>
+</ul>
+<hr />
+<h2 id="lab-restored">Lab restored</h2>
+<pre><code>docker rm -f aidor_container &amp;&amp; docker run -d --name aidor_container aidor:latest
+</code></pre>
+<p>Verified <strong>positively</strong> (not by absence of damage):</p>
+<ul>
+<li><code>login_page=200</code> — the service answers again.</li>
+<li><code>id=9</code> → <code>5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8</code> (shipped)</li>
+<li><code>id=27</code> → <code>d033e22ae348aeb5660fc2140aec35850c4da997</code> (shipped)</li>
+<li><code>probe present = False</code>, <code>max id = 54</code>, <code>rows = 52</code> — the shipped 52 accounts, my
+three mutated rows and my throwaway account gone.</li>
+<li>Container <code>/tmp</code> is empty and carries the shipped <code>Nov 17 2025</code> mtime. Nothing
+of mine is in it.</li>
+<li>One artefact of mine was found in the <strong>originals</strong> directory — a stray <code>p.html</code>
+from a <code>curl -o</code> that landed in the shell's working directory — and was removed.
+<code>labs/85/</code> now contains exactly <code>aidor.tar</code> and <code>auto_deploy.sh</code>, as shipped.
+No file created by another principal was touched.</li>
+<li>All scratch files (cookie jars, bodies, <code>extraction.txt</code>) live in
+<code>/tmp/[tool]/aidor/</code>, outside the lab and the evidence repo.</li>
+</ul>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

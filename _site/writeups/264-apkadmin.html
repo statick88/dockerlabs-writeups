@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 264 ApkAdmin &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; ApkAdmin</p><h1 id="264-apkadmin--android-exported-activity-the-gate-is-a-value-the-caller-supplies">264 ApkAdmin — Android exported Activity: the gate is a value the caller supplies</h1>
+<p><strong>Lab:</strong> 264 · <em>ApkAdmin</em> · facil
+<strong>Description (full, from the platform catalog):</strong> <em>&quot;Análisis de APK vulnerable para lograr acceder a una activity que no deberíamos de tener acceso.&quot;</em>
+<strong>Target:</strong> <code>[net-0-4]</code> — single container <code>apkadmin_container</code>, image <code>apkadmin:latest</code>, <code>ExposedPorts 22/tcp, 80/tcp</code>
+<strong>Stack (from the artefact, not from memory):</strong> <code>package=&quot;com.ctf.adminbypass&quot;</code>, <code>versionCode=1</code>, <code>versionName=1.0</code>, <code>compileSdkVersion=34</code>, <code>minSdkVersion=24</code>, <code>targetSdkVersion=34</code>; Kotlin, 3 DEX files; host side is <code>openssh-server</code> + <code>python3 -m http.server</code> on Debian bookworm
+<strong>Artefact integrity:</strong> served APK <code>sha256 4c44625dfc2bbc8a2eb0d127c5d268e1f775a4cc8f126f1d90c88e13b21df985</code>, byte-identical to the one analysed (verified from inside the container and outside it)
+<strong>Outcome:</strong> an activity the UI never links to is declared <code>android:exported=&quot;true&quot;</code> with <strong>no <code>android:permission</code> and no intent-filter</strong>, and its only access control is a boolean intent extra that the <em>caller</em> supplies. The credential it discloses is a compile-time string constant in <code>classes3.dex</code>, and that same literal authenticates as <code>uid=1000(pingu)</code> and then as <code>uid=0(root)</code>.</p>
+<p><strong>This is the first mobile/APK writeup in this corpus.</strong> There is no prior mobile art to
+imit, so §1 defines the class from scratch and §10 states the rules it yields. The
+generalisable claim is deliberately narrow and is stated in the entry criterion, because
+<em>&quot;an activity that should not be reachable&quot;</em> is not a vulnerability class — it is a
+sentence.</p>
+<hr />
+<h2 id="1-the-class-gap-stated-before-the-findings">1. The class gap, stated before the findings</h2>
+<p>&quot;Should not be reachable&quot; compresses five different mechanisms with five different
+root causes and five different fixes. This lab was checked against all five before any
+of them was written up, because filing the wrong one teaches the reader the wrong thing.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Family</th>
+<th>What it requires to be true</th>
+<th>Present here?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td><strong>Not exported, but reachable</strong> via an explicit <code>intent</code> from an exported component, a <code>pendingIntent</code>, a deep link, or a <code>WebView</code> JS bridge</td>
+<td>the component says <code>exported=&quot;false&quot;</code> <em>and</em> something outside the app can still start it</td>
+<td><strong>No.</strong> <code>UserActivity</code> is <code>exported=&quot;false&quot;</code> (<code>AndroidManifest.xml:39</code>) and nothing reaches it from outside. No <code>PendingIntent</code>, no <code>WebView</code>, no <code>addJavascriptInterface</code>, no deep-link <code>intent-filter</code> — the four greps in §4 returned nothing</td>
+</tr>
+<tr>
+<td>C2</td>
+<td><strong>Exported without a permission</strong>, or with a <code>permission</code> that is not enforced</td>
+<td>an external principal can start the component and the system imposes nothing</td>
+<td><strong>Yes — this is the lab.</strong> <code>AdminActivity</code>: <code>android:exported=&quot;true&quot;</code> (<code>:42</code>), no <code>android:permission</code>, no <code>intent-filter</code></td>
+</tr>
+<tr>
+<td>C3</td>
+<td><strong>Task hijacking / <code>taskAffinity</code> / <code>allowBackup</code></strong> carrying private state across</td>
+<td><code>taskAffinity</code> reuse, or backup that moves state out of the sandbox</td>
+<td><strong>No as a bypass.</strong> <code>taskAffinity</code>, <code>allowTaskReparent</code> and <code>launchMode</code> are <strong>entirely absent</strong> from the manifest. <code>allowBackup=&quot;true&quot;</code> (<code>:22</code>) is present but the app <strong>persists nothing</strong>, so there is no private state to carry — see Finding 4</td>
+</tr>
+<tr>
+<td>C4</td>
+<td><strong>Client code as attack surface</strong></td>
+<td>a secret, debug flag, cleartext override, or JS bridge in the shipped client</td>
+<td><strong>Yes, twice.</strong> Hardcoded login pair <code>admin</code> / <code>admin123</code> (<code>MainActivity.java:19-20</code>) and a reward credential compiled into the DEX (<code>AdminActivity.java:21</code>). No <code>network_security_config</code>, no hardcoded base URL, no WebView</td>
+</tr>
+<tr>
+<td>C5</td>
+<td><strong>The server side</strong></td>
+<td>the unlocked surface buys something the <em>server</em> authorises</td>
+<td><strong>Partly, and it is the most important row.</strong> The <em>activity</em> unlock is <strong>100% client-side</strong> — the disclosed credential is a string constant, and the app package contains <strong>zero network calls</strong>. But the credential it discloses is a <strong>real host credential</strong>, and the reuse to <code>uid=0(root)</code> is a genuine server-side authorisation failure</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Entry criterion (the generalisable one):</strong> <em>a component, route, or credential that the
+application never intended to expose, reached without the authorisation the manifest
+claims to require.</em></p>
+<p>Two clauses in that sentence carry the weight, and both are what makes C2 a <em>finding</em> and
+not an observation:</p>
+<ol>
+<li><strong>&quot;the manifest claims to require.&quot;</strong> A component that is exported <em>and meant to be</em> is
+not a finding. <code>MainActivity</code> is exported and meant to be — the positive control in §5.
+The discriminator is never <code>exported=&quot;true&quot;</code>; it is <code>exported=&quot;true&quot;</code> <strong>on a component
+the app's own UI never links to</strong>, which here is corroborated by the platform page:
+<em>&quot;ningun boton de la app te lleva&quot;</em> and <em>&quot;no hay forma de llegar a el desde la
+interfaz.&quot;</em> Intent is established from the shipped UI and code, not inferred from the
+absence of a link.</li>
+<li><strong>&quot;the authorisation the manifest claims to require.&quot;</strong> This is what forces the
+three-way control in §5 rather than a boolean. A manifest that says <code>exported=&quot;false&quot;</code>
+claims a protection; one that says <code>exported=&quot;true&quot;</code> with no <code>permission</code> claims
+nothing at all — and the interesting case is the one where the <em>code</em> supplies a
+gate, so that the app's authors believe something is protected while the manifest
+authorises the world. That inversion is this lab's whole shape.</li>
+</ol>
+<p><strong>The decisive artefact</strong> is <code>AndroidManifest.xml</code> lines 30-42 read together with
+<code>AdminActivity.java:19-25</code>. Nothing about the <em>response</em> distinguishes a correctly
+protected activity from this one; only the manifest and the DEX do — the same
+&quot;read the source first&quot; rule the web labs obey.</p>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-4]
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.2p1 Debian 2+deb12u10 (protocol 2.0)
+80/tcp open  http    SimpleHTTPServer 0.6 (Python 3.11.2)
+Service Info: OS: Linux; CPE: cpe:/o/linux:linux_kernel
+</code></pre>
+<p>Two ports, both on the plain bridge — <code>auto_deploy.sh</code> was <strong>read, not run</strong> (<code>:193</code> is
+the <code>while true; do sleep 1; done</code> that never returns). It declares <strong>no</strong> networks, <strong>no</strong>
+<code>macvlan --internal</code> segments, and exactly <strong>one</strong> <code>docker run -d</code> (<code>:179</code>), so the
+one-container topology is the intended one. The image history confirms a single stage
+with no second service.</p>
+<p><strong>Hidden surface found — and the decisive fact about this lab: the lab ships no device.</strong>
+<code>ExposedPorts</code> is <code>22/tcp, 80/tcp</code>; the image contains <code>openssh-server</code> and <code>python3</code>
+and nothing else (<code>/app</code> does not exist; the Dockerfile installs no Android SDK, no
+<code>adb</code>, no emulator). The APK is served as a <strong>static file</strong> over port 80:</p>
+<pre><code>$ curl -s http://[net-0-4]/                      → 200, 7668 bytes  (the lab briefing page)
+$ curl -s -o AdminBypassCTF.apk \
+       http://[net-0-4]/AdminBypassCTF.apk       → 200, 5791613 bytes
+</code></pre>
+<p>The host environment compounds this: <code>adb</code>, <code>emulator</code>, <code>avdmanager</code>, <code>sdkmanager</code>,
+<code>scrcpy</code> and <code>qemu-system-x86_64</code> are all <strong>absent</strong>, and <code>/dev/kvm</code> does not exist. So
+there is <strong>no runtime path to the Activity at all</strong> in this engagement. That is recorded
+as <em>untested</em>, never as a negative — see §8. The APK-level analysis is static and
+labelled as such; the SSH/root half of the chain was executed live and measured.</p>
+<p><strong>What TCP cannot see, checked and recorded:</strong> this host exposes no UDP service of
+interest (<code>nmap -p-</code> is TCP-only, so I state this from the image's <code>ExposedPorts</code> and the
+absence of any UDP listener in the single container, not from a scan I did not run).
+There is no management plane, no nonstandard port, and no renamed path — port 80 serves
+exactly two files, both listed above.</p>
+<p><strong>A note on the lab's own page, because it changes the threat model:</strong> <code>index.html</code> is the
+briefing <em>and</em> the hint. It states the exported-component mechanism, names the boolean
+extra, and hands out the SSH and <code>su</code> steps verbatim. Any analysis that reaches the
+finding by reading the page has not analysed the APK. The writeup below rests on the
+manifest and the DEX, and cites the page only for the authors' stated intent — which is
+exactly what the entry criterion needs.</p>
+<hr />
+<h2 id="the-class">The class</h2>
+<p><strong>Entry criterion question that started it:</strong> <em>which components does the manifest let
+outside callers start, and what does each one do when a caller supplies its arguments?</em></p>
+<p><strong>Source that settled it:</strong> <code>AndroidManifest.xml:40-42</code> — three lines, and the whole
+engagement is in the difference between them:</p>
+<pre><code class="language-xml">&lt;activity android:name=&quot;com.ctf.adminbypass.MainActivity&quot;    android:exported=&quot;true&quot;/&gt;   ← + LAUNCHER filter
+&lt;activity android:name=&quot;com.ctf.adminbypass.UserActivity&quot;    android:exported=&quot;false&quot;/&gt;
+&lt;activity android:name=&quot;com.ctf.adminbypass.AdminActivity&quot;   android:exported=&quot;true&quot;/&gt;   ← no permission, no filter
+</code></pre>
+<p><strong>The sharpest single fact in the engagement.</strong> On <code>targetSdkVersion=&quot;34&quot;</code>
+(<code>AndroidManifest.xml:12</code>) — Android 12+ — an activity with <strong>no</strong> <code>intent-filter</code>
+<strong>must</strong> declare <code>android:exported</code> explicitly or the install fails. So
+<code>android:exported=&quot;true&quot;</code> on <code>AdminActivity</code> is not an inherited default and not an
+oversight of omission: <strong>the author had to type it.</strong> There is no version of this
+manifest where <code>AdminActivity</code> is accidentally public.</p>
+<p><strong>And the gate is the wrong shape entirely.</strong> <code>AdminActivity.java:19-25</code>:</p>
+<pre><code class="language-java">boolean isAdmin = getIntent().getBooleanExtra(&quot;isAdmin&quot;, false);
+if (isAdmin) {
+    flagView.setText(&quot;Acceso SSH\n\nUsuario: pingu\nContrasena: chocolate&quot;);
+} else {
+    Toast.makeText(this, R.string.access_denied, 0);
+    finish();
+}
+</code></pre>
+<p>The value that decides authorisation is read <strong>from the intent</strong> — i.e. from the caller.
+The activity's entire access model is <em>&quot;trust a boolean the attacker chose.&quot;</em> There is no
+<code>getCallingPackage()</code>, no <code>checkPermission()</code>, no signature check, no server call. The
+<code>else</code> branch is the <em>only</em> thing resembling a control, and it is a <code>Toast</code> plus
+<code>finish()</code> — a decision made <strong>after</strong> the activity has already been admitted by the
+system, in the attacker's own process, on a screen the attacker asked for.</p>
+<p><strong>The command the manifest authorises</strong> (derived, not executed — see §8):</p>
+<pre><code class="language-bash">adb shell am start -n com.ctf.adminbypass/.AdminActivity --ez isAdmin true
+</code></pre>
+<p><code>-n</code> resolves an explicit component; <code>--ez</code> sets the boolean extra. The system will not
+prompt, because the manifest imposed no permission to prompt about.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<p>The APK half is static. The host half was executed, and <strong>every identity was measured
+rather than assumed</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>served APK</td>
+<td><code>GET /AdminBypassCTF.apk</code></td>
+<td><code>sha256 4c44625d…1df985</code>, identical inside and outside the container</td>
+</tr>
+<tr>
+<td>1</td>
+<td><strong><code>AdminActivity</code>, exported to any caller</strong></td>
+<td><code>am start -n com.ctf.adminbypass/.AdminActivity --ez isAdmin true</code>; manifest imposes nothing (<code>AndroidManifest.xml:42</code>), gate reads the caller's own extra (<code>AdminActivity.java:19</code>)</td>
+<td><strong>not executed</strong> — no device; static, see §8. Manifest path proven twice independently (§4)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>credential disclosure</td>
+<td><code>flagView.setText(&quot;…Usuario: pingu\nContrasena: chocolate&quot;)</code> — a <strong>string constant in <code>classes3.dex</code></strong>, not a server token</td>
+<td><code>strings -a classes3.dex</code> → <code>Usuario: pingu</code>, <code>Contrasena: chocolate</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>pingu</code></td>
+<td>SSH with the disclosed literal</td>
+<td><code>uid=1000(pingu) gid=1000(pingu) groups=1000(pingu)</code>, <code>CapEff: 0000000000000000</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong><code>uid=0(root)</code></strong></td>
+<td><code>su</code> with <strong>the same literal</strong></td>
+<td>before: <code>uid=1000(pingu)</code>; after: <code>uid=0(root) gid=0(root) groups=0(root)</code>, <code>Uid: 0 0 0 0</code>, <code>CapEff: 00000000a80425fb</code></td>
+</tr>
+</tbody>
+</table>
+<p>Hop 4 is reported as a <strong>crossing from <code>uid=1000</code> to <code>uid=0</code> measured in the same
+shell</strong>, not as &quot;root&quot;: the escalation is only a finding if the uid actually changed, and
+the before/after pair is the evidence. <code>CapEff</code> is empty for <code>pingu</code> and populated for
+root — the unprivileged session genuinely held no capabilities, so nothing was
+pre-granted.</p>
+<h3 id="evidence--hop-3-and-hop-4-executed">Evidence — hop 3 and hop 4, executed</h3>
+<pre><code>[INTENDED]  pingu@[net-0-4]
+  AUTH OK
+  $ id
+    uid=1000(pingu) gid=1000(pingu) groups=1000(pingu)
+  $ egrep '^(Uid|Gid|CapEff)' /proc/self/status
+    Uid:	1000	1000	1000	1000
+    CapEff:	0000000000000000
+
+BEFORE (the same shell that will su):
+    uid=1000(pingu) gid=1000(pingu) groups=1000(pingu)
+    home: [lab-home]/pingu   -&gt; .bash_logout .bashrc .profile   (nothing planted)
+
+NEGATIVE: su with a WRONG password (must fail):
+    stdout: ''   stderr: Password: su: Authentication failure
+
+ATTACK: su with the SAME literal from AdminActivity.java:21
+    stdout: uid=0(root) gid=0(root) groups=0(root)
+    Uid:	0	0	0	0
+    CapEff:	00000000a80425fb
+</code></pre>
+<h3 id="evidence--a-22-because-one-success-proves-nothing">Evidence — a 2×2, because one success proves nothing</h3>
+<p>A single successful login cannot distinguish &quot;the credential works&quot; from &quot;sshd accepts
+anything&quot;. Both directions were run for both accounts, so the detector is shown to fire
+and to fail:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>chocolate</code></th>
+<th><code>wrongpw-ctrl</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pingu</code> (uid 1000)</td>
+<td>AUTH OK → <code>uid=1000(pingu)</code></td>
+<td><code>AuthenticationException: Authentication failed.</code></td>
+</tr>
+<tr>
+<td><code>root</code></td>
+<td>AUTH OK → <code>uid=0(root)</code></td>
+<td><code>AuthenticationException: Authentication failed.</code></td>
+</tr>
+</tbody>
+</table>
+<p>The same matrix at the <code>su</code> boundary: wrong password → <code>su: Authentication failure</code>,
+correct password → <code>uid=0(root)</code>. <strong>The rejection is byte-distinguishable from success</strong>,
+so these are real controls and not an always-true oracle.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="finding-1--adminactivity-is-exported-with-no-permission-and-no-filter-cwe-926">Finding 1 — <code>AdminActivity</code> is exported with no permission and no filter (CWE-926)</h3>
+<p><strong>Evidence — <code>AndroidManifest.xml:40-42</code>:</strong></p>
+<pre><code class="language-xml">&lt;activity
+    android:name=&quot;com.ctf.adminbypass.AdminActivity&quot;
+    android:exported=&quot;true&quot;/&gt;
+</code></pre>
+<p>No <code>android:permission</code>. No <code>&lt;intent-filter&gt;</code>, so it is not a launcher and has no
+implicit entry point either — it is reachable <strong>only</strong> by explicit component name, which
+is what makes it a target for a deliberate <code>am start</code> and what makes it invisible to a
+casual UI walkthrough. On <code>targetSdkVersion=&quot;34&quot;</code> this attribute is mandatory and was
+therefore authored deliberately (see §3).</p>
+<p><strong>Impact:</strong> any application on the device — or any process holding the <code>adb shell</code>
+identity, i.e. any user with USB debugging enabled — can display a screen the vendor
+never intended anyone to see, and can choose the argument that screen branches on.</p>
+<p><strong>Root cause:</strong> export status chosen per-component with no threat model behind it, and
+the security decision pushed into the Activity's own <code>onCreate</code> where the only input is
+the attacker's intent extra.</p>
+<p><strong>Remediation:</strong> <code>android:exported=&quot;false&quot;</code>, full stop. If a legitimate cross-process
+entry is ever needed, declare a <code>signature</code>-protection-level permission and check it —
+and note that a check <em>inside</em> the activity is strictly worse than the manifest flag,
+because the system has already launched the process by then.</p>
+<h3 id="finding-2--the-access-control-is-a-boolean-the-caller-supplies-cwe-807-cwe-602">Finding 2 — The access control is a boolean the caller supplies (CWE-807, CWE-602)</h3>
+<p><strong>Evidence — <code>AdminActivity.java:19</code>:</strong> <code>getIntent().getBooleanExtra(&quot;isAdmin&quot;, false)</code>.</p>
+<p>This is a distinct defect from Finding 1 and would remain a finding if the activity were
+<code>exported=&quot;false&quot;</code>: any <em>internal</em> component, a <code>pendingIntent</code>, or a future exported
+entry point inherits the same broken check. The grep for the four APIs that would
+constitute a real caller check returned <strong>nothing</strong>:</p>
+<pre><code>$ grep -rn &quot;getCallingPackage\|getCallingActivity\|checkPermission\|enforcePermission&quot; com/ctf/adminbypass/
+(no output)
+</code></pre>
+<p><strong>Root cause:</strong> authorisation decided from untrusted input. <code>isAdmin</code> is an <em>attestation</em>,
+not a <em>fact</em>: nothing in the system can make it true, so its only possible value is
+whatever the caller chose.</p>
+<p><strong>Remediation:</strong> derive the privilege decision from state the app controls — a
+<code>signature</code>-verified identity, a <code>PendingIntent</code> whose creator the system attributes, or
+a server-side session. Never from an extra.</p>
+<h3 id="finding-3--hardcoded-login-credentials-in-the-client-cwe-798">Finding 3 — Hardcoded login credentials in the client (CWE-798)</h3>
+<p><strong>Evidence — <code>MainActivity.java:19-20</code>:</strong></p>
+<pre><code class="language-java">private final String validUser = &quot;admin&quot;;
+private final String validPassword = &quot;admin123&quot;;
+</code></pre>
+<p>Used at <code>MainActivity.java:42</code> (<code>Intrinsics.areEqual</code>) to gate the transition to
+<code>UserActivity</code>. Recovered independently of jadx from the raw DEX
+(<code>strings -a classes3.dex</code> → <code>admin123</code>).</p>
+<p><strong>Impact:</strong> the app's login screen provides no security. Anyone who unzips the APK is
+authenticated. This is the lab's own &quot;user screen&quot;, and it is not the finding the lab is
+about — but it is the same root cause as the headline: <strong>secrets and decisions in the
+client.</strong></p>
+<p><strong>Remediation:</strong> authenticate against a server; the client holds a session token, not a
+password.</p>
+<h3 id="finding-4--androiddebuggabletrue-and-androidallowbackuptrue--real-but-carrying-nothing-here-cwe-489-cwe-530">Finding 4 — <code>android:debuggable=&quot;true&quot;</code> and <code>android:allowBackup=&quot;true&quot;</code> — real, but carrying nothing here (CWE-489, CWE-530)</h3>
+<p><strong>Evidence:</strong> <code>AndroidManifest.xml:21-22</code>, with <code>android:fullBackupContent=&quot;@xml/backup_rules&quot;</code>
+and <code>android:dataExtractionRules=&quot;@xml/data_extraction_rules&quot;</code>, both of which decode to
+<strong>empty rule sets</strong>:</p>
+<pre><code class="language-xml">&lt;full-backup-content/&gt;
+&lt;data-extraction-rules&gt;&lt;cloud-backup/&gt;&lt;/data-extraction-rules&gt;
+</code></pre>
+<p>An empty <code>&lt;full-backup-content/&gt;</code> backs up <strong>everything by default</strong>, and
+<code>debuggable=&quot;true&quot;</code> means any process that can attach a debugger — or simply <code>run-as</code> on
+a debuggable build — reads the app's private data directly.</p>
+<p><strong>Reported honestly, and deliberately <em>not</em> inflated:</strong> I grepped the app package for
+persistence and found <strong>none</strong>:</p>
+<pre><code>$ grep -rn &quot;SharedPreferences\|openFileOutput\|SQLiteDatabase\|MODE_WORLD&quot; com/ctf/adminbypass/
+(no output)
+</code></pre>
+<p>The credential is a compile-time constant (<code>AdminActivity.java:21</code>), not stored state.
+So <strong><code>allowBackup</code> carries no private state in this app, and it is not on the path to
+this lab's unlock.</strong> It is filed because the pairing is a real production weakness that
+would become critical the moment this app stored a session or a token — and because the
+empty rule sets are a default nobody chose deliberately.</p>
+<p><strong>Remediation:</strong> <code>debuggable=&quot;false&quot;</code> in the shipped manifest; scope the backup rules to
+explicit non-sensitive paths, and set <code>android:allowBackup=&quot;false&quot;</code> unless backup is a
+product requirement.</p>
+<h3 id="finding-5--a-real-host-credential-reused-across-a-privilege-boundary-cwe-521">Finding 5 — A real host credential, reused across a privilege boundary (CWE-521)</h3>
+<p><strong>Evidence — from the client artefact, then confirmed live.</strong> The literal
+<code>Contrasena: chocolate</code> at <code>AdminActivity.java:21</code> authenticates as <strong>two different
+identities</strong> on the host (§4, 2×2). Independently, the image's own build layer sets
+<code>PermitRootLogin yes</code>, <code>PasswordAuthentication yes</code>, and provisions <code>root</code> with the same
+secret as the unprivileged account.</p>
+<p><strong>Impact:</strong> the mobile finding is the delivery mechanism and the credential reuse is the
+impact. The activity discloses a password whose blast radius is the host's root account,
+not a phone screen. This is the part of the lab that generalises past Android: <strong>treat a
+credential disclosed by a client-side artefact as a host credential, and check every
+account it opens before celebrating the mobile bypass.</strong></p>
+<p><strong>Remediation:</strong> distinct secrets per privilege tier; <code>PermitRootLogin no</code> and
+<code>PasswordAuthentication no</code> with key-only auth on internet-reachable hosts.</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<p>Each row is a control that was <strong>observed to fire</strong>, with the positive control that
+proves the detector is not simply broken. A control that has never seen a success is not
+a control.</p>
+<p>The honest difficulty: <strong>no runtime positive control was possible for the Activity layer</strong>
+(§8). So the manifest is exercised as a <strong>three-way</strong> control, which is the strongest
+statement the static evidence supports. One procedure — read <code>exported</code> and <code>permission</code>
+for every component — produces all three outcomes:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th><code>exported</code></th>
+<th><code>permission</code></th>
+<th>Reachable externally by design?</th>
+<th>Reachable in fact?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MainActivity</code> (<code>:30-31</code>)</td>
+<td><code>true</code></td>
+<td>—</td>
+<td><strong>Yes</strong> — LAUNCHER, meant to be</td>
+<td>yes — this is the <strong>positive control</strong></td>
+</tr>
+<tr>
+<td><code>UserActivity</code> (<code>:38-39</code>)</td>
+<td><code>false</code></td>
+<td>—</td>
+<td><strong>No</strong> — correct</td>
+<td><strong>no</strong> — the <strong>negative control</strong></td>
+</tr>
+<tr>
+<td><code>AdminActivity</code> (<code>:41-42</code>)</td>
+<td><code>true</code></td>
+<td><strong>none</strong></td>
+<td><strong>No</strong> — never linked from UI</td>
+<td><strong>yes</strong> — <strong>the finding</strong></td>
+</tr>
+</tbody>
+</table>
+<p>This matters more than a boolean would. If the procedure flagged every <code>exported=&quot;true&quot;</code>
+it would flag <code>MainActivity</code> too, and the writeup would be reporting a launcher as a
+vulnerability. The fact that the same procedure <em>refuses</em> <code>UserActivity</code> is what
+establishes the discriminator is real and not just &quot;exported = bad&quot;.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Where</th>
+<th>Positive control that proves this detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>exported=&quot;false&quot;</code> on <code>UserActivity</code></strong></td>
+<td><code>AndroidManifest.xml:39</code></td>
+<td>Read-only, <strong>static</strong> — the gate cannot be exercised without a device. The discriminator is the three-way table above: the identical procedure returns &quot;reachable&quot; for <code>MainActivity</code> and &quot;not reachable&quot; for <code>UserActivity</code>, so it distinguishes. See §8</td>
+</tr>
+<tr>
+<td><strong>sshd password authentication actually rejects</strong></td>
+<td>2×2 matrix, §4</td>
+<td><strong>Proven in both directions on both accounts.</strong> Wrong password → <code>Authentication failed</code>; correct password → a session and a measured <code>id</code>. The detector fires and fails; it is not always-true</td>
+</tr>
+<tr>
+<td><strong><code>su</code> password check actually rejects</strong></td>
+<td><code>su -c id</code>, §4</td>
+<td>Wrong → <code>su: Authentication failure</code>; correct → <code>uid=0(root)</code>. Same shape, same proof</td>
+</tr>
+<tr>
+<td><strong>Unprivileged session holds no capabilities</strong></td>
+<td><code>/proc/self/status</code></td>
+<td><code>CapEff: 0000000000000000</code> for <code>pingu</code> vs <code>00000000a80425fb</code> for root. The escalation is not an artefact of pre-granted privilege</td>
+</tr>
+<tr>
+<td><strong>The app persists nothing</strong></td>
+<td>grep, Finding 4</td>
+<td>Absence of <code>SharedPreferences</code>/<code>SQLiteDatabase</code>/<code>openFileOutput</code> — which is what stops <code>allowBackup</code> from being over-claimed</td>
+</tr>
+<tr>
+<td><strong>The label <code>textFlag</code> is not trusted as an oracle</strong></td>
+<td><code>activity_admin.xml</code></td>
+<td><code>@+id/textFlag</code> is an empty <code>TextView</code> that starts as <code>android:text=&quot;&quot;</code>; the credential is <code>setText()</code> at <code>AdminActivity.java:21</code> only. A reader looking for a pre-baked flag in the layout finds nothing — and the <code>find</code>-for-a-flag search in §9 is the same check</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The reportable negative:</strong> the <code>else</code> branch (<code>Toast</code> + <code>finish()</code>) is a control that
+fires and <em>is</em> distinguishable from success — it shows <code>&quot;Acceso denegado&quot;</code> and never sets
+the text. But it cannot prevent anything: by the time it runs, the activity is already
+on screen in a process the caller chose. A control that runs <strong>after</strong> admission is a
+report, not a gate — the same rule the web corpus states for a CSRF <code>is_exploit</code> check
+placed after its write.</p>
+<hr />
+<h2 id="not-tested-vs-discarded-with-reason">NOT tested vs discarded with reason</h2>
+<p><strong>NOT tested</strong> — honest gaps, not conclusions:</p>
+<ul>
+<li><strong><code>am start</code> was never executed.</strong> No <code>adb</code>, no emulator, no <code>/dev/kvm</code>, no SDK, and the
+lab image ships no device. Hop 1 is derived from the manifest and the DEX and is
+labelled static everywhere it appears. No runtime positive control exists for the
+Activity layer, and the &quot;controls that held&quot; table says so rather than implying
+otherwise.</li>
+<li><strong>Signing identity.</strong> <code>keytool -printcert -jarfile</code> returned <code>Not a signed jar file</code> —
+the APK carries an <strong>APK Signature Scheme v2/v3</strong> block, not v1 JAR signing, so this
+tool is the wrong reader. <code>apksigner</code> is absent. <strong>Signing identity: unretrieved.</strong>
+Not &quot;untrusted&quot;, not &quot;debug-signed&quot; — simply not read.</li>
+<li><strong>The <code>else</code> branch's user-visible behaviour</strong> (<code>Toast</code> + <code>finish()</code>) is read from
+source, never observed on a screen.</li>
+<li><strong>Whether any real-world launcher or OEM skin auto-starts <code>AdminActivity</code>.</strong> It has no
+intent-filter, so a bare <code>LAUNCHER</code> intent cannot reach it; I did not test OEM-specific
+deep-link or assistant behaviours.</li>
+<li><strong>Post-root persistence, other accounts, and lateral movement</strong> from <code>uid=0(root)</code>. The
+lab's stated success criterion is <code>id</code>, and nothing past it is in scope.</li>
+</ul>
+<p><strong>Discarded with reason</strong> — each on evidence, not on absence of trying:</p>
+<ul>
+<li><strong>C1, exported-component-reachability (<code>pendingIntent</code>, deep link, WebView bridge).</strong>
+Discarded on four greps over the whole app package, all returning nothing:
+<code>WebView</code>, <code>JavascriptInterface</code>, <code>PendingIntent</code>, <code>getCallingPackage</code>. The manifest
+has exactly one <code>intent-filter</code> and it is the <code>LAUNCHER</code> pair on <code>MainActivity</code>.</li>
+<li><strong>C3, task hijacking.</strong> <code>taskAffinity</code>, <code>allowTaskReparent</code>, <code>launchMode</code> and
+<code>documentLaunchMode</code> are <strong>absent from the manifest entirely</strong> (grep returned nothing).
+With no <code>taskAffinity</code> override there is no cross-application task reuse to hijack.</li>
+<li><strong>C4, cleartext / <code>network_security_config</code>.</strong> <strong>No <code>network_security_config.xml</code> exists
+in the APK</strong> (<code>find</code> returned nothing), so there is no cleartext override to widen. And
+the app makes no network calls at all — <code>HttpURLConnection</code>, <code>Retrofit</code>, <code>OkHttp</code>,
+<code>Socket</code> and <code>openConnection</code> are all absent from the app package, and there is no
+hardcoded URL. There is no client→server channel to attack, which is also why the
+unlock is provably client-side.</li>
+<li><strong>Signing-certificate trust / repackaging.</strong> Not attempted; out of scope and no tool.</li>
+<li><strong>Container escape.</strong> The container is a plain <code>docker run -d</code> on the default bridge,
+no <code>docker.sock</code>, no <code>--privileged</code>, no extra capabilities. Not pursued further.</li>
+</ul>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>Per the runbook this is the most valuable section. Two of these <strong>nearly</strong> produced a
+false finding, and one produced a false confirmation.</p>
+<h3 id="1-my-ad-hoc-axml-string-pool-parser-produced-a-confidently-wrong-manifest-string-list">1. My ad-hoc AXML string-pool parser produced a <strong>confidently wrong manifest string list</strong></h3>
+<p>I wrote a binary <code>AndroidManifest.xml</code> parser to get a second, jadx-independent read of
+the shipped artefact. It reported 64 string-pool entries, and the first two were
+<code>'theme'</code>, <code>'theme'</code>. <strong>No real manifest has <code>theme</code> as a string-pool entry twice, let
+alone as the first entry.</strong> I had mis-placed the offset table: it lives at
+<code>headerSize</code>, and I had also mis-handled the <code>flags &amp; UTF8</code> bit, so the pointer table
+and the string data were off by a fixed amount and every entry decoded to the same
+wrong bytes.</p>
+<p><strong>What caught it:</strong> the repeated <code>theme</code>. A parser that has silently mis-offset a string
+table does not produce <em>no</em> output — it produces <strong>plausible-looking wrong output</strong>, and
+I nearly quoted it as independent corroboration of the manifest.</p>
+<p><strong>Lesson — the generalisable form, and it applies to every mobile lab:</strong> for AXML, do not
+hand-roll. Use <code>aapt2 dump xmltree</code> / <code>apkanalyzer</code> / <code>apktool</code>. If those are missing,
+say the manifest was read through exactly one path and do not claim corroboration you
+did not obtain. I replaced it with a real second path (§4).</p>
+<h3 id="2-the-second-path-i-did-get-utf-16le-strings-on-the-binary-manifest">2. The second path I did get: UTF-16LE strings on the binary manifest</h3>
+<pre><code>$ strings -a -e l raw/AndroidManifest.xml | grep -E 'adminbypass|exported|Activity'
+debuggable
+exported
+allowBackup
+com.ctf.adminbypass
+&lt;com.ctf.adminbypass.AdminActivity
+ com.ctf.adminbypass.MainActivity
+ com.ctf.adminbypass.UserActivity
+</code></pre>
+<p>This confirms the component names and the <code>exported</code> attribute exist <strong>in the shipped
+binary</strong> and are not a jadx rendering artefact. Note the first attempt used plain
+<code>strings -a</code> and returned <strong>nothing at all</strong> — the AXML string pool is UTF-16, so the
+default single-byte scan cannot see it. An analyst who ran only <code>strings</code> would have
+concluded the manifest was clean. The same <code>-e l</code> on <code>classes3.dex</code> is what produced the
+independent <code>isAdmin</code> / <code>chocolate</code> / <code>admin123</code> evidence.</p>
+<h3 id="3-keytool--printcert-is-the-wrong-tool-for-a-modern-apk-and-its-output-reads-like-a-verdict">3. <code>keytool -printcert</code> is the wrong tool for a modern APK, and its output reads like a verdict</h3>
+<p><code>Not a signed jar file</code> looks like a statement about trust. It is a statement about
+<strong>v1 JAR signing</strong>, which this APK does not use — it carries a v2/v3 APK Signing Block
+(<code>file(1)</code> confirms <code>with APK Signing Block</code>). Without <code>apksigner</code> the honest result is
+<strong>&quot;signing identity unretrieved&quot;</strong>, not &quot;unsigned&quot; and certainly not &quot;untrusted&quot;.</p>
+<h3 id="4-jadx-finished-with-error---finished-with-errors-count-19-on-a-2704-class-apk">4. <code>jadx</code> finished with <code>ERROR - finished with errors, count: 19</code> on a 2704-class APK</h3>
+<p>19 decompilation errors on a Kotlin/AndroidX build is ordinary, and the three classes
+that matter (<code>MainActivity</code>, <code>AdminActivity</code>, <code>UserActivity</code>, all in <code>classes3.dex</code>)
+decoded cleanly to readable Java with intact control flow. <strong>This was verified, not
+assumed:</strong> the <code>isAdmin</code> branch and the credential literal are visible in both the jadx
+output and the raw DEX strings. The count alone is not a licence to trust the output —
+it is a licence to check the specific classes that carry the finding.</p>
+<h3 id="5-sshpass-is-absent--recorded-as-untested-not-as-a-negative">5. <code>sshpass</code> is absent — recorded as untested, not as a negative</h3>
+<p><code>sshpass</code> was not installed. Rather than treat the SSH leg as blocked, I used
+<code>paramiko</code> — which is also a <strong>different invocation path</strong> for the same test, so the
+credential results do not depend on one client. The 2×2 in §4 is the control for this.</p>
+<h3 id="6-not-a-signed-jar-file-and-no-flag-file-are-both-absence-of-evidence">6. &quot;Not a signed jar file&quot; and &quot;no flag file&quot; are both <em>absence of evidence</em></h3>
+<p>Two searches in this engagement returned nothing — the <code>keytool</code> output and the
+flag search in §9. One is a wrong-tool artefact (defect 3). The other is a real absence
+and is reported as a measured absence <strong>with the search that established it</strong>, never as
+a negative result derived from a tool that could not have found it.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>No <code>FLAG{}</code>, <code>DL{}</code> or <code>CTF{}</code> exists in this lab.</strong> Three searches, and the <em>method</em>
+of each is stated so the absence is auditable:</p>
+<pre><code>1. Decoded app + resources:
+   $ grep -rniE &quot;flag\{|DL\{|CTF\{|FLAG:|Congratulations&quot; sources/com/ctf/ res/values/strings.xml
+   (no output)
+
+2. Raw DEX — all three files, independent of jadx:
+   $ for d in raw/classes*.dex; do strings -a $d | grep -E 'flag\{|FLAG\{|DL\{|CTF\{'; done
+   (no output)
+
+3. Host, as root, and the served page:
+   $ grep -rIl &quot;flag{&quot; /var/www /opt /root /home
+   (no paths above — no flag file)
+   $ grep -oiE 'flag\{[^}]*\}|Congratulations' index.html
+   (no output)
+   $ ls -la /var/www      -&gt;  AdminBypassCTF.apk, index.html   (only two files)
+</code></pre>
+<p><code>/opt</code>, <code>/root</code> and <code>/home</code> were searched at <code>uid=0(root)</code> after the escalation, so
+search 3 is not a permissions-limited negative.</p>
+<p><strong>The lab's actual reward is the identity transition itself</strong>, and the lab states its own
+success criterion plainly: <em>&quot;Si <code>id</code> devuelve <code>uid=0(root)</code>, has completado el
+laboratorio.&quot;</em> That is what was measured — <code>uid=0(root) gid=0(root) groups=0(root)</code> —
+and the credential pair <code>pingu</code> / <code>chocolate</code> is <strong>not</strong> a flag: it is a hardcoded
+compile-time constant at <code>AdminActivity.java:21</code>, reachable without difficulty, which is
+the entire point of the lab.</p>
+<hr />
+<h2 id="restore">Restore</h2>
+<pre><code>$ docker rm -f apkadmin_container &amp;&amp; docker run -d --name apkadmin_container apkadmin:latest
+restored IP=[net-0-4]
+</code></pre>
+<p>Recreated <strong>from the image</strong>, not by undoing edits — so the SSH login trail could not
+survive by construction. Verified <strong>positively</strong>, not by &quot;the container is up&quot;:</p>
+<pre><code>GET /index.html            -&gt; HTTP 200, 7668 bytes
+GET /AdminBypassCTF.apk    -&gt; HTTP 200, 5791613 bytes
+$ docker exec apkadmin_container id
+uid=0(root) gid=0(root) groups=0(root)
+</code></pre>
+<p>And the negative side, so &quot;restored&quot; means the artefacts are gone rather than the
+service merely answering:</p>
+<pre><code>$ wc -l &lt; /var/log/auth.log
+sh: 1: cannot open /var/log/auth.log: No such file
+$ ls -A /root        -&gt; .bashrc .cache .profile      (as shipped; .bash_history absent)
+$ ls -A [lab-home]/pingu  -&gt; .bash_logout .bashrc .profile (as shipped)
+</code></pre>
+<p>I used non-interactive <code>paramiko.exec_command</code> throughout, which writes no
+<code>[lab-home]/.bash_history</code>; the pre-restore listing was identical to the post-restore listing, so
+no in-container artefact needed removing. <strong>Nothing was written under
+<code>[lab-home]/dockerlabs/labs/</code></strong> — the APK, the jadx tree and the probe scripts live
+in <code>/tmp/[tool]/264</code>. <code>git commit</code> and <code>git push</code> were <strong>not</strong> run; <code>git status</code> /
+<code>git diff</code> read-only.</p>
+<hr />
+<h2 id="feed-forward--the-apk-class-this-methodology-lacks">Feed-forward — the APK class this methodology lacks</h2>
+<p>Mobile is new to the corpus, and the platform description for this lab is a symptom of
+why: <em>&quot;acceder a una activity que no deberíamos de tener acceso&quot;</em> names no attack
+surface, no mechanism, and no control. A reader who has not seen a manifest cannot act
+on it. The seven rules below are what this engagement produced, in the order they would
+have saved time.</p>
+<ol>
+<li>
+<p><strong>Separate the five families before testing any of them, and say which the lab has.</strong>
+&quot;Exported component&quot; and &quot;should not be reachable&quot; are not a class; §1's C1-C5 table
+is the smallest unit that generalises. Filings that collapse C1 (not exported but
+reached) into C2 (exported with no permission) give the client a fix for the wrong bug
+— in this lab, fixing C2 by adding a caller check inside <code>onCreate</code> would leave C2
+open and give false assurance.</p>
+</li>
+<li>
+<p><strong>On <code>targetSdk ≥ 31</code>, a missing-<code>intent-filter</code> activity's <code>exported</code> attribute is
+authored, never inherited.</strong> The install fails without it. So <code>exported=&quot;true&quot;</code> on such
+a component is a decision someone typed, and the writeup should say so — it removes the
+single most common &quot;it was just a default&quot; explanation.</p>
+</li>
+<li>
+<p><strong>A gate that reads the intent is not a gate.</strong> <code>getIntent().getBooleanExtra(...)</code> used
+to decide privilege is the recurring pattern in this family, and it is
+CWE-807 every time. The tell is structural: the value comes from <em>outside</em> the trust
+boundary. Grep <code>getCallingPackage|checkPermission|enforcePermission</code> — all four
+returning nothing is the positive evidence of absence, and it is a stronger artefact
+than any response code.</p>
+</li>
+<li>
+<p><strong>Run the manifest through a three-way control, never a boolean.</strong> Enumerate every
+component as (intended-reachable / intended-unreachable) × (reachable-in-fact /
+not). You need at least one of each. This lab supplies all three for free —
+<code>MainActivity</code> (yes/yes), <code>UserActivity</code> (no/no), <code>AdminActivity</code> (no/yes) — and the
+middle row is what stops the launcher being filed as a finding. A detector that flags
+every <code>exported=&quot;true&quot;</code> is not a detector.</p>
+</li>
+<li>
+<p><strong>Establish intent from the shipped artefact, not from the absence of a link.</strong> In
+this lab the corroboration came from the platform page (<em>&quot;ningun boton de la app te
+lleva&quot;</em>) plus the absence of any <code>startActivity</code>/<code>Intent</code> naming <code>AdminActivity</code> in the
+DEX. Both are needed: a missing link alone is weak, because apps do link hidden
+screens from notifications or shortcuts.</p>
+</li>
+<li>
+<p><strong>A credential disclosed by a mobile artefact must be run through every account it
+opens, on every tier, before the mobile finding is written up.</strong> The activity bug here
+is the delivery; the impact is <code>uid=0(root)</code>. Analysts habitually stop at &quot;I reached the
+admin screen&quot; and file the blast radius as a phone screen. Measure <code>id</code> on the far
+side of the credential — and measure the <em>unprivileged</em> side too, so the crossing is a
+before/after pair rather than an assertion.</p>
+</li>
+<li>
+<p><strong>State the runtime you had.</strong> When no device ships and no <code>adb</code>/emulator/KVM exists,
+the Activity half is <strong>static</strong>, the manifest is a <strong>three-way static control</strong>, and
+there is <strong>no runtime positive control</strong> for it. Say that in the writeup instead of
+letting a manifest read pass as an exploit. The host half, by contrast, was executed
+with a 2×2 and a <code>su</code> negative — and that asymmetry is the honest shape of this lab.</p>
+</li>
+</ol>
+<p><strong>One structural note for the class:</strong> Android's authorisation model is <strong>declared in
+the manifest and enforced by the system</strong>, so the manifest is the whole security
+boundary. That is the opposite of a web app, where the code is the boundary and the
+config is a hint. The transferable habit is not &quot;read AndroidManifest.xml&quot; — it is
+<strong>find the artefact where your platform's boundary is actually written, and read it
+before you touch the app.</strong> For a web lab that file is often the route table plus its
+middleware registration order; here it is 40 lines of XML that decide everything.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

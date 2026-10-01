@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 141 DockerLabs &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; DockerLabs</p><h1 id="dockerlabs-141--dockerlabs-fácil">DockerLabs 141 — &quot;Dockerlabs&quot; (Fácil)</h1>
+<p><strong>Target:</strong> container <code>lab141_container</code>, image <code>dockerlabs:latest</code>
+<strong>Deployment:</strong> <code>docker run -d --name lab141_container dockerlabs:latest</code> (plain — no <code>--privileged</code>, no bind mounts, no Docker socket)
+<strong>Image:</strong> Ubuntu 24.04 (<code>org.opencontainers.image.version=24.04</code>), Apache 2.4.58, PHP 8.3 via <code>mod_php</code>
+<strong>CMD:</strong> <code>/bin/sh -c &quot;service apache2 start &amp;&amp; tail -f /dev/null&quot;</code>
+<strong>Result: remote code execution as <code>www-data</code> (uid=33). No <code>FLAG{}</code> in the lab — the reward is the RCE itself, and no reward token exists on the target.</strong></p>
+<p>The lab is named &quot;Dockerlabs&quot; and its listing page enumerates other DockerLabs. Per <code>decision-making.md</code> §7, the name is a label; the surface is what the port scan returns. Here the name is <em>roughly</em> honest — the page is a catalogue of container labs — but the actual vulnerability is a <strong>file-upload RCE</strong>, not a container-escape. The container boundary is what makes the RCE's blast radius small; the RCE itself is a plain web bug. Both halves matter and are reported separately below.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<p><code>nmap -sV -Pn -p- [net-0-14]</code>:</p>
+<pre><code>PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+Not shown: 65534 closed tcp ports (conn-refused)
+</code></pre>
+<p>One TCP port. <code>GET /index.php</code> (200) is a static lab catalogue (<code>Trust</code>, <code>Upload</code>, <code>Injection</code>, <code>CapyPenguin</code>, …) whose download/upload/copy buttons have <strong>no JavaScript handlers</strong> — decorative. <code>scripts.js</code> only implements client-side search filtering. The only real sink is <code>upload.php</code>, reached via <code>machine.php</code>'s file-upload form.</p>
+<p><code>upload.php</code> (19 lines) accepts an uploaded file, takes <code>basename($_FILES[&quot;file&quot;][&quot;name&quot;])</code>, and stores it under <code>uploads/</code> <strong>if and only if</strong> the extension is <code>zip</code> or <code>phar</code>:</p>
+<pre><code class="language-php">$fileType = pathinfo($targetFilePath, PATHINFO_EXTENSION);
+if($fileType != &quot;zip&quot; &amp;&amp; $fileType != &quot;phar&quot;) { echo &quot;No se permite...&quot;; }
+else { move_uploaded_file($_FILES[&quot;file&quot;][&quot;tmp_name&quot;], $targetFilePath); }
+</code></pre>
+<hr />
+<h2 id="2-the-four-boundary-questions--measured-each-with-a-positive-control">2. The four boundary questions — measured, each with a positive control</h2>
+<p>These are the questions that decide <em>where the trust boundary is</em>, and none of them is visible from a port scan. Each answer below was forced to produce a positive so the detector is proven connected, per the &quot;detector pointed at something that does not exist returns a clean, believable negative&quot; rule.</p>
+<h3 id="a-privilege--does-it-run-as-root-and-is-it---privileged">(a) Privilege — does it run as root, and is it <code>--privileged</code>?</h3>
+<p><strong>The web process runs as <code>www-data</code> (uid 33), not root.</strong> The Apache <em>master</em> is uid 0 (it binds :80), but every worker that actually runs PHP is uid 33:</p>
+<pre><code>$ docker exec lab141_container id                      # exec identity (root — this is docker exec, NOT the web)
+uid=0(root) gid=0(root) groups=0(root)
+$ for p in $(pgrep apache2); do grep ^Uid /proc/$p/status; done
+pid=24 comm=apache2 Uid: 0   0  0  0      # master, binds :80
+pid=28 comm=apache2 Uid: 33  33 33 33     # workers, run PHP
+pid=29..32  Uid: 33 ...
+</code></pre>
+<p><strong>Positive control:</strong> the RCE itself, executed by the interpreter under the request, returns <code>uid=33(www-data)</code> — so the measured identity is the <em>executing</em> one, not the exec one. This is <code>decision-making.md</code> §8 applied: a <code>docker exec</code> root shell is a measurement of <code>docker exec</code>, and reporting it as &quot;the container is root&quot; would have been wrong.</p>
+<p><code>--privileged</code> is <strong>false</strong> (<code>HostConfig.Privileged=false</code>). No <code>--cap-add</code>, no <code>--cap-drop</code>, no <code>--security-opt</code>, <code>ReadonlyRootfs=false</code>, <code>PidMode</code>/<code>IpcMode</code> unset (private), <code>NetworkMode=bridge</code>.</p>
+<h3 id="b-api-surface--is-the-docker-socket-mounted">(b) API surface — is the Docker socket mounted?</h3>
+<p><strong>No.</strong> The lab container has no <code>docker.sock</code> anywhere on its filesystem, and no Docker CLI:</p>
+<pre><code>$ docker exec lab141_container sh -c 'ls -la /var/run/docker.sock; find / -name docker.sock 2&gt;/dev/null; echo done'
+ls: cannot access '/var/run/docker.sock': No such file or directory
+done
+$ docker exec lab141_container sh -c 'which docker; echo rc=$?'
+rc=1
+</code></pre>
+<p><strong>Positive control (the important one):</strong> a throwaway container was started <em>with</em> <code>-v /var/run/docker.sock:/var/run/docker.sock</code>, and the identical detector immediately returned a hit — <code>srw-rw---- 1 root 107 ... /var/run/docker.sock</code> (a Unix socket, not a regular file, so a <code>test -f</code> detector would have missed it). From that same socket, a <code>python:3.12-slim</code> helper issued <code>GET /version</code> → <code>HTTP/1.1 200 OK</code> and <code>POST /containers/create</code> → <code>201 Created</code>, then started a <strong>privileged</strong> sibling that bind-mounted the host <code>/tmp</code> and wrote <code>/tmp/lab141_socket_proof</code>, which landed on the host as <code>root root</code>, containing <code>SOCKET_GIVES_HOST_ROOT</code>. The unprivileged operator could not even delete it (<code>Operation not permitted</code> on sticky <code>/tmp</code>).</p>
+<p>That is the whole point of the control, and it is why it was run: <strong>a mounted Docker socket is root on the host, without exception</strong> — measured here, not assumed. The lab container does not have one, so the abuse below stops at the container. (The demonstration container and its marker were cleaned up as far as the unprivileged user could; the root-owned <code>/tmp/lab141_socket_proof</code> marker remains and needs root to remove.)</p>
+<h3 id="c-capabilities--which-ones-survive-and-which-decide">(c) Capabilities — which ones survive, and which decide?</h3>
+<p>Read from <code>/proc/self/status</code>, not from memory. From the <strong>executing</strong> identity (<code>www-data</code>, under the RCE):</p>
+<pre><code>CapPrm: 0000000000000000
+CapEff: 0000000000000000
+CapBnd: 00000000a80425fb
+NoNewPrivs: 0
+</code></pre>
+<p><code>www-data</code> holds <strong>zero</strong> permitted/effective capabilities. Its bounding set is the stock Docker default <code>0xa80425fb</code> — the same set <code>docker exec</code> (root) sees for <code>CapBnd</code>/<code>CapEff</code>/<code>CapPrm</code>, i.e. the container's ceiling was never widened. <code>NoNewPrivs: 0</code>. <strong>The surviving bounding set is what decides</strong>, and here it is the unprivileged default: no <code>CAP_SYS_ADMIN</code>, no <code>CAP_SYS_PTRACE</code>, no <code>CAP_NET_ADMIN</code> in the <em>effective</em> set of the identity that would be used in an attack. (The root <code>docker exec</code> context also shows <code>CapSeccomp</code>/<code>Seccomp</code> filtering is active in this environment; the web workers inherit it.)</p>
+<h3 id="d-user-identity--is-a-root-container-serving-the-web">(d) User identity — is a root container serving the web?</h3>
+<p>The container's init/master is root, but the <strong>serving process is <code>www-data</code></strong>. A root container serving a web app is a root container with an RCE waiting; here the RCE arrived, and the identity that executed it is uid 33 with zero capabilities. Namespace isolation (<code>uid_map 0 0 4294967295</code>, cgroup <code>0::/</code>, container hostname) holds: <code>www-data</code> cannot traverse <code>/proc/1/root</code> (<code>Permission denied</code>).</p>
+<p><strong>Summary of the boundary: a well-configured, unprivileged container with a narrow application bug.</strong> The four answers are all &quot;no&quot; — no privileged, no socket, default capabilities, unprivileged web identity — which is precisely why the RCE's impact is contained.</p>
+<hr />
+<h2 id="3-finding-used--rce-via-phar-upload-cwe-434--cwe-434cwe-94">3. Finding used — RCE via <code>.phar</code> upload (CWE-434 / CWE-434→CWE-94)</h2>
+<p><strong>Root cause:</strong> the upload allowlist treats <code>.phar</code> as a safe document type, but the <strong>stock</strong> Apache/PHP handler <em>executes</em> <code>.phar</code>. The stock Ubuntu <code>php8.3.conf</code> ships:</p>
+<pre><code>&lt;FilesMatch &quot;.+\.ph(?:ar|p|tml)$&quot;&gt;
+    SetHandler application/x-httpd-php
+&lt;/FilesMatch&gt;
+</code></pre>
+<p>The upload filter and the server's MIME map are two independent artifacts that were never reconciled. The filter blocks <code>.php</code> and <code>.phtml</code> but permits <code>.phar</code>, which the handler runs — so the allowlist carries <strong>no security weight against this class</strong> (it is <em>ineffective</em>, not absent; see <code>infrastructure.md</code> § <em>Web server configuration</em>).</p>
+<p><strong>Chain (literal output):</strong></p>
+<ol>
+<li>Upload a PHP payload as <code>.phar</code>:<pre><code>$ curl -F &quot;file=@probe.phar&quot; -F &quot;submit=1&quot; http://[net-0-14]/upload.php
+El archivo probe.phar ha sido subido correctamente.
+</code></pre>
+</li>
+<li>Request it back — Apache executes it:<pre><code>$ curl http://[net-0-14]/uploads/probe.phar
+UPLOAD_EXECUTED uid=33 user=www-data
+</code></pre>
+</li>
+</ol>
+<p><strong>Impact:</strong> unauthenticated remote code execution as <code>www-data</code>. The <code>uploads/</code> directory is <code>drwxrwxrwx</code>, so the uploaded file is readable/executable by the web server. Blast radius is the container's own filesystem as an unprivileged, zero-capability user; no host access (socket absent, not privileged).</p>
+<p><strong>CWE:</strong> CWE-434 (Unrestricted Upload of File with Dangerous Type) → CWE-94 (Improper Control of Generation of Code / code injection via execution).</p>
+<p><strong>Root cause vs mechanism (§ <em>Root cause confused with mechanism</em>):</strong> patching <code>upload.php</code>'s extension list is the <em>mechanism</em>; the <em>root cause</em> is a server-level MIME map that executes a whole family of extensions inside a directory that receives untrusted uploads. A patch to the mechanism ships nothing, because the next thing anyone uploads to <code>uploads/</code> is executed by the same global handler.</p>
+<p><strong>Remediation (name the decision, not the handler):</strong></p>
+<ul>
+<li>Serve <code>uploads/</code> from a location where the PHP handler is disabled — <code>&lt;Directory /var/www/html/uploads&gt; php_flag engine off &lt;/Directory&gt;</code> (or <code>SetHandler none</code> / remove the <code>SetHandler</code> inheritance) <strong>and</strong> set <code>Options -Indexes</code>. This is the operative fix.</li>
+<li>Independently: make the upload allowlist decision match what the server <em>executes</em> — do not treat <code>.phar</code> as inert — and store uploads outside the document root.</li>
+<li>The uploads directory being world-writable and browsable (<code>drwxrwxrwx</code>, <code>Index of /uploads</code> served) is a second, lower-severity finding (CWE-732 / CWE-548): it is the delivery mechanism for finding #1, not the root cause.</li>
+</ul>
+<hr />
+<h2 id="4-filter-behaviour--controls-that-held-and-where-they-did-not">4. Filter behaviour — controls that held, and where they did not</h2>
+<p>The filter is <code>pathinfo(..., PATHINFO_EXTENSION) != &quot;zip&quot; &amp;&amp; != &quot;phar&quot;</code> — exact, case-sensitive, last-extension-wins. Measured:</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Result</th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>probe.phar</code></td>
+<td>accepted, <strong>executed</strong></td>
+<td>the vector</td>
+</tr>
+<tr>
+<td><code>x.zip</code></td>
+<td>accepted, <strong>not executed</strong> (served as bytes: <code>ETag</code>, <code>Last-Modified</code>, no <code>Content-Type: text/html</code>)</td>
+<td>control that held — <code>.zip</code> is inert here</td>
+</tr>
+<tr>
+<td><code>x.php</code></td>
+<td>rejected (<code>No se permite…</code>)</td>
+<td>control that held</td>
+</tr>
+<tr>
+<td><code>x.PHAR</code></td>
+<td>rejected</td>
+<td>filter is case-sensitive</td>
+</tr>
+<tr>
+<td><code>x.php.phar</code></td>
+<td>accepted, <strong>executed</strong></td>
+<td>last-extension-wins; both the filter and the handler regex match on the end</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>.zip</code> result is the useful negative: <strong>the allowlist permits <code>.zip</code>, and that permission is harmless because Apache does not map <code>.zip</code> to the PHP handler.</strong> Same allowlist, one executable entry, one inert entry — which is what makes &quot;the allowlist re-points the extension it allows&quot; (§ <em>Web server configuration</em>) concrete rather than theoretical. A control that let <code>.zip</code> through and a control that let <code>.phar</code> through look identical at the upload endpoint; only the serve-back differential separates them.</p>
+<hr />
+<h2 id="5-reward">5. Reward</h2>
+<p><strong>There is no <code>FLAG{}</code> in this lab.</strong> An exhaustive grep over the whole filesystem (as root, and as <code>www-data</code> through the RCE) for <code>flag{|FLAG{|CTF{|reward|congratulations</code> returned exactly two hits, <strong>both false positives</strong>:</p>
+<ul>
+<li><code>/usr/share/perl/5.38.2/Pod/Perldoc.pm</code> — a Perl doc file containing the English word &quot;reward&quot; in prose;</li>
+<li>my own <code>uploads/hunt.phar</code> — the detector matched its own planted artifact.</li>
+</ul>
+<p>Neither is a reward token, and the two hits are the classic shape of a predicate that cannot fail (it matched the string it was hunting, including inside its own input). Reporting a reward here would be fabrication. The lab's &quot;reward&quot; is the RCE primitive itself; per the task rules I report the literal evidence and do not invent a token.</p>
+<hr />
+<h2 id="6-escape-or-abuse">6. Escape or abuse?</h2>
+<p><strong>Abuse, not escape.</strong> The RCE obtains code execution <em>inside</em> the container's own namespace, as an unprivileged zero-capability user, with no route to the host:</p>
+<ul>
+<li>no Docker socket (proved with a positive control above);</li>
+<li>not privileged; default capability bounding set;</li>
+<li><code>www-data</code> cannot read <code>/proc/1/root</code> (<code>Permission denied</code>);</li>
+<li><code>uid_map 0 0 4294967295</code>, private pid/ipc/net namespaces; host filesystem unreachable;</li>
+<li>from <code>www-data</code>: no sudo command grants, no writable files outside the webroot, <code>/etc/cron.d</code> root-owned — no in-container escalation to root was found either.</li>
+</ul>
+<p>Per the escape/abuse distinction, <strong>abuse</strong> = the container correctly uses its own API to do something the operator did not intend (here: an untrusted upload executed by a global handler). <strong>Escape</strong> = the container reaches something outside its namespace. This lab is abuse. The remediation follows accordingly: it is a <strong>deployment/configuration</strong> fix (which handler applies to the upload directory), not a runtime/kernel patch — because nothing about the runtime was wrong. The runtime held perfectly; the operator's MIME map did not.</p>
+<hr />
+<h2 id="7-rest-of-the-evidence">7. Rest of the evidence</h2>
+<ul>
+<li><strong>No container escape was attempted beyond read-only boundary enumeration,</strong> because there is no socket and no privileged flag to abuse, and a kernel/runtime escape on a shared host is an operational-risk decision — not something to fire at a lab that is already solved. That choice is documented here rather than hidden: this is the &quot;before reporting an escape, check what you can do with the result and whether it is in scope&quot; control, and in this case the boundary check itself is the deliverable.</li>
+<li><strong>Other containers untouched:</strong> baseline 19 → after this engagement 21 (the 2 extra are <code>lab141_container</code> and the socket positive-control container). All seven <code>cybervault-*</code> containers remained up with unchanged uptimes/health.</li>
+</ul>
+<h2 id="8-design-observation">8. Design observation</h2>
+<p>The lab is well-constructed as a <em>misuse</em> exercise: it teaches that a container is not a security boundary you can lean on when the application itself has a bug, and that a default-configured runtime faithfully contains that bug. The &quot;Docker security&quot; framing is about the <strong>deployment's</strong> responsibility, and the fix lands in deployment config. The instructive detail is that the container boundary <em>worked</em> — the author made the app vulnerable but the container correctly unprivileged, which is exactly the separation of concerns the methodology wants to teach.</p>
+<hr />
+<p><em>No commit made. Leak-scan on the added lines: see the verification section of the session.</em></p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

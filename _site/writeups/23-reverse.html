@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 23 reverse &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; reverse</p><h1 id="reverse--dockerlabs-lab-23-medio">REVERSE — DockerLabs lab 23 (Medio)</h1>
+<p><em>Seventeenth lab of the series. The catalogue description is <strong>true in three of its four claims</strong> and false in one: &quot;Máquina donde se analiza un binario para acceder a un subdominio, se explota una vulnerabilidad LFI con log poisoning para obtener acceso al sistema.&quot; The binary → subdomain hand-off is real and is the best-constructed first stage in the series so far. The LFI is real. The log poisoning is real. But <strong>&quot;obtener acceso al sistema&quot; stops at an unprivileged web user</strong> — there is no privilege escalation available from that identity, and the one sudo artifact the lab ships is a <em>secret dispenser that does not yield a shell</em>. The description's implied fourth claim (that the chain ends somewhere privileged) is the one that does not hold.</em></p>
+<p><strong>Result: <code>uid=33(www-data)</code>,</strong> an arbitrary-command primitive in a web-server process, reached in three hops from an unauthenticated HTTP request.
+<strong>Reward: none exists.</strong> Tenth consecutive lab without one; §9 is the exhaustive search that establishes the absence, and §9.1 states precisely what was <em>not</em> attempted and why.</p>
+<p>Secrets in this document are published as SHA-256 prefixes, following this repository's own rule that <em><code>sha256(flag)</code> proves possession without publishing the secret</em>. The method is reproducible from the disassembly without them. The one secret that <strong>is</strong> published literally is the sudoers rule, because it is configuration evidence rather than a credential.</p>
+<table>
+<thead>
+<tr>
+<th>Artifact</th>
+<th>len</th>
+<th>sha256 (first 32)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Derived binary password</td>
+<td>13</td>
+<td><code>58c2c512b89fc28ab3635ce068d619c7</code></td>
+</tr>
+<tr>
+<td>Base64 blob printed by the binary</td>
+<td>28</td>
+<td><code>862270afc4ea8c4ca524dad2f9b72fbd</code></td>
+</tr>
+<tr>
+<td>Decoded internal host name</td>
+<td>18</td>
+<td><code>a911e6bed40fa33ce3a8d5f9374ff3eb</code></td>
+</tr>
+<tr>
+<td>Helper gate password</td>
+<td>9</td>
+<td><code>22b2f5d0b7eae359c118d8bb41a121e9</code></td>
+</tr>
+<tr>
+<td>Secret disclosed by the helper</td>
+<td>24</td>
+<td><code>0800d00ccb7372f849f47cf191b5063d</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="1-autocorrection-read-this-first">1. Autocorrection (read this first)</h2>
+<p>Five errors in this engagement, all of them mine, four of them in my own instrumentation. Two of them would have produced a <em>confident report of absence</em> — &quot;log poisoning is blocked here&quot; — which is the failure mode this repository has now seen five times.</p>
+<h3 id="11-i-nearly-declared-log-poisoning-dead-by-reading-mode-bits">1.1 I nearly declared log poisoning dead by reading mode bits</h3>
+<p>The Apache logs are <code>-rw-r----- root:adm</code>. My first reading was the standard one: the include runs as <code>www-data</code>, <code>www-data</code> is not <code>root</code>, therefore the log is unreadable and the log-poisoning leg cannot work. <strong>That is false, and it is false in the way this repository has documented twice</strong> — <em>ownership by a group that happens to be yours is not write access, and is not read access either.</em></p>
+<p>The truth: <code>www-data</code> is a member of group <code>adm</code>. It reads the log byte-for-byte identically to root. The permission link in the chain <strong>holds</strong>, and had I trusted the mode string I would have thrown away the lab's actual third stage and written &quot;the log is not readable by the include&quot; into a report.</p>
+<p>The measurement that settled it was not a mode string. It was <strong>reading the same file as each identity</strong>:</p>
+<pre><code>as root      -&gt; 60 bytes, first line &quot;[…] &quot;GET / HTTP/1.0…&quot;
+as www-data  -&gt; 60 bytes, first line &quot;[…] &quot;GET / HTTP/1.0…&quot;   (identical)
+</code></pre>
+<p>And the <em>first</em> attempt at that measurement was itself broken, in the exact way §1 warns about — see 1.2.</p>
+<h3 id="12-my-readability-probe-returned-a-clean-reading-of-the-wrong-processs-exit-code">1.2 My readability probe returned a clean reading of the wrong process's exit code</h3>
+<p>My first permission probe was:</p>
+<pre><code class="language-sh">su -s /bin/sh www-data -c &quot;head -c 40 $f&quot; 2&gt;&amp;1 | head -1
+echo &quot; [rc=$?]&quot;
+</code></pre>
+<p>It printed an empty string and <code>rc=0</code> — a well-formed, believable reading of <strong>nothing</strong>. Two independent defects in one line:</p>
+<ol>
+<li><code>$?</code> is the exit status of <code>head -1</code>, not of <code>su</code> and not of the <code>open()</code> that actually failed. A detector that cannot fail, pointed at the question.</li>
+<li>The <code>2&gt;&amp;1</code> was consumed by the pipe, so the <em>real</em> diagnostic — a <code>Permission denied</code> on stderr — was discarded, and the empty line was indistinguishable from a genuinely empty file.</li>
+</ol>
+<p>The follow-up attempt was worse: I redirected to a path that did not exist <strong>inside the container</strong>, producing <code>cannot create /tmp/[tool]/pos.txt: Directory nonexistent</code> and a <code>wc -c</code> of empty. I had written a host path into a container command. Both versions of this probe reported &quot;www-data read 0 bytes&quot; and I was one command from the wrong conclusion in 1.1. Fixed by capturing stderr to a file that exists on the target side and comparing byte counts across identities.</p>
+<h3 id="13-a-404-i-read-as-not-poisonable-was-my-own-url-shape">1.3 A <code>404</code> I read as &quot;not poisonable&quot; was my own URL shape</h3>
+<p>Twice. The first injection attempt produced <code>404</code> and I recorded the log as unchanged. The cause was mine: I built the payload with Python's <code>urllib.parse.quote()</code> at default settings, which encodes <code>/</code> as <code>%2F</code>. Apache ships <code>AllowEncodedSlashes Off</code>, so <strong>any request containing <code>%2F</code> is a <code>404</code> regardless of the path</strong> — a well-formed answer, one step behind nothing at all. The second attempt kept the <code>%2F</code>-free path but put a short component in front of the payload (<code>/QJ/</code> + payload), so the request became an ordinary 404 for a directory that does not exist, and a 404 <strong>writes no error-log entry at all</strong>.</p>
+<p>Only the measured threshold separated the real thing from the fake:</p>
+<table>
+<thead>
+<tr>
+<th>path length</th>
+<th>HTTP</th>
+<th>error.log delta</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>100</td>
+<td><code>404</code></td>
+<td>0</td>
+</tr>
+<tr>
+<td>500</td>
+<td><code>403</code></td>
+<td>+1182</td>
+</tr>
+<tr>
+<td>2000</td>
+<td><code>403</code></td>
+<td>+4182</td>
+</tr>
+<tr>
+<td>4000</td>
+<td><code>403</code></td>
+<td>+8182</td>
+</tr>
+</tbody>
+</table>
+<p>The trigger is a <strong>single path component longer than the 255-byte filename limit</strong> → <code>errno 36 ENAMETOOLONG</code> → <code>403</code> <strong>plus</strong> an error-log entry quoting the decoded path. Both of my &quot;not poisonable&quot; results were a <code>404</code>, i.e. <em>the request never reached the code that writes the log</em>. This is the Grandma lesson verbatim: <strong>a <code>404</code> has two indistinguishable causes, and the boring one here was mine.</strong></p>
+<h3 id="14-i-nearly-filed-a-client-bug-as-a-target-control-and-nearly-filed-a-target-control-as-a-client-bug">1.4 I nearly filed a client bug as a target control, and nearly filed a target control as a client bug</h3>
+<p>A raw newline in <code>User-Agent</code> returned <code>400</code>. That answer has two indistinguishable causes: Apache refuses an embedded CR/LF in a header, or my client mangled the bytes. <strong>I could not tell them apart from curl's output</strong>, and both readings lead to a wrong report — one blames my tooling, the other claims a control that may not exist.</p>
+<p>Resolved by forbidding the client from touching the payload: a raw Python socket sending the CRLF-embedded header verbatim returned <code>400</code> as well. So the control is <strong>the target's</strong>, and it is genuinely there.</p>
+<h3 id="15-i-read-a-plausible-6-byte-string-as-a-recovered-password">1.5 I read a plausible 6-byte string as a recovered password</h3>
+<p>Two adjacent 6-byte constants, <code>S3cRet</code> and <code>d00m</code>, sit immediately before the game's prompt strings in <code>.rodata</code> and together spell a leetspeak phrase. Every heuristic in this repository's reversing section points at them: adjacency, immediacy to the prompt, plausible appearance. I submitted their concatenation and got <code>Contraseña incorrecta…</code>.</p>
+<p>The reason is visible only in the <strong>call site</strong>, not in the constant table — and this is precisely the existing rule <em>&quot;prefer the call site to the constant table&quot;</em>. <code>main</code> does not compare the input to a stored password. It calls <code>containsRequiredChars(const std::string&amp;)</code> (<code>:21containsRequiredChars…</code>, <code>0x4044ee</code>), which builds <strong>four <code>std::regex</code> objects and requires <code>length() == 13</code></strong>. The two constants are <em>regex patterns</em>, not a password, and the two 2-byte neighbours are patterns too. The password is a <strong>permutation satisfying four pattern constraints plus a length</strong>, which is a different problem from the one the constants suggest — and the constant that made me confident is a label, not a value.</p>
+<hr />
+<h2 id="2-real-surface">2. Real surface</h2>
+<h3 id="21-host">2.1 Host</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Parrot Security 6.2 (lorikeet), Debian-derived</td>
+</tr>
+<tr>
+<td>Services</td>
+<td><code>80/tcp</code> only — Apache httpd 2.4.62, PHP 8.2.26 (<code>mpm_prefork</code>)</td>
+</tr>
+<tr>
+<td>Attack surface</td>
+<td>one port, two vhosts, one unauthenticated PHP <code>include()</code></td>
+</tr>
+<tr>
+<td>Entry identity reached</td>
+<td><code>uid=33(www-data) gid=33(www-data) groups=33(www-data),4(adm)</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>nmap -sV -Pn -p- [net-0-9]</code>:</p>
+<pre><code>PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.62 ((Debian))
+Not shown: 65534 closed tcp ports (conn-refused)
+</code></pre>
+<p>Single container, no macvlan, no second host. The image declares <strong>no <code>EXPOSE</code></strong> directive and its entrypoint is <code>/bin/sh -c bash $@</code> with <code>Cmd = /bin/sh -c iniciar</code>, where <code>iniciar</code> is three lines: start apache2, sleep, <code>tail -f /dev/null</code>. Nothing is listening that is not in the Apache config.</p>
+<h3 id="22-vhost-table--the-central-evidence">2.2 Vhost table — the central evidence</h3>
+<p>Two vhosts, and the <em>default</em> one is not a real host. Per the vhosting rule in <code>api_web.md</code>, each candidate was read <strong>three times with no writes</strong> and hashed after dropping <code>Date</code>/<code>ETag</code>/<code>Last-Modified</code> and collapsing whitespace:</p>
+<table>
+<thead>
+<tr>
+<th><code>Host:</code></th>
+<th>read 1</th>
+<th>read 2</th>
+<th>read 3</th>
+<th>verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the name decoded from the binary</td>
+<td><code>2d38449569dcb3bd</code></td>
+<td><code>2d38449569dcb3bd</code></td>
+<td><code>2d38449569dcb3bd</code></td>
+<td><strong>stable, distinct → real host</strong></td>
+</tr>
+<tr>
+<td>the first vhost in the config</td>
+<td><code>1d3ed7da27f93ca3</code></td>
+<td><code>1d3ed7da27f93ca3</code></td>
+<td><code>1d3ed7da27f93ca3</code></td>
+<td><strong>identical to the provably-absent control → baseline</strong></td>
+</tr>
+<tr>
+<td>a name that cannot exist</td>
+<td><code>1d3ed7da27f93ca3</code></td>
+<td><code>1d3ed7da27f93ca3</code></td>
+<td><code>1d3ed7da27f93ca3</code></td>
+<td><strong>control</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Every name answers <code>200</code> — that is not information. <strong>Three distinct hashes would have meant the sweep found everything; two means it found exactly one real host</strong>, and the config's own first vhost is the catch-all, not a discovery. The provably-absent control is what makes this decidable, and the three-identical-reads requirement is what stops a moving body from reading as a host. Both directions of the rule are exercised here: one of these two &quot;hosts&quot; is the baseline.</p>
+<h3 id="23-the-binary--the-entry-criterion-applied">2.3 The binary — the entry criterion, applied</h3>
+<p><code>secret</code> is world-readable <strong>inside the document root of the default vhost</strong>, so it is downloadable over HTTP with no authentication:</p>
+<pre><code>http_code=200 size=2850872      # on-disk size is 2850872 — byte-identical transport
+secret: ELF 64-bit LSB executable, x86-64, statically linked, not stripped
+md5=e6a2a489b257a383d013e2e81665ff2e
+</code></pre>
+<p><strong>The reversing entry criterion settles the strategy in two lookups:</strong></p>
+<ul>
+<li><strong>Is there a KDF?</strong> <code>nm -C secret | grep -icE 'pbkdf2|scrypt|argon2|bcrypt'</code> → <strong>0</strong>. There is no dynamic section at all (statically linked), and <code>EVP_*</code>/<code>AES_*</code> symbol count is <strong>0</strong>. So this is <strong>not</strong> a cryptanalysis problem and the decompiler is not the next step. Without that check this would have been scoped as a crypto engagement and cost hours.</li>
+<li><strong>What is it, then?</strong> A C++ quiz: <code>secret.cpp</code> in the string table, <code>main</code> at <code>0x404716</code>, and two functions that matter — <code>containsRequiredChars</code> (<code>0x4044ee</code>) and <code>decodeMessage</code> (<code>0x4042a5</code>). Not stripped, so the entry point is named rather than hunted.</li>
+</ul>
+<p>Note the negative half, which is what makes the scoping honest: <strong>the decoded host name does not appear in <code>strings</code> output at all</strong> — not in cleartext, and the binary is not obfuscated. It is constructed at runtime and printed base64-encoded. A <code>strings | grep</code> sweep for the hostname returns nothing, so the &quot;grep the binary for the subdomain&quot; shortcut that the lab's own framing invites <strong>does not work</strong>, and a reviewer who only ran it would conclude the binary is a dead end.</p>
+<hr />
+<h2 id="3-the-chain">3. The chain</h2>
+<pre><code>[1] unauthenticated HTTP GET /secret_dir/secret        (default vhost, document root)
+      └─ 2850872 bytes, ELF, not stripped, no KDF import  → §2.3
+[2] static analysis: main → containsRequiredChars(pw)   → §1.5, §4.1
+      4 regex_search constraints + length == 13
+      └─ a 13-character input satisfying all four  → decodeMessage()
+[3] decodeMessage() prints a base64 blob
+      └─ base64 -d → the second vhost's name          → §2.2
+[4] Host: &lt;that name&gt; → a different document root, /var/www/subdominio
+      └─ experiments.php?module=… → include() of an attacker-chosen path  → §4.2
+[5] primitive 1: read   — /etc/passwd bytes come back, so this is exfiltration, not an oracle
+      primitive 2: execute — a request path &gt;255 bytes is reflected into the Apache error log
+                     as a decoded line; including that log executes it
+      └─ uid=33(www-data)                               → §4.3, §5
+[6] as www-data: sudo -u nova /opt/password_nova  (NOPASSWD, one binary)
+      └─ discloses a secret that authenticates to NO account   → §4.4, §8
+[chain ends here — no privilege escalation exists from uid=33]
+</code></pre>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<h3 id="41-client-side-secret-check-in-a-distributed-binary--cwe-602--cwe-321">4.1 Client-side secret check in a distributed binary — CWE-602 / CWE-321</h3>
+<p><strong>The defect.</strong> <code>main</code> (<code>0x404716</code>) reads a line from <code>std::cin</code> and passes it to <code>containsRequiredChars</code> (<code>0x4044ee</code>). That function constructs four <code>std::basic_regex</code> objects from four constants at <code>0x57e081</code>, <code>0x57e083</code>, <code>0x57e086</code> and <code>0x57e08d</code>, <code>regex_search</code>es the input against each, and returns true only if <strong>all four match and <code>length() == 0xd</code></strong>.</p>
+<p><strong>Why this is a finding and not a curiosity.</strong> The check is a <em>client-side gate on a secret</em>, and it is the only thing between a 2.8 MB world-readable binary and the name of an internal host. Because the four patterns are individually satisfiable and the length is a sum, <strong>the set of accepted inputs is not the author's input</strong> — it is any 13-character permutation meeting four pattern constraints. There is no key to steal and nothing to brute-force: an attacker <em>derives</em> the input from the disassembly in minutes.</p>
+<p><strong>Root cause.</strong> Authentication-shaped logic implemented as a pattern test inside a distributed client, with the satisfiability of the constraints left unexamined.</p>
+<p><strong>Remediation.</strong> Do not ship a secret gate inside a publicly downloadable artifact. If the binary must remain public, it must hold no capability on its own — the message it protects has to be authorized server-side.</p>
+<p><strong>The transferable part, and it is the general form of the trap in §1.5:</strong> <em>the constants adjacent to a prompt look like a credential and are not one.</em> The adjacency heuristic that this repository already documents for a key and its IV is exactly right — and it was <strong>also</strong> what made me confident here, where the adjacent bytes were four independent patterns and the missing fact was the length constraint one function away. The discriminator that resolved it was not another look at the constants: it was <strong>the call site's argument shape</strong> — four regex objects and a <code>cmp 0xd</code>, where a value comparison would have been a <code>strcmp</code>.</p>
+<h3 id="42-unrestricted-local-file-inclusion--cwe-98-cwe-22-bytes-returned">4.2 Unrestricted local file inclusion — CWE-98 (CWE-22), bytes returned</h3>
+<p><strong>The sink, verbatim</strong> (<code>/var/www/subdominio/experiments.php</code>):</p>
+<pre><code class="language-php">// Verificamos si el parámetro 'module' está presente en la URL.
+$module = isset($_GET['module']) ? $_GET['module'] : 'default';
+// Creamos la ruta completa del archivo a incluir, sin directorio base ni restricciones.
+$filePath = $module;
+if (file_exists($filePath)) {
+    include($filePath);
+} else {
+    echo &quot;&lt;h1&gt;Modulo no encontrado&lt;/h1&gt;&quot;;
+</code></pre>
+<p><code>$filePath</code> is <code>$module</code> with no <code>basename()</code>, no <code>realpath()</code> containment check, no allowlist, no suffix. The comment above it states the omission in prose — which is exactly §7's &quot;comments mark where the author <em>admitted</em> a problem, a strict subset of where the problems are&quot;, and I verified reachability independently rather than trusting the comment.</p>
+<p><strong>The three-way split, measured rather than assumed</strong> (this is the existing LFI section applied):</p>
+<table>
+<thead>
+<tr>
+<th>capability</th>
+<th>test</th>
+<th>result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>open</strong> the file</td>
+<td><code>module=/etc/passwd</code></td>
+<td>file exists, <code>include</code> runs</td>
+</tr>
+<tr>
+<td><strong>act as an oracle</strong></td>
+<td><code>module=/etc/definitely-not-here-7q4x2p</code></td>
+<td><code>200</code>, 99 bytes, &quot;Modulo no encontrado&quot;</td>
+</tr>
+<tr>
+<td><strong>return the bytes</strong></td>
+<td><code>module=/etc/passwd</code></td>
+<td><strong>200, content returned</strong> — <code>root:x:0:0:root:/root:/bin/bash</code>, <code>daemon:x:1:1:…</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>This is exfiltration, not an existence oracle.</strong> The three states separate cleanly, which is what makes the finding decidable: a known-present file with <strong>known content</strong> (the app's own <code>modules/default.php</code>, whose text I had already read out of the image) returned its rendered bytes, and a provably-absent path returned a different, distinct body. Same status code, different bodies — so the two states were genuinely separated and not a costume.</p>
+<p><strong>Root cause.</strong> The value reaches <code>include()</code> unfiltered. Note what is <em>not</em> the root cause: <code>open_basedir</code> is unset, but that is a defence-in-depth absence, not the bug. Patching <code>open_basedir</code> alone would leave the parameter reaching <code>include()</code>.</p>
+<p><strong>Remediation.</strong> An explicit allowlist of module identifiers, resolved through <code>basename()</code> and compared against that list before the include; <code>allow_url_include=Off</code> retained; and <code>open_basedir</code> set to the document root as a second layer. The remediation must address <em>reaching</em> an unintended file — it does not address §4.3, which is a different bug with a different fix.</p>
+<h3 id="43-attacker-controlled-data-reflected-into-a-log-that-is-then-executed--cwe-117-and-cwe-98-as-two-findings">4.3 Attacker-controlled data reflected into a log that is then executed — CWE-117 <strong>and</strong> CWE-98, as two findings</h3>
+<p>This is the lab's third stage, and it is genuinely two defects with two remediations. Merging them is how a reviewer fixes one and ships.</p>
+<h4 id="431-log-injection--the-reflected-data-reaches-a-log-file-unsanitised-cwe-117">4.3.1 Log injection — the reflected data reaches a log file unsanitised (CWE-117)</h4>
+<p>A request path longer than the filesystem's 255-byte filename limit is rejected by Apache with <code>errno 36 (File name too long)</code> and the <strong>URL-decoded</strong> path is written to <code>/var/log/apache2/error.log</code>. Attacker-controlled bytes therefore land in a persistent server-side file.</p>
+<p><strong>Which field, and why that one.</strong> The obvious field is <code>User-Agent</code>, and on this target <strong>it is correctly blocked</strong> (§6.1). The field that works is <strong>the request path, and specifically the <code>%U</code> token of Apache's error-log format</strong> — the <em>escaped</em> path, as opposed to <code>%r</code>, the raw request line, which the access log uses. That single difference in one directive is the whole finding:</p>
+<pre><code>/etc/apache2/apache2.conf:213  LogFormat &quot;%h %l %u %t \&quot;%r\&quot; %&gt;s %O \&quot;%{Referer}i\&quot; \&quot;%{User-Agent}i\&quot;&quot; combined
+</code></pre>
+<p><code>combined</code> logs <code>%r</code> — the request line verbatim, which cannot contain a newline. The <strong>error</strong> log has no <code>ErrorLogFormat</code> directive, so it uses Apache's built-in default, which is built on <code>%m%U%q</code> — and <strong><code>%U</code> is the unescaped path</strong>. Same request, two log files, two different field choices, and only one of them decodes <code>%0a</code> into a real byte.</p>
+<p><strong>Impact.</strong> Any data an attacker can route into <code>%U</code> is persisted server-side, unsanitised, in a file the web process can read. That is a log-forgery primitive on its own, independent of any file-inclusion bug: it is the ability to write arbitrary lines into a server audit trail.</p>
+<p><strong>Root cause.</strong> A log format that renders attacker-controlled input in decoded form, with no output-side neutralisation of control characters.</p>
+<p><strong>Remediation.</strong> Sanitise at the sink: set an explicit <code>ErrorLogFormat</code> built on the raw request line rather than <code>%U</code>, and neutralise CR/LF in any field an attacker can reach. <strong>This fix alone does not close the chain</strong> — see 4.3.2.</p>
+<h4 id="432-the-included-log-executes-whatever-was-written-into-it-cwe-98--code-execution">4.3.2 The included log executes whatever was written into it (CWE-98 → code execution)</h4>
+<p>Combined with §4.2, including that log file runs its contents as PHP. <strong>The evidence that the injected code executed</strong> — not that the log changed:</p>
+<pre><code>$ # 1. inject, with a run-scoped nonce
+$ printf 'RUNW67PBrFK=uid=33(www-data)' is the marker this run wrote
+$ curl -s -o /dev/null -H 'Host: &lt;internal&gt;' &quot;http://[net-0-9]/QJ&lt;?php echo \&quot;RUNW67PBrFK=\&quot;.trim(shell_exec(\&quot;id\&quot;)); ?&gt;&quot; + 'a'*250
+  inject http=403
+$ # 2. include the log
+$ curl -s -H 'Host: &lt;internal&gt;' &quot;http://[net-0-9]/experiments.php?module=/var/log/apache2/error.log&quot;
+  http=200 bytes=31055
+$ # 3. the marker, carrying the executing identity, in the HTTP RESPONSE BODY
+RUNW67PBrFK=uid=33(www-data)
+RUNW67PBrFK=uid=33(www-data)
+</code></pre>
+<p><strong>Why this is the required proof and not the weaker one.</strong> &quot;The log changed&quot; is not evidence of execution, and a known-answer payload would be evidence of a payload I already knew. The marker is a <strong>nonce generated in this run</strong>, absent before the run, and it is read back in a <strong>different channel</strong> — the response body of a second, unrelated request. It appears twice because Apache quotes the path twice in the same entry (once in <code>access to …</code>, once in <code>filesystem path …</code>). The first command inside the new primitive was <code>id</code>, and its answer is a finding in its own right (§8): <strong><code>uid=33(www-data)</code>, not root.</strong></p>
+<p><strong>The permission link, measured as the identity that does the include</strong> (the control almost nobody applies):</p>
+<table>
+<thead>
+<tr>
+<th>identity</th>
+<th>bytes read from <code>/var/log/apache2/access.log</code></th>
+<th>error</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>root</code></td>
+<td>60</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>www-data</code></td>
+<td><strong>60</strong></td>
+<td>none</td>
+</tr>
+</tbody>
+</table>
+<p>Identical. The chain's weakest link — <em>is the log readable by the process that includes it</em> — <strong>holds</strong>, and the reason is the one in §1.1: <code>www-data</code> is in group <code>adm</code> and the files are <code>-rw-r----- root:adm</code>. Had the include run as an account outside <code>adm</code>, the primitive would have returned a broken include, and that is a failure mode that <strong>reads exactly like a dead log-poisoning vector</strong>.</p>
+<p><strong>Root cause.</strong> Two independent defects joined: a log the web process can read, and a file-inclusion sink with no allowlist. <strong>Neither is sufficient alone</strong> — the injection without the include is log forgery, the include without the injection is inert.</p>
+<p><strong>Remediation.</strong> Fix §4.2's allowlist — that alone closes this chain. Then, independently: store logs outside any path reachable by the application, and never <code>include()</code> a path derived from user input.</p>
+<h3 id="44-an-unprivileged-web-user-is-granted-a-nopasswd-helper-that-discloses-a-secret--cwe-250--cwe-522">4.4 An unprivileged web user is granted a NOPASSWD helper that discloses a secret — CWE-250 / CWE-522</h3>
+<p><strong>The rule, verbatim from the target:</strong></p>
+<pre><code class="language-sudoers">User www-data may run the following commands on 07fcd4f3bd9a:
+    (nova : nova) NOPASSWD: /opt/password_nova
+</code></pre>
+<p><strong>The helper</strong>, <code>-rwx--x--x 1 root nova 400 /opt/password_nova</code> — 400 bytes, <strong>unreadable even by its own owning group</strong> (<code>nova</code> has <code>--x</code>, not <code>r</code>). It prompts, reads a password on line 9, and on a match discloses a second secret and exits. Literal output on success:</p>
+<pre><code>Contraseña correcta, mi contraseña es: [24-char secret, sha256 0800d00c…]
+</code></pre>
+<p><strong>Two findings, and the second is the one that is easy to miss.</strong></p>
+<ol>
+<li><strong>CWE-250 — unnecessary privilege.</strong> The web-server identity is granted passwordless execution of a root-owned helper. The sudoers rule is <em>properly scoped to one binary</em> (§6.4), which is the control that keeps this at &quot;a secret dispenser&quot; rather than &quot;a root shell&quot; — but the grant itself is a privilege decision made on behalf of a component that has no business making one, and a web process is one RCE away from triggering it.</li>
+<li><strong>CWE-522 — insufficiently protected credentials.</strong> The helper's entire purpose is to print a secret to its caller. Its gate is a <strong>9-character common password</strong> (sha256 <code>22b2f5d0…</code>) which its own prompt advertises as being in a well-known wordlist. So the secret is protected by a credential that is (a) drawn from a published list and (b) <strong>disclosed on screen in the very prompt that asks for it</strong>. Any principal who can reach the helper gets the secret.</li>
+</ol>
+<p><strong>Root cause.</strong> A &quot;verify the operator&quot; helper written as a wordlist-checked gate in front of a hardcoded secret, and then wired into <code>sudoers</code> for the web user.</p>
+<p><strong>Remediation.</strong> Delete the helper and the sudoers grant. If a secret must be distributed, it is not distributed through a world-executable binary gated by a guessable password.</p>
+<p><strong>The finding that is <em>not</em> here, and this is the honest part.</strong> I did not find a privilege escalation. The disclosed secret <strong>does not authenticate to any account on this host</strong> — I tested it against both non-root accounts via <code>su</code> under a PTY and both returned <code>Authentication failure</code> (§8.2). So the chain terminates at <code>uid=33(www-data)</code> and this finding is a <em>dead end that discloses a secret</em>, not a step in an escalation.</p>
+<h3 id="45-root-is-mode-755--cwe-732">4.5 <code>/root</code> is mode 755 — CWE-732</h3>
+<p><code>drwxr-xr-x 1 root root 4096 /root</code>. Debian's default is <code>700</code>. As <code>www-data</code> the directory <strong>is listable</strong>, and its contents are Parrot desktop defaults; <code>.ssh</code> is <code>700</code> and correctly refused:</p>
+<pre><code>/root: ENTERED          (www-data)
+/root/.ssh/: Permission denied
+[lab-home]/maci: denied      [lab-home]/nova: denied
+</code></pre>
+<p><strong>Impact.</strong> Every file in root's home that is not separately restricted is disclosed to any local account. Here that set happens to be KDE configuration and dotfile boilerplate, so <strong>no credential was recovered</strong> — but that is luck, not design, and the same mode on a different host exposes root's history, tokens and <code>[lab-home]/.aws</code>.</p>
+<p><strong>Root cause.</strong> An image built from a desktop base that was never hardened; <code>chmod 700 /root</code> was not applied.</p>
+<p><strong>Remediation.</strong> <code>chmod 700 /root</code>, and assert it in the image build.</p>
+<h3 id="46-session-directory-is-world-writable-and-holds-a-stale-session--cwe-732-low">4.6 Session directory is world-writable and holds a stale session — CWE-732 (low)</h3>
+<p><code>/var/lib/php/sessions</code> is <code>drwx-wx-wt root root</code> (mode <code>1777</code>, sticky) and contains a pre-seeded session owned by <code>www-data</code> with content <code>clicks|i:12;</code>. Confirmed writable by the identity under test (<code>www-data</code> → <code>WRITE_OK</code>). PHP's own default here is <code>1777</code>, so the sticky bit limits cross-user deletion and this is <strong>low severity</strong>; it is filed because a stale session file in a world-writable directory is a persistence surface, and because the file's content (<code>clicks</code>, a counter the front-end JavaScript also tracks) is unexplained by any code in the image.</p>
+<hr />
+<h2 id="5-log-poisoning-the-criterion-not-the-payload">5. Log poisoning: the criterion, not the payload</h2>
+<p>The technique is 20 lines long and is in every cheat sheet. What is not written down anywhere is <strong>how to choose the field, and what to check before you claim it works.</strong> This is the section I would want in my own hands on a real engagement, so it is written as criteria.</p>
+<h3 id="51-the-objective-is-a-newline-not-code">5.1 The objective is a newline, not code</h3>
+<p>A log injection is the insertion of a <strong>line break</strong> into a log. Everything else — the payload, the execution — is supplied by whatever <em>reads</em> the log later. So:</p>
+<blockquote>
+<p><strong>A <code>\n</code> in a <code>User-Agent</code> or in a login URL is a log injection on its own, whether or not any LFI follows.</strong></p>
+</blockquote>
+<p>And the corollary, which is the part that decides how you file it: <strong>they are two findings with two remediations.</strong> The newline is fixed at the <em>input</em> or the <em>log format</em> (sanitisation, CWE-117). The execution is fixed by <em>not including log files</em> and by fixing the inclusion sink (CWE-98). A report that files one and leaves the other open will be closed, and the chain will still work.</p>
+<h3 id="52-you-must-control-a-whole-line-and-the-break-must-land-in-a-line-something-interprets">5.2 You must control a whole line, and the break must land in a line something interprets</h3>
+<p>Two conditions, and the second is the one that is usually assumed rather than checked:</p>
+<ol>
+<li>the attacker controls a <strong>complete line</strong>'s worth of the target's log format, and</li>
+<li>the break <strong>falls inside a field that is rendered</strong>, so the remainder of the attacker's data becomes line <em>n+1</em> rather than staying inside a quoted field on line <em>n</em>.</li>
+</ol>
+<p><strong>This is why the field choice is the finding.</strong> <code>User-Agent</code> is the usual answer because it is a field where the attacker controls the raw value <em>and</em> where it is rendered last, unquoted-adjacent, at the end of the line. On this target that field is <strong>correctly rejected</strong> (§6.1) — the reason is a general one, not a lab quirk: <strong>a header cannot carry a raw CR/LF, because accepting one is request smuggling.</strong> Any HTTP server that lets you put a newline in a header has a worse bug than log injection.</p>
+<p>So on a real target the productive question is not <em>&quot;which header?&quot;</em> but <strong>&quot;which log field renders attacker data, and in what form?&quot;</strong> The answer here was neither a header nor the access log: it was <strong><code>%U</code> in the error log's default format</strong>, which is the <em>unescaped</em> path, while the access log's <code>combined</code> format uses <code>%r</code>, the <em>raw</em> request line. Two directives, same request, and only one of them decodes the attacker's <code>%0a</code> into a byte.</p>
+<p><strong>Record what you chose and why the others were rejected, with the reason.</strong> A rejected field with a reason is knowledge; a field you never tried is indistinguishable from a field that does not work.</p>
+<h3 id="53-the-control-almost-nobody-applies-the-log-must-be-readable-by-the-process-that-includes-it">5.3 The control almost nobody applies: the log must be readable <strong>by the process that includes it</strong></h3>
+<p>The chain has two independent permission requirements, and they are on <strong>different files</strong>:</p>
+<ul>
+<li>the <em>writer</em> must be able to append to the log, and</li>
+<li>the <em>includer</em> must be able to <strong>read</strong> it.</li>
+</ul>
+<p>A break in the second is the nastier one, because <strong>it presents as a broken include</strong>, which is byte-for-byte what a dead log-poisoning vector looks like. You get an empty response, a PHP warning, and no output — and the natural conclusion is &quot;the vector is blocked&quot;, when in fact the vector is fine and the <em>permissions</em> are wrong.</p>
+<p>So measure <strong>both</strong> ends, and measure the reader <strong>as the reader</strong>:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>writer side</th>
+<th>reader side</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>who</td>
+<td><code>www-data</code> (the request)</td>
+<td><code>www-data</code> (the include)</td>
+</tr>
+<tr>
+<td>how to check</td>
+<td>append a line, read it back</td>
+<td>read the same file as that identity, compare against another identity</td>
+</tr>
+</tbody>
+</table>
+<p>And read the file as the identity rather than parsing the mode string. Here the mode said <code>-rw-r----- root:adm</code> and the truth was that <code>www-data</code> <strong>is in group <code>adm</code></strong> and reads it byte-identically to root. A mode-bit reading would have retired a working third stage and reported a control that does not exist.</p>
+<h3 id="54-the-negative-you-have-to-test-the-log-changed-is-not-proof-of-execution">5.4 The negative you have to test: the log changed is not proof of execution</h3>
+<p>This is the failure the whole section exists to prevent. Three progressively stronger oracles:</p>
+<ol>
+<li><strong>&quot;The log contains my string&quot;</strong> — worthless on its own. It proves the injection landed and nothing else.</li>
+<li><strong>&quot;The response changed&quot;</strong> — worthless. A different error, a different length, an extra warning, all look identical to execution.</li>
+<li><strong>&quot;A marker I generated in this run, which did not exist before it, came back in a different channel, carrying the identity that ran it.&quot;</strong> — this is the one. The marker must be a <strong>nonce</strong>, not a payload you already knew, and it must be read back over a <strong>different request</strong> than the one that wrote it.</li>
+</ol>
+<p><strong>Positive control for the detector itself.</strong> Before believing the include-based read, force a positive through it: include a file whose contents you already know (here, the app's own <code>modules/default.php</code>, 963 bytes of known text) and require the known bytes back. An LFI read endpoint that returns <code>200</code> proves nothing on its own; a read endpoint that returns <em>the bytes you predicted</em> is connected to the filesystem.</p>
+<h3 id="55-the-operational-risk-which-is-why-this-belongs-in-a-report-and-not-in-a-default-playbook">5.5 The operational risk, which is why this belongs in a report and not in a default playbook</h3>
+<p><strong>Writing to the target's logs is destructive if those logs are an audit trail or a compliance record.</strong> Poisoning an Apache access log to gain execution silently corrupts the evidence of the very incident you are the first responder to. In an engagement that is <strong>a decision taken with the client, in scope, before you do it</strong> — not a technique you execute by default because the tutorial says so.</p>
+<p>In a disposable lab it is free. In production, a single poisoned log line is a spoliation event, and the operator who wrote it may be the one who has to explain it.</p>
+<p>The transferable practice, which costs nothing:</p>
+<ul>
+<li><strong>Prefer a vector whose write is already routine.</strong> The long-path rejection used here is a response the attacker triggers thousands of times a day, so the injected line is statistically indistinguishable from the noise around it. A vector that writes a <em>unique, recognisable</em> line into a quiet log is one that will be noticed — and noticed by the person reading it.</li>
+<li><strong>Know which log you are about to write to</strong> — is it shipped, retained, or under a retention hold? If yes, that is a conversation, not a keystroke.</li>
+<li><strong>State it in the writeup as a risk you accepted and why.</strong> An engagement record that does not say &quot;this step writes to the target's logs&quot; leaves the next person unable to judge whether it was acceptable.</li>
+</ul>
+<hr />
+<h2 id="6-controls-that-held-each-with-its-positive-control">6. Controls that held (each with its positive control)</h2>
+<p>Reporting a control that held with the same prominence as a bug that fired: a reader cannot distinguish an untested control from a holding one.</p>
+<h3 id="61-apache-rejects-an-embedded-crlf-in-a-request-header--400">6.1 Apache rejects an embedded CR/LF in a request header — <code>400</code></h3>
+<pre><code>raw socket, User-Agent: &quot;inject-probe\nINJECTED-RAW-SOCKET-9f2a&quot;  → HTTP/1.1 400 Bad Request
+</code></pre>
+<p><strong>Positive control:</strong> the same raw-socket client sending a well-formed request returns <code>200</code>. So the <code>400</code> is the target's parse-time refusal, not my framing. <strong>This is the control that killed the textbook vector</strong>, and it is a real one: accepting a newline in a header is request smuggling.</p>
+<h3 id="62-apache-escapes-control-characters-in-log-fields--0a-becomes-a-literal-n">6.2 Apache escapes control characters in log fields — <code>%0a</code> becomes a literal <code>\n</code></h3>
+<p>A path containing <code>%0a</code> produces a log entry holding a <strong>literal backslash-n</strong>, not a byte <code>0x0a</code>. Verified at byte level, not by grep:</p>
+<pre><code>$ od -c | cut -c1-90
+…   F i l e   n a m e   t o o   l o n g   :   [ c l i e n t   \ n
+</code></pre>
+<p><strong>Positive control:</strong> in that <em>same</em> log line, every printable byte of the payload — <code>&lt;?php echo &quot;…&quot; ; ?&gt;</code> — survived verbatim. So the escaping is selective (control characters only) and the detector is measuring the right thing. <strong>This control and §4.3.1 are the same mechanism seen from two sides:</strong> escaping is why the canonical newline injection fails, and the <em>unescaped</em> <code>%U</code> field is why the payload still lands.</p>
+<h3 id="63-the-file_exists-gate-blocks-stream-wrappers-and-unreadable-files">6.3 The <code>file_exists()</code> gate blocks stream wrappers and unreadable files</h3>
+<table>
+<thead>
+<tr>
+<th>request</th>
+<th>result</th>
+<th>reading</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>module=/etc/hostname</code></td>
+<td><code>200</code>, <strong>13 bytes</strong></td>
+<td>positive control: the read primitive works</td>
+</tr>
+<tr>
+<td><code>module=/opt/password_nova</code></td>
+<td><code>200</code>, <strong>0 bytes</strong></td>
+<td><code>--x--x--x</code> — no read bit, so <code>include</code> cannot open it</td>
+</tr>
+<tr>
+<td><code>module=http://127.0.0.1/etc/hostname</code></td>
+<td><code>200</code>, &quot;Modulo no encontrado&quot;</td>
+<td>wrapper is not a real path, and <code>allow_url_include=Off</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>--x--x--x</code> case is the interesting one: <code>file_exists()</code> returns <strong>true</strong>, the branch is taken, and the include still yields nothing. So the <em>gate</em> passing is not the same as the <em>read</em> succeeding — the three-way split in §4.2 again, and the reason I could not read the helper through the LFI and had to obtain its source a different way.</p>
+<h3 id="64-the-sudoers-allowlist-is-scoped-to-one-binary">6.4 The sudoers allowlist is scoped to one binary</h3>
+<pre><code>sudo -n -u nova /usr/bin/id      → sudo: a password is required
+sudo -n -u nova /bin/sh -c id    → sudo: a password is required
+sudo -u nova /opt/password_nova  → runs (discloses a secret)
+</code></pre>
+<p><strong>Positive control:</strong> the one allowed binary works in the same breath, same <code>sudo -u nova</code>, same identity. The allowlist cannot be walked by naming a different program, which is what keeps §4.4 a secret disclosure rather than a root shell. Note the rule grants <em>no</em> argument restriction, so <code>sudo -u nova /opt/password_nova &lt;args&gt;</code> is permitted — but the helper ignores its arguments and reads only stdin (confirmed in §8.1), so there is no argument-injection sink behind it.</p>
+<h3 id="65-two-non-root-accounts-and-the-disclosed-secret-opens-neither">6.5 Two non-root accounts, and the disclosed secret opens neither</h3>
+<p><code>maci:x:1000</code> and <code>nova:x:1001</code>, homes both <code>700</code>. The secret disclosed by §4.4's helper authenticates to <strong>neither</strong> — see §8.2. Reported because a chain that reaches a credential dispenser and stops there should say so, with the reason, so the next engagement does not spend the same hour.</p>
+<hr />
+<h2 id="7-chain-integrity-what-is-proven-vs-what-is-carried-by-a-weaker-link">7. Chain integrity: what is proven vs what is carried by a weaker link</h2>
+<table>
+<thead>
+<tr>
+<th>hop</th>
+<th>evidence class</th>
+<th>strength</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>binary → vhost name</td>
+<td>behavioural: the binary printed it, <code>base64 -d</code> produced it, and the <code>Host:</code> header changed the served document root to a <strong>different hash</strong></td>
+<td><strong>strong</strong> — two independent channels agree</td>
+</tr>
+<tr>
+<td>vhost routing</td>
+<td>three stable normalised hashes + a provably-absent control</td>
+<td><strong>strong</strong> — the control is what makes it decidable</td>
+</tr>
+<tr>
+<td>LFI reads bytes</td>
+<td>known-content file returns its known bytes; absent file returns a distinct body</td>
+<td><strong>strong</strong> — the three states separate</td>
+</tr>
+<tr>
+<td>log poisoning executes</td>
+<td>run-scoped nonce returned in the response body of a second request, carrying <code>uid=33(www-data)</code></td>
+<td><strong>strong</strong> — the required form</td>
+</tr>
+<tr>
+<td>log readable by includer</td>
+<td>same file read as <code>root</code> and as <code>www-data</code>, 60 bytes each, identical</td>
+<td><strong>strong</strong> — measured as the identity</td>
+</tr>
+<tr>
+<td>helper discloses a secret</td>
+<td>literal output captured</td>
+<td><strong>strong</strong> for the disclosure</td>
+</tr>
+<tr>
+<td>secret → an account</td>
+<td><strong><code>su</code> rejected it for both users</strong></td>
+<td><strong>disproved</strong>, not carried</td>
+</tr>
+<tr>
+<td>any escalation above <code>www-data</code></td>
+<td><strong>none found</strong></td>
+<td><strong>absent</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-what-i-tested-what-i-did-not-what-i-could-not">8. What I tested, what I did not, what I could not</h2>
+<p>Three separate lists, because collapsing them is how coverage gets overclaimed.</p>
+<h3 id="81-tested">8.1 Tested</h3>
+<ul>
+<li>Full TCP surface (<code>-sV -Pn -p-</code>), OS, Apache/PHP versions, module list, vhost config, deployed <code>LogFormat</code> directives.</li>
+<li>Vhost differential with a provably-absent control and a 3× stability read each.</li>
+<li>Binary: <code>file</code>, <code>nm</code> import table (KDF/EVP/AES — all zero), <code>main</code> and both named functions disassembled, symbol table, <code>strings</code>.</li>
+<li>LFI: three-way split, known-content positive control, provably-absent control, wrapper reachability, unreadable-file case.</li>
+<li>Log poisoning: header-field vector, error-log <code>%U</code> vector, the 255-byte threshold measured at five lengths, byte-level verification of escaping.</li>
+<li>Privilege: <code>sudo -l</code> in full, <code>id</code> as the first command in the new primitive, setuid/setgid inventory, <code>getcap</code>, world-writable inventory, cron directories, sudoers.d, group-<code>adm</code> file inventory, <code>/root</code> and both home directories.</li>
+<li>Credential: the helper's gate (top-70 common wordlist) and the disclosed secret against both non-root accounts.</li>
+</ul>
+<h3 id="82-not-tested-with-reason">8.2 Not tested (with reason)</h3>
+<ul>
+<li><strong>The helper's source was not read as the attacker.</strong> It is <code>--x--x--x</code>, unreadable by <code>www-data</code> <em>and</em> by <code>nova</code>. I obtained it through operator access to the image filesystem, which is §7's &quot;read the source&quot; satisfied out of band — <strong>so my statement of the gate logic is source-derived, not attacker-derived, and I flag that rather than implying I read it from the shell.</strong></li>
+<li><strong>No UDP scan was possible</strong> on this host (no <code>nmap -sU</code> without root, no <code>ipmitool</code>). The image declares no <code>EXPOSE</code> directive and nothing in the config or process table suggests a UDP service, but this is a <strong>declared coverage gap, not a closed port</strong> — the exact distinction this repository insists on.</li>
+<li><strong>Password spraying was bounded, not exhaustive.</strong> 70 common passwords against one helper with no rate limiting. I stopped because the helper's purpose is a <em>gate</em>, and its real content is only obtainable by satisfying it; had the gate been the intended deliverable, the hint (&quot;in a well-known wordlist&quot;) would name the list, not a hash of it.</li>
+<li><strong>Kernel/container hardening review</strong> (seccomp profile, capabilities, <code>NoNewPrivs</code>) was not audited; out of scope for the web-to-shell chain.</li>
+</ul>
+<h3 id="83-could-not-test">8.3 Could not test</h3>
+<ul>
+<li>Nothing was blocked by tooling. Every primitive ran. The one thing I could not do <em>from the attacker position</em> was read the helper (§8.2), and I say which position produced each claim.</li>
+</ul>
+<h3 id="84-present-but-not-used">8.4 Present but not used</h3>
+<ul>
+<li><strong><code>session.upload_progress.enabled=On</code></strong> with sessions in a <code>1777</code> directory. PHP's upload-progress feature writes the multipart <strong>filename</strong> into the session file unsanitised, and the session file is includable by §4.2 — a <strong>second, independent RCE route that does not touch the logs at all.</strong> I identified it and did not use it. Filing it: the log route was sufficient, the upload-progress route is a real finding, and <strong>two independent RCE chains on one inclusion bug are two findings</strong> with the same sink remediation and different causes.</li>
+<li>The 12-byte pre-seeded session file (§4.6) and the <code>clicks</code> counter that no code in the image writes.</li>
+<li><code>/root</code>'s world-readable mode (§4.5) — disclosed configuration, no credential recovered.</li>
+<li><code>allow_url_fopen=On</code> with <code>allow_url_include=Off</code>: a latent SSRF-grade primitive that <code>file_exists()</code> currently forecloses, since a URL is not a real path. Filing it as latent, not as an exposure.</li>
+</ul>
+<hr />
+<h2 id="9-reward">9. Reward</h2>
+<h3 id="91-exhaustive-search">9.1 Exhaustive search</h3>
+<p>From the attacker position (<code>uid=33(www-data)</code>), as root on the image filesystem, and by name and by content:</p>
+<pre><code>$ grep -rIl -E 'flag\{|FLAG\{|CTF\{|reward' / 2&gt;/dev/null
+/usr/share/perl/5.36.0/Pod/Perldoc.pm                     ← incidental doc text
+/var/lib/apt/lists/…_non-free_binary-amd64_Packages        ← apt metadata
+/var/lib/apt/lists/…_main_binary-amd64_Packages           ← apt metadata
+</code></pre>
+<p>Three hits, all incidental. By name, <code>find / -iname '*flag*' -o -iname '*reward*' -o -iname '*secret*'</code> returns only <code>bash-completion</code> scripts, <code>man</code> pages, <code>tzfile</code> internals and headers. The full <code>/var/www</code> tree is 15 files, all of them the lab's own. <code>/root</code> is a stock Parrot desktop home — <code>.BurpSuite</code>, <code>.msf4/config</code> (a default Metasploit prompt config, 179 bytes), KDE dotfiles, and a <code>.ssh</code> that is <code>700</code> and correctly refused.</p>
+<p><code>docker history</code> shows the image is built from a Parrot base with the lab's PHP files, the binary, the helper and <code>iniciar</code> copied in — no reward artifact in any layer.</p>
+<h3 id="92-conclusion">9.2 Conclusion</h3>
+<p><strong>No reward exists in this lab.</strong> Tenth consecutive one. I am reporting the absence rather than manufacturing a value, and per this repository's <code>Impossibility as a valid result</code> the negative is filed with its evidence and with what <em>would</em> have to be different:</p>
+<ul>
+<li><strong>What was found instead:</strong> <code>uid=33(www-data)</code> with arbitrary command execution — a complete compromise of the web tier and the log files, obtained in three hops from an unauthenticated request.</li>
+<li><strong>What would have to change for a privileged conclusion:</strong> a privilege boundary reachable from <code>www-data</code>. The one candidate the lab ships (a sudoers grant to a secret dispenser) is <strong>disproved</strong> at §8.2 — its output authenticates to no account. An escalation vector — a writable file a privileged process executes, a setuid helper with a bounded read, a service credential — would be required, and none is present.</li>
+</ul>
+<hr />
+<h2 id="10-design-observation">10. Design observation</h2>
+<p><strong>This lab teaches three classes in sequence and gets two of the three teaching points exactly right, which is rare.</strong></p>
+<p>The binary stage is the best-constructed in the series. It is a 2.8 MB statically linked not-stripped C++ binary sitting in a public document root, and the <em>entry criterion</em> — look for a KDF — retires it in two commands: zero KDF imports, zero <code>EVP_*</code> symbols, no dynamic section. The trap is well designed too. The decoded host name <strong>never appears in <code>strings</code></strong>, so the &quot;grep the binary for the subdomain&quot; move the lab's own description invites returns nothing; the secret is constructed at runtime and base64-printed. And the two most attractive constants in <code>.rodata</code> are regex <em>patterns</em> sitting next to the prompt, not a password — so the &quot;adjacent literal&quot; heuristic produces a confident wrong answer, and only the <strong>call site</strong> (four regexes, <code>cmp 0xd</code>) resolves it. That is <code>decision-making.md</code> §7 landing in a symbol table, and it is exactly the shape that makes a reversing stage worth an hour.</p>
+<p>The LFI stage is honest and minimal: one parameter, no allowlist, no <code>realpath()</code>, and the three states separate cleanly. The source even comments its own omission, which by §7 is an <em>admission</em> and a strict subset — I verified reachability anyway.</p>
+<p><strong>The log poisoning stage is the one with a design flaw, and it is instructive.</strong> The stage is built on the textbook field — <code>User-Agent</code> — and this target <strong>correctly blocks it</strong>, because a header cannot contain a raw newline without being request smuggling (§6.1). The lab author almost certainly tested the payload with a client that, or a version of the log format that, made it work. What actually works is a <em>different and much better</em> finding: a long request path is reflected <strong>URL-decoded</strong> into the error log by <code>%U</code>, while the access log's <code>combined</code> format uses the raw <code>%r</code>. The lab accidentally ships a <strong>better lesson than the one it intended</strong> — the productive question is never &quot;which header?&quot;, it is &quot;which log field renders attacker data, and in what form?&quot;, and the answer here is a directive difference, not a payload.</p>
+<p><strong>Two design notes for lab authors, both following §7's mirror:</strong></p>
+<ol>
+<li><strong>The third stage does not terminate the chain.</strong> The sudoers grant produces a secret that authenticates to nothing (§8.2). A lab whose escalation stage is a hint dispenser teaches the student that reaching a credential is the same as using it — which is the mistake this repository documents in <em>a result that survives your first explanation</em>. Either give the disclosed secret a real account, or make the helper drop a shell, or state plainly in the lab that the objective ends at the web tier. Right now the description's promise of &quot;acceso al sistema&quot; is satisfied at <code>uid=33</code>, which is a legitimate result and simply should be labelled as the endpoint.</li>
+<li><strong><code>/root</code> at mode 755</strong> on a Parrot desktop base is an unintentional gift. It disclosed nothing here, and a student will spend time on it expecting a flag that is not there. Harden the base or state that the filesystem is clean.</li>
+</ol>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

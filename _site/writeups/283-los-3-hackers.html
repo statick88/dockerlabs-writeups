@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 283 Los 3 Hackers &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Los 3 Hackers</p><h1 id="los-3-hackers-dockerlabs-283--writeup">Los 3 Hackers (DockerLabs #283) — Writeup</h1>
+<p><strong>Lab:</strong> <code>los3hackers</code> (image <code>los3hackers:latest</code>)
+<strong>Base:</strong> Ubuntu 22.04.5 LTS, OpenSSH 8.9p1, Gunicorn (Flask), Python 3.10
+<strong>Attacker position:</strong> unauthenticated remote TCP
+<strong>Reward:</strong> none exists in this image (see §1). The reachable terminus is an unprivileged user.</p>
+<hr />
+<h2 id="1-surface">1. Surface</h2>
+<p><code>nmap -sV -Pn -p- [net-0-18]</code>:</p>
+<pre><code>PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.9p1 Ubuntu 3ubuntu0.15 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Gunicorn
+Not shown: 65533 closed tcp ports (conn-refused)
+</code></pre>
+<p>Two ports, and <code>Server: gunicorn</code> with <strong>no reverse proxy in front of it</strong> — that matters, because it means the one filter in this application is the <em>only</em> filter, and there is no WAF layer to discover.</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /</code></td>
+<td>Story page, one link to <code>/login</code></td>
+</tr>
+<tr>
+<td><code>GET /login</code></td>
+<td>Red Hacker's admin panel login form</td>
+</tr>
+<tr>
+<td><code>POST /login</code></td>
+<td>Vulnerable. String-concatenated SQL behind a one-word denylist</td>
+</tr>
+<tr>
+<td><code>GET /dashboard</code></td>
+<td>Requires any session. Renders a hardcoded &quot;FLAG ENCONTRADA&quot; card</td>
+</tr>
+<tr>
+<td><code>GET /dashboard/backups</code></td>
+<td>Returns a hardcoded <code>403</code> page for <em>every</em> session</td>
+</tr>
+<tr>
+<td><code>GET /logout</code></td>
+<td>Clears the session</td>
+</tr>
+<tr>
+<td><code>GET /wow.zip</code></td>
+<td>Requires any session. Serves a 204-byte zip containing <code>permission.txt</code></td>
+</tr>
+<tr>
+<td><code>GET /static/&lt;path&gt;</code></td>
+<td>Serves the single banner image</td>
+</tr>
+<tr>
+<td><code>127.0.0.1:5000</code></td>
+<td>&quot;Internal Backup Portal&quot;. <strong>Loopback-only</strong> — unreachable from outside</td>
+</tr>
+</tbody>
+</table>
+<p>Per-IP rate limit on <code>POST /login</code>: 3 failed attempts → 30 s block. Notably, <strong>filter rejections count as failures</strong> (<code>app.py:743</code> calls <code>_registrar_intento_fallido</code> on the blocked path), so an unaudited fan-out locks out the tester. See §8 — this cost me two invalid readings.</p>
+<hr />
+<h2 id="2-the-filter-where-it-is-what-it-lists-and-whether-it-prevents-or-detects">2. The filter: where it is, what it lists, and whether it prevents or detects</h2>
+<h3 id="21-location-and-content">2.1 Location and content</h3>
+<p><code>app.py:742</code>, the only input filter in the entire request path:</p>
+<pre><code class="language-python"># --- Filtro de seguridad parcial: bloquea la palabra OR ---
+if re.search(r&quot;(?i)\bor\b&quot;, username) or re.search(r&quot;(?i)\bor\b&quot;, password):
+    _registrar_intento_fallido(client_ip, now)
+    return render_template_string(LOGIN_PAGE, error=&quot;Patrón no permitido detectado&quot;)
+</code></pre>
+<p>The sink it guards is <code>app.py:753</code>:</p>
+<pre><code class="language-python">query = &quot;SELECT username, role FROM users WHERE username = '&quot; + username + &quot;' AND password = '&quot; + password + &quot;'&quot;
+</code></pre>
+<p><strong>The denylist contains exactly one token: the contiguous substring <code>or</code>, delimited by non-<code>[A-Za-z0-9_]</code> characters.</strong> It is a <em>text</em> match, not a semantic one. I established the exact semantics locally rather than assuming them:</p>
+<pre><code>o&lt;TAB&gt;r    filter_match=False      &lt;- not contiguous, so \b never applies
+o&lt;NL&gt;r     filter_match=False
+OR/**/     filter_match=True       &lt;- contiguous, and '/' is a non-word char
+dor        filter_match=False      &lt;- 'd' before 'o' is a word char, so no boundary
+P4ssw0rd_OR_2026!  filter_match=False &lt;- '_' IS a word char in Python regex
+</code></pre>
+<p><code>\b</code> is a zero-width assertion; it does <strong>not</strong> consume a separator. So <code>o&lt;TAB&gt;r</code> contains no <code>or</code> substring at all. The practical rule: <strong>the filter matches the two characters <code>or</code> adjacent, surrounded by non-word characters.</strong></p>
+<h3 id="22-the-oracle-and-its-positive-control">2.2 The oracle, and its positive control</h3>
+<p>The endpoint has four distinguishable outcomes. <strong>The status code is not the discriminator</strong>: the blocked path returns <code>200</code>, exactly like a failed login.</p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Status</th>
+<th>Body marker</th>
+<th>Length</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SUCCESS</code> — query ran, row found</td>
+<td><code>302</code></td>
+<td><code>Location: /dashboard</code></td>
+<td>226</td>
+</tr>
+<tr>
+<td><code>BLOCKED</code> — filter fired</td>
+<td><code>200</code></td>
+<td><code>Patrón no permitido detectado</code></td>
+<td>5338</td>
+</tr>
+<tr>
+<td><code>NOROW</code> — query ran, no row</td>
+<td><code>200</code></td>
+<td><code>Usuario o contraseña incorrectos</code></td>
+<td>5341</td>
+</tr>
+<tr>
+<td>uncaught error</td>
+<td><code>500</code></td>
+<td>Werkzeug default page</td>
+<td>290</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Positive control, run first, on the live target:</strong></p>
+<pre><code>CTRL good credential    | 302 | SUCCESS  | len=226   &lt;- oracle can see a success
+CTRL SQLi 'admin'--     | 302 | SUCCESS  | len=226
+ORACLE VALID: True
+</code></pre>
+<p>A second success on a <em>different</em> code path (credential auth vs. injection) confirms the oracle is not accidentally keying on one route.</p>
+<h3 id="23-does-the-filter-prevent-or-detect--the-test">2.3 Does the filter <strong>prevent</strong> or <strong>detect</strong>? — the test</h3>
+<p>The question is not &quot;does it return an error&quot; but <strong>&quot;did the query execute?&quot;</strong>. A filter that <em>prevents</em> rejects the input before the sink; a filter that <em>detects</em> lets the query run and then suppresses the output — in which case the query already ran, and (as in the Norc lab) it is still a valid injection.</p>
+<p><strong>The falsification test:</strong> send two payloads that both contain the listed token, both syntactically valid SQL, and with <strong>different execution outcomes</strong>. If the app prevents, the answers must be identical. If it detects, they must differ.</p>
+<pre><code>P1 ' OR '1'='1' --   | 200 | BLOCKED | len=5338     &lt;- would AUTHENTICATE if executed
+P2 ' OR 'x'='x2' --  | 200 | BLOCKED | len=5338     &lt;- would match NO row if executed
+bodies byte-identical: True
+</code></pre>
+<p><code>P1</code> and <code>P2</code> produce <strong>byte-identical</strong> responses. A response that does not vary with the query cannot be a function of a query that ran. The same length (5338) distinguishes them from the query-executed states (5341 / 226), so this is not an artifact of two states colliding.</p>
+<p><strong>Second, independent differential</strong> — same account, same database, only the listed token differs:</p>
+<pre><code>D1 ' OR 'x'='x2' --  | 200 | BLOCKED | len=5338
+D2 nosuchacct        | 200 | NOROW   | len=5341
+</code></pre>
+<p>Both refer to a database that cannot match. The answers differ, so the decision is made by the presence of one substring and by nothing in the database.</p>
+<p><strong>Third, structural confirmation:</strong> the <code>return</code> at <code>app.py:744</code> precedes <code>sqlite3.connect(DB_PATH)</code> at <code>app.py:746</code>. On the blocked path no database handle is ever opened. (This is read from source, and it <em>agrees</em> with the two behavioural tests above — it is not the basis of the conclusion.)</p>
+<blockquote>
+<p><strong>Verdict: the filter PREVENTS.</strong> It is an input-side gate, not an output-side detector. It is a real control for the one token it lists — and it is irrelevant to every other token, because the injection does not need the one token it blocks.</p>
+</blockquote>
+<hr />
+<h2 id="3-auditing-the-denylist-by-category">3. Auditing the denylist by category</h2>
+<p>The method that generalises: <strong>a denylist is evaluated for what it does not contain.</strong> Enumerate the <em>categories</em> of SQL syntax; every absent category is a bypass, and probing one payload per category is far cheaper than fuzzing variants of the one keyword that is listed.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Category</th>
+<th>Listed?</th>
+<th>Probe</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>boolean keyword <code>OR</code></td>
+<td><strong>YES</strong></td>
+<td><code>' OR '1'='1' --</code></td>
+<td><code>BLOCKED</code> — works for what it lists</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>line comment <code>--</code></strong></td>
+<td>no</td>
+<td><code>admin'--</code></td>
+<td><strong><code>SUCCESS</code> — full auth bypass</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>UNION</code></td>
+<td>no</td>
+<td><code>' UNION SELECT username,role FROM users --</code></td>
+<td><code>SUCCESS</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>LIKE</code></td>
+<td>no</td>
+<td><code>admin' AND username LIKE 'a%' --</code></td>
+<td><code>SUCCESS</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>subquery / parentheses</td>
+<td>no</td>
+<td><code>admin' AND 1=(SELECT 1) --</code></td>
+<td><code>SUCCESS</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>encoding (URL / hex)</td>
+<td>no</td>
+<td><code>admin%27--</code>, <code>%61dmin'--</code></td>
+<td><code>SUCCESS</code> — <strong>but see §3.1: not a bypass</strong></td>
+</tr>
+<tr>
+<td>7</td>
+<td>keyword re-tokenised (<code>o&lt;TAB&gt;r</code>, <code>o&lt;NL&gt;r</code>)</td>
+<td>n/a</td>
+<td><code>admin'\to\tr\t1=1\t--</code></td>
+<td><code>NOROW</code> — <strong>not a bypass</strong>, see §3.2</td>
+</tr>
+<tr>
+<td>8</td>
+<td>comment-split keyword (<code>OR/**/</code>)</td>
+<td>effectively covered</td>
+<td><code>admin' OR/**/1=1--</code></td>
+<td><code>BLOCKED</code> — <strong>control that held</strong></td>
+</tr>
+<tr>
+<td>9</td>
+<td>stacked statement <code>;</code></td>
+<td>no</td>
+<td><code>admin'; SELECT 1 --</code></td>
+<td><code>500</code> — not exploitable, but see Finding 3</td>
+</tr>
+<tr>
+<td>10</td>
+<td><strong>false positives</strong></td>
+<td>—</td>
+<td><code>admin</code> + <code>red.or.blue</code></td>
+<td><code>BLOCKED</code> — see Finding 4</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Ten categories, fourteen requests.</strong> The bypass (category 2) required no encoding, no obfuscation and no cleverness: the denylist blocks the boolean operator, and the comment makes the operator unnecessary.</p>
+<h3 id="31-encoding-is-the-expected-first-answer-and-it-is-wrong-here">3.1 Encoding is the expected first answer, and it is <strong>wrong</strong> here</h3>
+<p>The instinct is that a filter matching a literal string is defeated by encoding. The correct question is <strong>which layer the filter inspects</strong>, and the answer decides whether encoding is a bypass at all.</p>
+<p>Raw wire bytes, no re-encoding:</p>
+<pre><code>E1  wire: admin%27--    | 302 | SUCCESS    &lt;- the filter did NOT fire
+E3  wire: %61dmin'--    | 302 | SUCCESS
+E2  wire: admin%2527--  | 200 | NOROW      &lt;- one decode yields a literal '%27'
+</code></pre>
+<p>Werkzeug decodes the form body <strong>before</strong> the view function runs, so <code>request.form.get(&quot;username&quot;)</code> at <code>app.py:736</code> already holds the canonical value <code>admin'--</code>, and the filter at <code>:742</code> inspects that canonical value. <strong>Encoding is not a bypass here, precisely because the filter runs at the right layer.</strong> The §1 defect (validating the representation instead of the value) is <em>absent</em> here.</p>
+<blockquote>
+<p>This is a rejected first response with evidence. Reporting &quot;encoding bypasses the filter&quot; would have been a confident, well-formed, entirely wrong finding.</p>
+</blockquote>
+<h3 id="32-splitting-the-keyword-is-also-not-a-bypass-here">3.2 Splitting the keyword is also not a bypass here</h3>
+<pre><code>D1 admin'\to\tr\t1=1\t--  | 200 | NOROW
+D2 admin'\no\nr\n1=1\n--  | 200 | NOROW
+</code></pre>
+<p>Two independent reasons, both verified locally against SQLite:</p>
+<ol>
+<li>The filter does not fire, because <code>\b</code> is zero-width and <code>o&lt;TAB&gt;r</code> contains no contiguous <code>or</code>.</li>
+<li>SQLite's tokenizer splits on whitespace, so <code>o\tr</code> becomes two identifier tokens and the statement is a <strong>syntax error</strong> — <code>OperationalError: near &quot;o&quot;: syntax error</code>.</li>
+</ol>
+<p>The filter and the parser agree here <em>for a reason that is not luck</em>: <code>\b</code> anchors perform the same tokenisation the SQL tokenizer performs. The classic &quot;split the keyword&quot; trick is defeated by word-boundary anchors, and it fails closed (a syntax error) rather than open.</p>
+<h3 id="33-the-controls-that-held">3.3 The controls that held</h3>
+<ul>
+<li><strong><code>OR/**/</code> is blocked.</strong> <code>/</code> is a non-word character, so <code>\b</code> still matches. A control that genuinely held, with the reason identified rather than assumed.</li>
+<li><strong>Stacked statements cannot execute.</strong> <code>execute()</code> rejects multi-statement input.</li>
+<li><strong>The 500 page leaks no internals.</strong> Werkzeug's generic page; <code>DEBUG</code> is off.</li>
+<li><strong>The internal portal really is loopback-only.</strong> <code>curl</code> from outside → connection refused, <code>http_code=000</code>, exit 7. It was reachable only from a shell already on the box.</li>
+</ul>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<h3 id="finding-1--sql-injection-a-keyword-denylist-in-front-of-a-concatenated-query">Finding 1 — SQL injection: a keyword denylist in front of a concatenated query</h3>
+<p><strong>CWE-89</strong> (Improper Neutralisation of Special Elements used in an SQL Command) · <strong>CWE-184</strong> (Incomplete List of Disallowed Inputs) · severity: <strong>critical</strong></p>
+<p><strong>Evidence.</strong></p>
+<pre><code>query = &quot;SELECT username, role FROM users WHERE username = '&quot; + username + &quot;' AND password = '&quot; + password + &quot;'&quot;
+if re.search(r&quot;(?i)\bor\b&quot;, username) or re.search(r&quot;(?i)\bor\b&quot;, password):
+</code></pre>
+<pre><code>admin'--   -&gt; 302  Location: /dashboard
+</code></pre>
+<p><strong>The injection is a full read primitive, not merely an auth bypass.</strong> The endpoint returns one bit — whether a row came back — and that bit carries arbitrary database content. Seven content checks, each with a paired negative:</p>
+<pre><code>some password starts with 'A'   -&gt; True    some password starts with 'Z' -&gt; False
+users table has 2 rows          -&gt; True    users table has 7 rows        -&gt; False
+'rate_limit' table exists       -&gt; True    a table named 'zzz' exists    -&gt; False
+schema has only 2 tables        -&gt; True
+ALL CHECKS AGREE: True
+</code></pre>
+<p>Extracted end-to-end, one bit at a time, with the length control confirming the result:</p>
+<pre><code>FULL admin password read out of the database via the injection:
+     'Adm1nHACKBBO_2024!'
+length: 18     control len=18: True     total probes: 141
+</code></pre>
+<p><strong>Impact.</strong> Unauthenticated read of the entire database, including <code>sqlite_master</code>. The single table read does not change the severity: any additional table added to this file is readable by the same primitive, and the read is anonymous.</p>
+<p><strong>Root cause.</strong> Two defects, and the second is the one that matters. The primary defect is the concatenation. The <em>mitigation</em> is a denylist of one keyword, which is <code>CWE-184</code>: the control's value is a function of the size of its list, not of the grammar it must cover. <strong>A denylist's coverage is its length; an allowlist's coverage is its completeness.</strong> The author's own comment states the gap — &quot;no bloquea comentarios SQL ni UNION, asi que sigue siendo inyectable&quot; — and the comment was correct, which is a point for the lab, not a mitigation.</p>
+<p><strong>Remediation.</strong> Parameterise the query (<code>sqlite3</code> placeholders), so no input is ever parsed as SQL. If a textual filter is retained for defence in depth, it must be an allowlist applied to the <em>parsed</em> value, and it must not be the control of record. Fix the root cause first: the denylist is what turned a latent concatenation into a &quot;protected&quot; endpoint.</p>
+<h3 id="finding-2--session-signing-secret-hardcoded-in-source">Finding 2 — Session signing secret hardcoded in source</h3>
+<p><strong>CWE-798</strong> (Use of Hard-coded Credentials) · severity: <strong>high</strong></p>
+<p><code>app.py:8</code> — <code>app.secret_key = &quot;ihatefw_corp_dev_secret_2024&quot;</code></p>
+<p>Forged cookie, accepted by the server:</p>
+<pre><code>forged cookie accepted by /dashboard -&gt; 200, session badge = 'root'
+</code></pre>
+<p><strong>Impact.</strong> Any user can mint a session with any <code>username</code> and any <code>role</code>. On this application the damage is bounded only because every other authorization check is absent (Finding 3) — which is not a mitigation, it is the reason the impact is currently limited. In a normal application this is a complete authentication bypass.</p>
+<p><strong>Root cause.</strong> A development secret shipped in the production image, unchanged.</p>
+<p><strong>Remediation.</strong> Load the secret from the environment or a secret store, rotate it, and fail closed at startup if it is absent. Never commit a value that signs a session.</p>
+<h3 id="finding-3--inconsistent-error-handling-on-the-login-path-a-swallowed-exception-and-an-uncaught-one">Finding 3 — Inconsistent error handling on the login path: a swallowed exception and an uncaught one</h3>
+<p><strong>CWE-209</strong> (Generation of Error Message Containing Sensitive Information) · <strong>CWE-755</strong> (Improper Handling of Exceptional Conditions) · severity: <strong>low</strong></p>
+<p>Two different failure classes, two different handlers on the same code path:</p>
+<pre><code>E1 malformed query  (admin')  -&gt; 200 | NOROW   | len=5341
+E2 wrong password              -&gt; 200 | NOROW   | len=5341
+E1 and E2 byte-identical: True
+E3 stacked statement           -&gt; 500 | HTTP500 | len=290
+</code></pre>
+<p>A deliberate SQL syntax error is <strong>byte-identical</strong> to a wrong password, because <code>app.py:758</code> swallows it:</p>
+<pre><code class="language-python">except sqlite3.Error:
+    row = None
+</code></pre>
+<p>But the stacked-statement error escapes as a <code>500</code>, because it is not that class. The program's own failure settles it — I did not have to reason about the class hierarchy:</p>
+<pre><code>File &quot;/var/www/app/app.py&quot;, line 756, in login
+    c.execute(query)
+sqlite3.Warning: You can only execute one statement at a time.
+</code></pre>
+<p><code>sqlite3.Warning</code> is <strong>not</strong> a subclass of <code>sqlite3.Error</code> (verified: <code>issubclass(sqlite3.Warning, sqlite3.Error)</code> is <code>False</code>, while <code>ProgrammingError</code> is <code>True</code>). So <code>except sqlite3.Error</code> misses it.</p>
+<p><strong>Impact.</strong> Low on its own, for two reasons worth stating separately. First, a <code>500</code> on <code>/login</code> is a residual one-bit oracle on a path that is already fully injectable, so it adds no new capability here. Second — and this is the transferable part — <strong>the same handler would hide a genuine database fault in a non-injectable application.</strong> A connection failure, a locked database, a disk error and a wrong password would all render as &quot;wrong password&quot;, and the operator would be reading authentication logs for a database outage.</p>
+<p><strong>Root cause.</strong> A blanket <code>except</code> on an exception base chosen from memory rather than from the exception hierarchy the driver actually uses.</p>
+<p><strong>Remediation.</strong> Catch the specific exceptions expected; let the rest propagate to a handler that logs the cause and returns a generic message. Log the distinction between &quot;no such user&quot; and &quot;query failed&quot;.</p>
+<h3 id="finding-4--the-denylists-false-positives-a-valid-credential-rejected-with-a-security-policy-message">Finding 4 — The denylist's false positives: a valid credential rejected with a security-policy message</h3>
+<p><strong>CWE-20</strong> (Improper Input Validation) · severity: <strong>low</strong></p>
+<pre><code>FP1 admin / 'red.or.blue'    | 200 | BLOCKED | len=5338
+FP2 admin / 'red0rblue'      | 200 | NOROW   | len=5341
+FP3 admin / 'red!blue'       | 200 | NOROW   | len=5341
+</code></pre>
+<p><code>admin</code> is a real account (FP2 and FP3 reach the authentication path; FP1 never does). A password containing <code>or</code> as a standalone token — <code>red.or.blue</code>, <code>p4ss-for-2026</code>, <code>a_or_b</code> — is rejected with <em>&quot;Patrón no permitido detectado&quot;</em> instead of an authentication result.</p>
+<p><strong>Impact.</strong> A legitimate user is told a <strong>security policy</strong> fired when in fact their password is fine, and is given no way to discover which characters are refused. The user cannot distinguish &quot;my password is wrong&quot; from &quot;my password is forbidden&quot;, and the support path for the two is different.</p>
+<p><strong>Root cause.</strong> A security control implemented as a text match over a whole field, with no notion of where the value ends and syntax begins.</p>
+<p><strong>Remediation.</strong> Deleted along with Finding 1's primary fix. A password field should not be pattern-scanned for SQL keywords at all; the only reason it is scanned here is that it is concatenated into a statement.</p>
+<h3 id="finding-5--dashboardbackups-presents-an-authorization-decision-that-does-not-exist">Finding 5 — <code>/dashboard/backups</code> presents an authorization decision that does not exist</h3>
+<p><strong>CWE-863</strong> (Incorrect Authorization) · <strong>CWE-284</strong> (Improper Access Control) · severity: <strong>medium</strong> (as a report-integrity defect; see below)</p>
+<p>The page asserts a privilege boundary:</p>
+<blockquote>
+<p><em>&quot;El módulo de Respaldos requiere privilegios de nivel <strong>superadmin</strong> que tu sesión actual no posee.&quot;</em></p>
+</blockquote>
+<p>The handler tests no such thing (<code>app.py:934-938</code>) — it checks session membership and returns a constant:</p>
+<pre><code class="language-python">@app.route(&quot;/dashboard/backups&quot;)
+def backups():
+    if &quot;username&quot; not in session:
+        return redirect(url_for(&quot;index&quot;))
+    return BACKUPS_403_PAGE, 403
+</code></pre>
+<p>Body-hash differential (the discriminator from <code>decision-making.md</code>, whitespace-normalised):</p>
+<pre><code>no session (anon)            -&gt; 302  redirect -&gt; /
+real session role=admin      -&gt; 403  body_sha256=aeb263542e9d2486
+real session role=staff      -&gt; 403  body_sha256=aeb263542e9d2486
+FORGED role=superadmin       -&gt; 403  body_sha256=aeb263542e9d2486
+FORGED role=root,user=root   -&gt; 403  body_sha256=aeb263542e9d2486
+distinct (status, body-hash) across ALL authenticated cases: 1
+</code></pre>
+<p><strong>A session claiming <code>role=superadmin</code> receives exactly the same page as <code>role=staff</code>.</strong> One distinct body hash across every authenticated case means the sweep found no variation: there is no authorization decision on this endpoint, only a static page behind a membership check.</p>
+<p><strong>Impact.</strong> As a security finding this is low — nothing is disclosed. As a <strong>report-integrity</strong> finding it is worse. A reader who reaches <code>/dashboard/backups</code>, reads a confident page naming a <code>superadmin</code> requirement, and files &quot;the backups module is protected by superadmin authorization&quot; has filed a control the application does not implement. The next session inherits a boundary that was never tested, and the day someone adds a real <code>/dashboard/backups</code> handler behind the same membership check, it ships as &quot;already authorized&quot;.</p>
+<p><strong>Root cause.</strong> A hardcoded page standing in for an access-control decision. This is the mirror image of the config-mitigation rule in <code>infrastructure.md</code> — there, a shipped mitigation was inert while the operative directive had no comment; here, a page that <em>describes</em> a mitigation is inert and nothing else exists.</p>
+<p><strong>Remediation.</strong> Either implement the role check the page claims, or remove the page and the claim. A 403 that is returned to every caller is documentation, not a control.</p>
+<h3 id="finding-6--credential-disclosed-in-a-downloadable-backup-and-shipped-world-readable-in-the-image">Finding 6 — Credential disclosed in a downloadable &quot;backup&quot;, and shipped world-readable in the image</h3>
+<p><strong>CWE-522</strong> (Insufficiently Protected Credentials) · <strong>CWE-732</strong> (Incorrect Permission Assignment) · severity: <strong>medium</strong></p>
+<p><code>GET /wow.zip</code> requires only <em>any</em> session, and returns a 204-byte archive:</p>
+<pre><code>Archive:  wow.zip
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+       26  2026-06-30 04:27   permission.txt
+permission.txt -&gt; redhacker:&lt;ssh password&gt;
+</code></pre>
+<p>The same credential is also present in <code>/entrypoint.sh</code>, shipped at mode <code>0755</code> — world-readable — together with the other two users' passwords and the database credentials.</p>
+<p><strong>Impact.</strong> The file is served behind the <em>weakest</em> possible gate: any session, including the <code>soporte</code> staff account, and including a session forged per Finding 2. Combined with Finding 1 it is reachable fully anonymously. A backup artefact that contains a live credential and sits behind a one-line session check is a credential store with a web front end.</p>
+<p><strong>Root cause.</strong> Credentials committed to an image and to a served artefact; <code>wow.zip</code> is world-readable at <code>0664</code> on disk as well.</p>
+<p><strong>Remediation.</strong> Remove secrets from images and from anything served; use a secret store; scope the download endpoint to a role that actually exists. Rotate all four credentials in this image.</p>
+<h3 id="finding-7--a-decoy-secret-presented-as--flag-encontrada--critical">Finding 7 — A decoy secret presented as <code>🚩 FLAG ENCONTRADA / CRITICAL</code></h3>
+<p><strong>CWE-200</strong> (Exposure of Sensitive Information) — inverted: a non-secret presented as one · severity: <strong>informational</strong></p>
+<p>The dashboard renders a <code>CRITICAL</code>-badged &quot;flag&quot; card whose value is a constant in the template. Verified across two identities, §11. The value is <em>disclosed</em> and is nonetheless <strong>not a secret</strong>: it is byte-identical for a <code>staff</code> session and an <code>admin</code> session, and possessing it changes nothing the application does.</p>
+<p><strong>Why it is worth a finding rather than a footnote.</strong> A <code>CRITICAL</code> badge on a value that is not a secret trains the reader to accept badges as evidence — and the disclosure trichotomy exists precisely to stop that: <em>reachable</em> is trivial, <em>disclosed</em> here is a value, and <em>decisive</em> is the third question, and it is the only one that decides whether a disclosure is a finding. This is the one place in the lab where the presented reward is a control failure rather than a gap.</p>
+<p><strong>Remediation.</strong> Remove the card, or make it reflect an actual per-user secret. Do not badge a constant.</p>
+<hr />
+<h2 id="5-controls-that-held-with-positive-control-each">5. Controls that held (with positive control each)</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Evidence</th>
+<th>Positive control</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per-IP rate limit, 3 fails → 30 s</td>
+<td><code>Demasiados intentos fallidos. Intenta de nuevo en N segundos.</code></td>
+<td>Confirmed it fires — twice, on me (§8)</td>
+</tr>
+<tr>
+<td>Loopback-only internal portal</td>
+<td><code>curl</code> from outside → <code>http_code=000</code>, exit 7</td>
+<td>Reachable from a shell on the box → <code>200</code>, 5398 bytes</td>
+</tr>
+<tr>
+<td><code>OR/**/</code> comment-split keyword</td>
+<td><code>BLOCKED</code></td>
+<td><code>admin'--</code> (no <code>or</code>) → <code>SUCCESS</code>, same instance</td>
+</tr>
+<tr>
+<td>Werkzeug <code>DEBUG</code> off</td>
+<td>500 body is the generic 290-byte page</td>
+<td>No traceback, no source in the body</td>
+</tr>
+<tr>
+<td>Session membership required on <code>/wow.zip</code> and <code>/dashboard</code></td>
+<td>anon → <code>302</code> to <code>/</code></td>
+<td>Authenticated session → content</td>
+</tr>
+<tr>
+<td><code>execute()</code> rejects stacked statements</td>
+<td><code>ProgrammingError</code>/<code>Warning</code></td>
+<td>A single statement in the same field works</td>
+</tr>
+<tr>
+<td><code>sudo</code> unavailable to all three users</td>
+<td><code>sudo -n -l</code> → <code>a password is required</code> (both users)</td>
+<td>Root and <code>%sudo</code> rules exist in config; none of the three users is in those groups</td>
+</tr>
+<tr>
+<td>No writable path to a root-context process</td>
+<td><code>/etc/cron.d/maintenance</code> → <code>not writable</code>, <code>root root 0644</code></td>
+<td>bluehacker <em>can</em> write <code>m.sh</code> (§6)</td>
+</tr>
+<tr>
+<td><code>m.sh</code> attribute protection</td>
+<td><code>chmod</code>/<code>chmod u+s</code> as bluehacker → <code>Operation not permitted</code></td>
+<td><code>test -w</code> as bluehacker → <code>WRITABLE</code> (content yes, attributes no)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="6-the-chain">6. The chain</h2>
+<p>Each hop's <strong>executing identity</strong> was measured, never inherited.</p>
+<p><strong>1. SQLi → authenticated session.</strong>
+<code>admin'--</code> → <code>302 /dashboard</code>, session badge <code>admin</code>. The bypass contains no listed token.</p>
+<p><strong>2. Credential disclosure → SSH as <code>redhacker</code>.</strong>
+<code>GET /wow.zip</code> (session required) → <code>permission.txt</code> → SSH password.</p>
+<pre><code>$ id
+uid=1000(redhacker) gid=1000(redhacker) groups=1000(redhacker)
+</code></pre>
+<p><strong>3. Loopback pivot → <code>bluehacker</code> credential.</strong>
+<code>redhacker</code>'s <code>user.txt</code> points at the internal portal. It is not reachable externally (control above), so the shell is the pivot:</p>
+<pre><code>$ python3 -c &quot;...urlopen('http://127.0.0.1:5000/')...&quot;
+http_code=200 bytes=5398
+   bluehacker
+   &lt;ssh password&gt;
+</code></pre>
+<p><em>(Note: <code>curl</code> is not installed on the target. I assumed it was, got <code>command not found</code>, and used the interpreter that is present. That was my error, not a target fact.)</em></p>
+<p><strong>4. Group-writable cron script → execution as <code>blackhacker</code>.</strong></p>
+<p>Backup taken <strong>before</strong> the write (<code>sha256 59c46bd4…</code>, 124 bytes), per the write-class rule. Permission tested <strong>as the identity that would use it</strong>:</p>
+<pre><code>$ id
+uid=1001(bluehacker) gid=1001(bluehacker) groups=1001(bluehacker)
+$ test -w /opt/maintenance/m.sh
+test -w =&gt; WRITABLE (as uid=1001)
+$ ls -la /opt/maintenance/m.sh
+-rwxrwxr-x 1 blackhacker bluehacker 124 ...   &lt;- group bluehacker, mode 775
+</code></pre>
+<p>Payload written, then verified byte-for-byte on the target:</p>
+<pre><code>intended payload sha256: 8dcab4abcc1a9268588484d050b50fc8aabae44eebe2b25f5560721675c604ef
+on-target:               8dcab4abcc1a9268588484d050b50fc8aabae44eebe2b25f5560721675c604ef   (253 bytes)
+</code></pre>
+<p>Execution proof, read back through the chain, <strong>carrying a nonce created in this run</strong>:</p>
+<pre><code>uid=1002(blackhacker) gid=1002(blackhacker) groups=1002(blackhacker)
+NONCE=n28384e1f96ddec4
+blackhacker
+mtime=2026-09-29 14:17:01 bytes=104 owner=blackhacker
+</code></pre>
+<p>Three independent witnesses, and the byte count is what distinguishes a fresh execution from a stale file: <strong>90 → 104</strong>, with the mtime moving <code>14:16:01 → 14:17:01</code>. The first read returned <code>NONCE=%s</code> — a literal, because my generator failed to substitute the placeholder — and the file it came from was left by the <em>previous</em> payload. That reading was discarded (§8).</p>
+<p><strong>Terminus.</strong> Read as <code>uid=1002(blackhacker)</code>:</p>
+<pre><code>--- [lab-home]/blackhacker/user.txt ---
+No confío en contraseñas.
+No confío en personas.
+Las contraseñas se olvidan.
+Las personas cometen errores.
+Los privilegios...
+Esos sí permanecen.
+- Black
+</code></pre>
+<h3 id="61-root-is-not-reachable--derivation">6.1 Root is not reachable — derivation</h3>
+<p>The chain terminates at <code>blackhacker</code>. This is derived, not assumed:</p>
+<ol>
+<li><strong><code>sudo</code></strong> — <code>sudo -n -l</code> returns <code>a password is required</code> for both <code>redhacker</code> and <code>bluehacker</code>. Config (<code>/etc/sudoers</code>, <code>/etc/sudoers.d/</code>) grants only <code>root</code>, <code>%admin</code> and <code>%sudo</code>; <code>id</code> shows all three users are in <strong>only</strong> their own private group. No rule applies.</li>
+<li><strong><code>su</code></strong> — <code>root:*:...</code> in <code>/etc/shadow</code>; the account is locked. No password to authenticate with.</li>
+<li><strong>setuid binaries</strong> — the Ubuntu default set only (<code>su</code>, <code>sudo</code>, <code>passwd</code>, <code>chsh</code>, <code>chfn</code>, <code>newgrp</code>, <code>mount</code>, <code>umount</code>, <code>chage</code>, <code>expiry</code>, <code>crontab</code>, <code>ssh-agent</code>, <code>ssh-keysign</code>, <code>unix_chkpwd</code>, <code>pam_extrausers_chkpwd</code>, dbus helpers). Each requires either root's password or an already-root caller. <code>crontab</code> writes the caller's own crontab, which runs as the caller. <code>unix_chkpwd</code> serves the calling user's own password change.</li>
+<li><strong>The one cron job runs as <code>blackhacker</code></strong> — measured above, <code>uid=1002</code>, not root.</li>
+<li><strong><code>/etc/cron.d/maintenance</code> is <code>root root 0644</code></strong> — not writable, so the job's <em>definition</em> cannot be changed, only its <em>script</em>.</li>
+<li><strong><code>/root/root.txt</code></strong> is <code>drwx------ root root</code>; <code>cat</code> returns <code>Permission denied</code> from the attacker's shell.</li>
+</ol>
+<p><strong>What would make this solvable:</strong> a cron job running as root, a sudoers grant for one of the three users, or a setuid-root helper reachable by them. None exists. The lab's own <code>/entrypoint.sh:308-310</code> claims the first:</p>
+<blockquote>
+<p><code># Un script que corre cada minuto como root, pero el archivo tiene permisos</code>
+<code># de escritura para el usuario bluehacker. ...conseguir ejecucion como root.</code></p>
+</blockquote>
+<p><strong>That comment is false</strong>, and the measurement is what refutes it — <code>uid=1002</code>. See §7.</p>
+<hr />
+<h2 id="7-lab-design-observation">7. Lab design observation</h2>
+<p><strong>The third act is advertised and not delivered.</strong> The entrypoint labels the cron job <em>&quot;Segunda vulnerabilidad de escalada&quot;</em> and its comment states it runs as root. It does not: <code>/etc/cron.d/maintenance</code> reads <code>* * * * * blackhacker /opt/maintenance/m.sh</code>. Measured, <code>uid=1002</code>.</p>
+<p>The consequences are structural, not cosmetic:</p>
+<ul>
+<li>The escalation lands on the <strong>third unprivileged account</strong>, not on root. The chain red → blue → black is a <em>lateral</em> pivot, and the reward narrative (&quot;Los privilegios... Esos sí permanecen&quot;) is about persistence, not privilege.</li>
+<li>A learner who reads the comment concludes the lab is broken, because the documented final step cannot work. A learner who <strong>measures</strong> reaches <code>uid=1002</code> and correctly concludes there is no escalation — and finds <code>/root/root.txt</code> permanently out of reach, with the epilogue text the lab clearly intended them to read.</li>
+<li>The comment is a stopping condition in the exact sense of <code>decision-making.md</code> §7: a confident-looking annotation that ends the derivation, and whose absence of a <em>reachable</em> conclusion downstream cannot be detected by a green check.</li>
+</ul>
+<p><strong>A target that names its own weakness teaches reading comments.</strong> The author was right about the SQLi gap (<em>&quot;sigue siendo inyectable&quot;</em>) and wrong about the cron identity, which is the more interesting of the two — because the SQLi gap was announced and the false escalation was announced too, and only one of them is a puzzle.</p>
+<p><strong>For the author:</strong> either run the job as root, or delete the root claim and let the third act be about persistence. Do not ship a comment that asserts a privilege the image does not grant.</p>
+<hr />
+<h2 id="8-autocorrection--readings-i-discarded-and-what-each-one-would-have-cost">8. Autocorrection — readings I discarded, and what each one would have cost</h2>
+<p>Five defects in my own instrumentation. All five produced well-formed, confident, wrong output, and none of them was detectable from the output itself.</p>
+<p><strong>8.1 An encoder measured instead of the target.</strong> My first probe wrapped every value in <code>urllib.parse.urlencode()</code>. Sending the already-encoded <code>admin%27--</code> therefore put <code>admin%2527--</code> on the wire, and the application correctly reported &quot;no such user&quot; for a username that legitimately contained a percent sign. I had recorded two results labelled &quot;encoding is not a bypass&quot; that actually measured <code>urlencode</code>. <strong>Fix:</strong> send the bytes verbatim; the encoding test is only meaningful if the harness does not touch the payload. This is the &quot;your own client can be the reason a payload does not work&quot; rule — the same shape as a URL-quoter emitting <code>%2F</code> and reading as a <code>404</code>.</p>
+<p><strong>8.2 A lockout poller that returned a uniform false.</strong> <code>truthy()</code> mapped any non-302 to <code>False</code> and caught every exception. When my own per-IP rate limit was active, <code>1=1</code> returned <code>False</code> — a clean, uniform, entirely false negative, identical to what &quot;the injection is dead&quot; looks like. The control was what caught it, which is the entire reason for having one. <strong>Fix:</strong> a rate-limited answer is not a data bit; abort and retry. A detector pointed at something that does not exist returns a clean, believable negative, and here the &quot;something&quot; was my own lockout.</p>
+<p><strong>8.3 A stale witness, one step behind the truth.</strong> After writing the nonce-bearing payload, I polled for the proof file and accepted the first reading containing <code>uid=</code> — which was a file created by the <strong>previous</strong> payload version, containing the literal <code>NONCE=%s</code> because my generator had not substituted the placeholder. A well-formed answer, one step behind. <strong>Fix:</strong> require the nonce, and require the byte count to move (90 → 104). Existence is not content, and a witness must be created in this run by the identity under test.</p>
+<p><strong>8.4 A non-monotone predicate in a binary search.</strong> The extraction searched for <code>substr(...) = char(N)</code>, which is true at exactly one value. Binary search assumes monotonicity: <code>FALSE</code> at <code>mid</code> was read as &quot;the answer is above <code>mid</code>&quot;, so every character converged to the top of the range and the extractor returned <code>~~~~</code>. <strong><code>~~~~</code> is the signature of a broken search, not of a password</strong>, and it would have been reported as &quot;the admin password begins with four tildes&quot; — a confident, plausible, fabricated extraction. <strong>Fix:</strong> use a monotone predicate (<code>unicode(...) &lt;= N</code>). The tell was four identical characters, each equal to the range maximum.</p>
+<p><strong>8.5 A re-test that sent a different payload.</strong> The stacked-statement <code>500</code> did not reproduce when I hand-encoded the request — because I omitted <code>%27</code> for the opening quote, so the server received <code>admin; SELECT 1 --</code> <em>inside a string literal</em>, which is valid and returns no row. My re-test was not a failed reproduction; it was a different request. <strong>Fix:</strong> reproduce the exact bytes, and when the program's own log already carries the answer, read the log.</p>
+<p><strong>Common shape.</strong> In four of the five, the failure produced output that a reader would accept. The controls that saved each one were all the same: a positive control run first, a byte count instead of a status, a nonce carried through the run, and a value compared against a boundary I could predict.</p>
+<hr />
+<h2 id="9-not-tested-vs-discarded-with-reason">9. Not tested vs. discarded with reason</h2>
+<p><strong>Tested:</strong> the login denylist across ten categories; the injection's data channel (7 paired content checks + full 18-character extraction); the 500's root cause from the program's own traceback; the <code>/dashboard/backups</code> gate across five session states including two forged; the &quot;flag&quot; across two identities; loopback reachability from outside and from a shell; the cron write with permission tested as the identity; nonce-bearing execution proof read back as <code>blackhacker</code>; the sudo/suid/cron/shadow enumeration for root.</p>
+<p><strong>Not tested (out of scope, no authorisation):</strong> writes to any table; <code>ATTACH DATABASE</code> or extension loading; attempts to modify <code>/etc/cron.d/maintenance</code>; any brute force beyond the single-credential authentications performed; container escape; touching the <code>cybervault-*</code> containers.</p>
+<p><strong>Discarded with reason:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Encoding as the bypass</td>
+<td>Refuted by measurement — the filter runs after the framework decode (§3.1)</td>
+</tr>
+<tr>
+<td>Keyword splitting (<code>o&lt;TAB&gt;r</code>)</td>
+<td>Refuted by measurement — the filter requires a contiguous <code>or</code>, <em>and</em> SQLite's tokenizer rejects the split statement</td>
+</tr>
+<tr>
+<td><code>OR/**/</code> comment-split</td>
+<td>Refuted by measurement — <code>/</code> is a non-word char, so <code>\b</code> matches; this is a control that held</td>
+</tr>
+<tr>
+<td>Stacked statements for execution</td>
+<td><code>execute()</code> rejects multi-statement input; the 500 proves rejection, not execution</td>
+</tr>
+<tr>
+<td>SSTI via <code>render_template_string</code></td>
+<td>Every template is a module-level constant and the only interpolated value is an <code>int</code> (<code>segundos_restantes</code>). No user-controlled string reaches a template. Not reachable</td>
+</tr>
+<tr>
+<td>Traversal on <code>/static/&lt;path&gt;</code></td>
+<td><code>send_file</code> on a fixed <code>static_dir</code>; not probed further as the chain did not need it — <strong>declared untested</strong>, not discarded</td>
+</tr>
+<tr>
+<td>Reading <code>/entrypoint.sh</code> as a chain step</td>
+<td>Possible (mode <code>0755</code>) and it discloses all three SSH passwords, but I took the credentials from <code>/wow.zip</code> so that every hop in §6 is reachable through the web application alone. Reported as Finding 6, not used</td>
+</tr>
+<tr>
+<td><code>su</code> to root</td>
+<td><code>root:*</code> in shadow; no password exists to supply</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-evasion-and-blacklist-auditing--the-transferable-criteria">10. Evasion and blacklist auditing — the transferable criteria</h2>
+<h3 id="101-preventing-vs-detecting-the-question-that-decides-it">10.1 Preventing vs. detecting: the question that decides it</h3>
+<blockquote>
+<p><strong>Did the query execute?</strong></p>
+</blockquote>
+<p>A filter that <strong>prevents</strong> rejects the input with a visible error, before the sink. A filter that <strong>detects</strong> accepts the input, runs the query, and returns a data-free response afterwards — in which case <strong>the query has already run</strong>, and it is still a valid injection whether or not you can see the result. This is the same criterion as the Norc lab's read-only SQLi: a filter that &quot;stops&quot; you at the output layer has not stopped the injection.</p>
+<p>Three tests, in increasing strength:</p>
+<ol>
+<li><strong>Structural</strong> — does the early return precede the sink? Weakest on its own: it is a claim about the source, and the running binary is not the file you read.</li>
+<li><strong>Differential</strong> — send two payloads with the <em>same</em> filter-relevant property and <em>different</em> execution outcomes. Identical answers ⇒ the response is not a function of the query ⇒ prevention. This is the one to rely on.</li>
+<li><strong>The oracle is the observable difference, never the status code.</strong> Here the blocked path returns <code>200</code> and the successful login returns <code>302</code>, so a status-code filter would report every blocked payload as a normal response and the bypass as &quot;an odd redirect&quot;. Count the distinct response bodies, not the codes — and remember the direction in which this fails: a body-hash discriminator pointed at a <em>moving</em> page yields a false <strong>positive</strong> dressed as a successful enumeration.</li>
+</ol>
+<h3 id="102-auditing-a-denylist-enumerate-categories-not-variants">10.2 Auditing a denylist: enumerate categories, not variants</h3>
+<p>A denylist is evaluated <strong>by what it does not contain</strong>. The categories to enumerate:</p>
+<ol>
+<li>Boolean operators</li>
+<li>Comments — <code>--</code>, <code>/* */</code></li>
+<li><code>UNION</code> / <code>UNION ALL</code></li>
+<li>String functions — <code>LIKE</code>, <code>GLOB</code>, <code>BETWEEN</code>, <code>IN</code></li>
+<li>Subqueries and parentheses</li>
+<li>Stacked statements</li>
+<li>Encoding — URL, hex, base64, <code>char()</code></li>
+<li>Case and separator variation inside a listed token</li>
+<li><strong>Whatever the filter does not tokenise</strong> — the boundary of its own matching</li>
+</ol>
+<p>Every absent category is a bypass, and <strong>one probe per category is faster than any number of payload variants.</strong> Here: one listed category, four usable absent ones, fourteen requests, no fuzzing. If you find yourself mutating a single blocked payload, you are working inside category 8 when the win is in category 2.</p>
+<p><strong>The counter-intuitive result, and it is the transferable part:</strong> categories 7 and 8 both failed. The filter was <em>correct</em> about encoding (it inspects the canonical value, after the framework decodes) and <em>correct</em> about separator variation (word-boundary anchors tokenise the same way the SQL tokenizer does). <strong>A denylist is most often defeated by an omission, never by an obfuscation of the thing it lists.</strong> Report the omission; it is also the one that is cheap to fix.</p>
+<h3 id="103-the-operational-gate--and-why-this-is-the-part-that-bills">10.3 The operational gate — and why this is the part that bills</h3>
+<p><strong>Evading a WAF or a security filter on a client system is one of the few techniques in this methodology that can end in a report to a regulator, a charge, or a contractual penalty, and no generic &quot;pentest authorization&quot; letter covers it by default.</strong> It is therefore not a technique to execute on discovery. It is a decision, taken in writing, before the request is sent:</p>
+<ul>
+<li><strong>The filter is identified</strong> — vendor, rule ID, the exact signature, the layer. Not &quot;there seems to be a WAF&quot;.</li>
+<li><strong>Its coverage is stated</strong> — which categories the rule matches, and therefore which are open. §10.2 is the document.</li>
+<li><strong>The scope names the authorization</strong> — evasion testing is explicitly in or explicitly out. If it is out, the finding is still reported; only the proof-of-concept is withheld.</li>
+<li><strong>The window and rate are declared</strong>, as for any write.</li>
+<li><strong>The client contact is named.</strong> A filter's owner is usually a different team from the application's, and that team needs to hear about it from you rather than from an incident.</li>
+</ul>
+<p><strong>And the deliverable changes shape.</strong> The finding is a <strong>configuration finding on the client's system</strong> — <em>&quot;this control is evadible because category 2 is absent&quot;</em> — with a remediation and an owner. It is <strong>not</strong> a proof-of-concept to hand over, and a working bypass payload in the report is a liability: it is a copy-paste template for someone else, and it names your client's control as defeatable in their own document. Attach the category table; describe the bypass; leave the payload in the engagement record, not in the deliverable.</p>
+<p><strong>When the filter is the client's own application code — as here — none of this applies.</strong> A denylist in a Flask view is a bug in the code under test, it is in scope by default, and the report is an ordinary CWE-89 with a CWE-184 control defect. The gate above is for evading a <em>third party's</em> protective control, which is a different act with a different owner and a different authorisation. Keeping those two apart is the judgement: the same byte sequence is a finding in one case and a breach of contract in the other.</p>
+<hr />
+<h2 id="11-reward">11. Reward</h2>
+<p><strong>There is no reward in this image.</strong> Reported as an absence, with evidence rather than inference.</p>
+<ul>
+<li>A filesystem sweep for the reward token over <code>/</code> (excluding <code>/proc</code>, <code>/sys</code>, <code>/dev</code>) returned <strong>no matches</strong>.</li>
+<li>A sweep executed as <code>blackhacker</code>, covering <code>/home /opt /srv /var/www /tmp</code>, returned <strong>no matches</strong> in any readable location.</li>
+<li><code>/root/root.txt</code> — the epilogue text the lab clearly intends the solver to read — is <code>drwx------ root root</code> and returns <code>Permission denied</code>. §6.1 derives that no route to root exists.</li>
+<li>The dashboard's &quot;🚩 FLAG ENCONTRADA / CRITICAL&quot; card renders a <strong>constant</strong> from the template. Verified across two identities:</li>
+</ul>
+<pre><code>session=admin    /dashboard 200  flag-code='{SQLi_bypass_r4t3_l1m1t_pwn3d}'
+session=soporte  /dashboard 200  flag-code='{SQLi_bypass_r4t3_l1m1t_pwn3d}'
+distinct flag values across two different identities: 1
+</code></pre>
+<p>One distinct value. Applying the disclosure trichotomy: it is <em>reachable</em> (trivially) and <em>disclosed</em> (a value is rendered), but it is <strong>not decisive</strong> — possessing it changes nothing the application does, and it is byte-identical for a staff account and an administrator. It is a decoy presented with a <code>CRITICAL</code> badge. Reported as <strong>Finding 7 (informational)</strong> rather than as a reward.</p>
+<hr />
+<h2 id="12-restoration">12. Restoration</h2>
+<p>Destroyed and recreated from the image; the written artifact was verified byte-for-byte against the backup taken before the write:</p>
+<pre><code>removed rc=0
+recreated rc=0
+$ sha256sum /opt/maintenance/m.sh
+59c46bd4c6cb493f6c3ad9440364e3dcb8d22627869e7188fbaa91cc48cd1e12   &lt;- identical to the pre-write backup
+-rwxrwxr-x 1 blackhacker bluehacker 124 ... m.sh                   &lt;- original content, 124 bytes
+$ ls /tmp/lab283_*
+ls: cannot access '/tmp/lab283_*': No such file or directory        &lt;- all artefacts removed
+</code></pre>
+<p><strong>Untouched:</strong> all <code>cybervault-*</code> containers, and the uncommitted work from the six previous labs (staged in the index, left exactly as found).</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

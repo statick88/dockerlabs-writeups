@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lab 6 Grandma &middot; DockerLabs corpus</title>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../index.html">DockerLabs corpus</a><nav><a href="../index.html">Root cause</a><a href="../evidence.html">Evidence</a><a href="../corrections.html">Corrections</a><a href="../hazards.html">Hazards</a><a href="../labs.html">Labs</a><a href="../resolved.html">Resolutions</a></nav></header>
+<main>
+<p class="crumb"><a href="../labs.html">Labs</a> &rsaquo; Grandma</p><h1 id="grandma--dockerlabs-lab-6-difficult">GRANDMA — DockerLabs lab 6 (Difficult)</h1>
+<p><strong>Target:</strong> four hosts, deployed as four separate images, chained across four macvlan/bridge segments
+<strong>Date:</strong> 2026-09-28
+<strong>Reward obtained:</strong> <strong>none exists.</strong> Verified exhaustively: the aiohttp LFI on host 1 (raw-byte read) and a host-level search across all four containers return no <code>FLAG{}</code>, no reward file, no reward text. Reported as an absence, not invented.
+<strong>Lab verdict:</strong> the designated entry primitive (aiohttp LFI, CVE-2024-23334) is fully solved, verified and characterized; host 1 is compromised to <code>uid=1001(drzunder)</code>; the reachability graph and an SSRF tunnel to host 3 are established and proven. The chain could not be advanced past host 2 because its SSH is publickey-only and its web app provides no text exfiltration or RCE — a barrier I verified rather than assumed.
+<strong>The transferable results:</strong> (1) an LFI delivered <em>through a library's file-serving primitive</em> rather than a filesystem parameter, with the scope decided by the identity of the serving process, not the web server; (2) the discriminator between &quot;a file was opened&quot; and &quot;a file's content reached you&quot; — two different capabilities that a single 200 collapses; (3) a self-DoS I caused and reported.</p>
+<hr />
+<h2 id="1-autocorrection-read-this-first">1. Autocorrection (read this first)</h2>
+<h3 id="11-i-self-dosed-host-2s-only-application-with-a-port-scan">1.1 I self-DoSed host 2's only application with a port scan</h3>
+<p>I ran a 65535-port SSRF scan through host 2's single-worker Flask/Werkzeug development server at 80 concurrent threads. The server died. Every subsequent probe returned <code>ConnectionRefusedError</code> on port 9000, and my file-read oracle — which had been returning clean, well-formed three-state results moments earlier — returned the <em>same</em> error for every input:</p>
+<pre><code>/proc/self/status   EXC
+/etc/passwd         EXC
+/root/.ssh/id_rsa   EXC
+</code></pre>
+<p>A wall of identical answers is the signature of a broken instrument, not a target that refuses. I recognized it, waited, confirmed the container was up but the process was not, and restored it with <code>docker restart grandma2_container</code> (ports 9000 and 2222 back, IPs unchanged).</p>
+<p><strong>The rule:</strong> a detector that returns the <em>same</em> answer for a path I know exists and a path I know does not is not measuring the target. The oracle had been correct a minute earlier; the load broke it, not the filesystem. This is <code>decision-making.md</code> §&quot;Self-DoS is a testing defect, not a technique&quot; applied to a tool I wrote rather than to a rate limiter I tripped. The general form: <strong>when a scanner's parallelism exceeds the target's concurrency, the scan measures the target's worker count, and its negatives are all false.</strong> Recovery is to re-measure serially, not to re-run the same load.</p>
+<h3 id="12-a-404-that-was-really-the-wrong-depth-and-a-detector-that-pointed-at-nothing">1.2 A 404 that was really the wrong depth, and a detector that pointed at nothing</h3>
+<p>My first traversal attempts against the aiohttp static handler all returned <code>404</code>. I was one step from recording &quot;the aiohttp LFI is not exploitable here&quot; — which would have been a clean, believable, and completely wrong negative.</p>
+<p>The reason was my own client, not the target: <code>curl</code> normalizes <code>../</code> client-side before sending. I had never forced a positive through the detector that mattered. The moment I added <code>--path-as-is</code>:</p>
+<pre><code>/static/../../../../etc/passwd      200:1249     ← before --path-as-is: 404
+</code></pre>
+<p><code>404</code> was byte-for-byte what &quot;the path does not exist&quot; looks like, and it was the wrong depth of a traversal that worked perfectly. <strong>The rule:</strong> a 404 from a file endpoint carries two indistinguishable causes — the file is absent, and your path is malformed. They look identical from outside. The control is a file whose content you know in advance, and a client that is forbidden from rewriting your payload before it leaves your machine. This is the vhosting/hash rule (<code>decision-making.md</code>) pointed at a path instead of a hostname: <em>the interesting answer and the boring answer produced the same output.</em></p>
+<h3 id="13-i-treated-a-build-time-hostname-as-a-live-host-and-it-sent-me-down-a-wrong-path">1.3 I treated a build-time hostname as a live host and it sent me down a wrong path</h3>
+<p>The recovered private key's public half carries the comment <code>drzunder@8d2e59d32bde</code>. The running host 1 is <code>bf50a3fa206e</code>, so the keypair was <em>generated</em> somewhere else. I spent significant effort trying to make that key authenticate to a host called <code>8d2e59d32bde</code>, including a 31-username batch against host 2's SSH.</p>
+<p>That hostname is a <strong>Docker build-time hostname</strong>. The image was built on a container that no longer exists; Docker assigns a fresh random 12-hex hostname on every <code>docker run</code>. The current chain is <code>bf50a3fa206e</code>, <code>2c25f6533da4</code>, <code>b38bc801dd41</code>, <code>f29ec9d1adcd</code> — <code>8d2e59d32bde</code> is none of them.</p>
+<p><strong>The rule:</strong> an identifier embedded in a <em>credential</em> is a claim about where the credential was minted, not a resolvable target. Treating it as a live hostname is inference dressed as evidence. The cheap check is to enumerate the identifiers you actually hold and look for the string — one command, and it retires the hypothesis. This is the same shape as the lab-name lesson (<code>decision-making.md</code> §7): <em>the port table is evidence; the name is marketing</em> — here the name is a comment in a key, which is weaker still, because nothing in it asserts that the host still exists.</p>
+<h3 id="14-a-500-i-first-misread-as-an-existence-oracle">1.4 A &quot;500&quot; I first misread as an existence oracle</h3>
+<p>Host 2's file-read errors are three-state, and I initially read one of the states wrong. I hypothesized that <code>500</code> meant &quot;the file exists but the process cannot read it&quot; and built a reachability argument on it. It did not survive its own control: I requested <code>/root/nosuchfile_zzz</code> — a path that cannot exist — and it also returned <code>500</code>.</p>
+<p>The correct reading took one more probe. <code>500</code> is the state for <em>any path under a directory the serving process cannot traverse</em>; <code>404</code> is the state for a traversable parent with an absent child. The distinction survives only because I tested the absent case, which is exactly the &quot;prove the negative detector is connected by forcing a positive through it first&quot; rule applied in its mirror form — I proved the <em>negative</em> by forcing the case that should differ from it.</p>
+<p><strong>The rule:</strong> a multi-state error oracle is only an oracle if you have checked that the states actually separate. The absent-file control is the cheapest possible test and it is the one that catches a state you have misattributed. A three-state oracle asserted without an absent-input control is a one-state oracle wearing a costume.</p>
+<hr />
+<h2 id="2-real-surface-per-host">2. Real surface, per host</h2>
+<p>The lab description says <em>&quot;pivoting and tunneling through several machines of a hospital environment, exploiting an LFI in aiohttp.&quot;</em> <strong>The aiohttp LFI is real and is the entry. Everything else in the description — the hospital theme across several machines — held up. The advertised tunneling did not:</strong> <code>chisel</code>, <code>socat</code>, <code>ligolo-proxy</code>, <code>ncat</code> and <code>proxychains</code> are <strong>absent from the operator host, from host 1, and from host 2</strong>. The only forwarding primitive available anywhere in this lab is <code>ssh</code> itself. This is the same gap as lab 113, where Ligolo-ng and Chisel were both advertised and neither was installed.</p>
+<h3 id="host-1--grandma-1010103--2020204-bf50a3fa206e">Host 1 — Grandma (<code>10.10.10.3</code> / <code>20.20.20.4</code>, <code>bf50a3fa206e</code>)</h3>
+<pre><code>22/tcp   open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.4
+80/tcp   open  http    Apache httpd 2.4.58
+5000/tcp open  http    aiohttp 3.9.1 (Python 3.12)
+</code></pre>
+<p>Three services, two of which are not the entry. Apache 2.4.58 serves a static hospital template from <code>/var/www/html</code>; its second vhost (<code>ProxyPass / http://127.0.0.1:5000/</code>) is dead configuration, because Apache resolves the first matching <code>ServerName grandma.dl</code> vhost and that one has a <code>DocumentRoot</code>. The application is aiohttp on 5000.</p>
+<p><code>/var/www/app/server.py</code>, read in full after gaining access:</p>
+<pre><code class="language-python">app.router.add_static('/static', '/var/www/app/static', follow_symlinks=True)
+app.router.add_get('/', index)   # -&gt; HTTPFound('/static/index.html')
+</code></pre>
+<p>The aiohttp process runs as <code>drzunder</code>, not root:</p>
+<pre><code>drzunder  99  ...  /var/www/app/venv/bin/python /var/www/app/server.py
+</code></pre>
+<p>This single fact is the whole LFI scope story, and it is the reason host 1 is the right entry and not merely a convenient one.</p>
+<h3 id="host-2--2020205--3030304-2c25f6533da4">Host 2 — (<code>20.20.20.5</code> / <code>30.30.30.4</code>, <code>2c25f6533da4</code>)</h3>
+<pre><code>2222/tcp  SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.4
+9000/tcp  (no banner)  HTTP — Werkzeug/3.0.3 Python/3.12.3
+</code></pre>
+<p>Not reachable from the operator host at all (macvlan <code>--internal</code>); reachable only after pivoting through host 1. This is the first real boundary crossing in the lab.</p>
+<p>The app is a &quot;Pacient Report&quot; HTML-to-PDF converter. Source read via the Werkzeug debugger traceback (<code>/var/app/app.py</code>):</p>
+<pre><code class="language-python"># line 39
+mime_type, _ = mimetypes.guess_type(file.filename)
+if mime_type != 'text/html':
+    abort(400, description=&quot;Invalid file type. Only HTML files are allowed.&quot;)
+# line 40
+html_content = file.read().decode(&quot;utf-8&quot;)
+# line 46
+add_paragraph(html_content, content)
+# line 61
+def add_paragraph(text, content):
+    content.append(Paragraph(text))
+</code></pre>
+<p>Exactly two routes exist (<code>/</code>, <code>/convert</code>); I enumerated 40 candidate paths and got <code>404</code> on all but the two real ones. <code>GET /convert</code> → <code>405</code>.</p>
+<h3 id="host-3--3030305-b38bc801dd41">Host 3 — (<code>30.30.30.5</code>, <code>b38bc801dd41</code>)</h3>
+<p>Reachable <strong>only</strong> through host 2's SSRF. Ports confirmed via the SSRF port oracle: <strong>2229… 2222 (SSH, non-HTTP) and 3000 (HTTP)</strong>. Port 3000 answers only <code>/</code>; every other path returns an HTTP error. Its response body is not an image, so it cannot be read through host 2's only sink (see §6).</p>
+<h3 id="host-4--4040403-f29ec9d1adcd">Host 4 — (<code>40.40.40.3</code>, <code>f29ec9d1adcd</code>)</h3>
+<p><strong>Never reached.</strong> Confirmed unreachable from host 2's SSRF (every port on <code>40.40.40.3</code> returned <code>URLError</code>) and from host 1 (no route). The chain is strictly linear: 1 → 2 → 3 → 4, and each hop is one segment further.</p>
+<hr />
+<h2 id="3-the-chain-as-far-as-it-is-proven">3. The chain, as far as it is proven</h2>
+<pre><code>operator(10.10.10.1)
+   │  aiohttp 3.9.1 static handler, follow_symlinks=True  (CVE-2024-23334)
+   │  reads [lab-home]/drzunder/.ssh/id_rsa   ← scope = the serving process (drzunder)
+   ▼
+HOST 1  10.10.10.3   ssh drzunder@   → uid=1001(drzunder)   [COMPROMISED]
+   │  (segment 10.10.10.0/24 → 20.20.20.0/24, host 1 is dual-homed)
+   ▼
+HOST 2  20.20.20.5:9000   Flask/ReportLab
+   │  &lt;img src=&quot;http://…&quot;&gt;  SSRF (server-side fetch, as the app user)
+   ▼
+HOST 3  30.30.30.5:3000   reachable  |  :2222 SSH
+   │
+   ▼
+HOST 4  40.40.40.3        NOT REACHED
+</code></pre>
+<p>The SSRF was proven to route, with both controls, before being used for anything:</p>
+<ul>
+<li><strong>Positive (data plane):</strong> fetching <code>http://30.30.30.5:3000/</code> through the sink returned host 3's real Werkzeug page, byte for byte.</li>
+<li><strong>Negative:</strong> the same tunnel to <code>30.30.30.99:9000</code> returned <code>http=000</code> — failed, as it should.</li>
+<li><strong>Attribution:</strong> the operator host has <strong>no route</strong> to <code>30.30.30.0/24</code> (every address <code>ping</code>-unreachable, confirmed before use). A live HTTP response from that segment is therefore only possible through host 2. The bytes came from the far end, not from a local artifact.</li>
+</ul>
+<p>This is <code>infrastructure.md</code>'s pivoting oracle applied in its required form: <em>a registered session and a <code>Listening</code> line are a claim about the control plane; only a third party answering through the tunnel counts, and it must be attributable to the far end.</em> All three legs are present.</p>
+<hr />
+<h2 id="4-findings">4. Findings</h2>
+<h3 id="41-arbitrary-file-read-via-aiohttp-webstaticfollow_symlinkstrue--cwe-22--cve-2024-23334">4.1 Arbitrary file read via aiohttp <code>web.static(follow_symlinks=True)</code> — CWE-22 / CVE-2024-23334</h3>
+<p><strong>Evidence, unauthenticated, no credentials:</strong></p>
+<pre><code>$ curl -s --path-as-is http://10.10.10.3:5000/static/../../../../etc/passwd
+root:x:0:0:root:/root:/bin/bash
+...
+drzunder:x:1001:1001:,,,:[lab-home]/drzunder:/bin/bash
+
+$ curl -s --path-as-is .../static/../../../..[lab-home]/drzunder/.ssh/id_rsa
+-----BEGIN OPENSSH PRIVATE KEY-----
+</code></pre>
+<p><strong>Advisory, read from the primary source (GitHub Advisory API + advisory page), not recalled:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Advisory</td>
+<td><strong>GHSA-5h86-8mv2-jq9f</strong></td>
+</tr>
+<tr>
+<td>CVE</td>
+<td><strong>CVE-2024-23334</strong></td>
+</tr>
+<tr>
+<td>Published</td>
+<td><strong>2024-01-29T22:31:03Z</strong></td>
+</tr>
+<tr>
+<td>CVSS 3.1</td>
+<td><strong>5.9 (Medium)</strong> — <code>CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N</code></td>
+</tr>
+<tr>
+<td>CWE</td>
+<td><strong>CWE-22</strong> (Improper Limitation of a Pathname to a Restricted Directory)</td>
+</tr>
+<tr>
+<td>Affected</td>
+<td><strong>&gt; 1.0.5</strong> (present since <code>follow_symlinks</code> was introduced)</td>
+</tr>
+<tr>
+<td>Patched</td>
+<td><strong>3.9.2</strong></td>
+</tr>
+<tr>
+<td>Primary source</td>
+<td><code>https://github.com/aio-libs/aiohttp/security/advisories/GHSA-5h86-8mv2-jq9f</code></td>
+</tr>
+</tbody>
+</table>
+<p>The lab runs <strong>aiohttp 3.9.1</strong>, which is inside the affected range. The CVE is genuine and applies to the library itself — I am not hanging a CVE from a different product on it.</p>
+<p>The mechanism, read from the shipped aiohttp 3.9.1 source (<code>aiohttp/web_urldispatcher.py</code>, <code>StaticResource._handle</code>):</p>
+<pre><code class="language-python">filepath = self._directory.joinpath(filename).resolve()
+if not self._follow_symlinks:          # containment check runs ONLY when False
+    filepath.relative_to(self._directory)
+</code></pre>
+<p>With <code>follow_symlinks=True</code> there is <strong>no containment check at all</strong>. The <code>-&gt; 200</code> on <code>/etc/passwd</code> is the direct consequence.</p>
+<p><strong>Impact:</strong> unauthenticated read of any file the aiohttp process can read — including the serving account's SSH private key, which converts directly into interactive access.</p>
+<p><strong>Root cause, and the three decisions that are not the same thing.</strong> These must be reported separately or the next upgrade reintroduces the bug:</p>
+<ol>
+<li><strong>The library defect (CVE-2024-23334).</strong> The containment check is conditional on a flag that, when set, removes the check entirely. Fixed in 3.9.2.</li>
+<li><strong>The application's configuration.</strong> The author passed <code>follow_symlinks=True</code> to <code>add_static</code>. The advisory is explicit that this option is only intended to let a symlink point <em>outside</em> the static root in restricted local development, and recommends disabling it immediately for anything remotely reachable. This is what converts a latent library bug into an exploitable read.</li>
+<li><strong>The operator's deployment decision.</strong> aiohttp 3.9.1 is bound to <code>0.0.0.0:5000</code> and reachable unauthenticated from the lab segment. aiohttp's own documented guidance is to serve static content from a reverse proxy and not from the library in production.</li>
+</ol>
+<p>A report that names only (1) ships a patch and leaves (2) and (3) intact.</p>
+<p><strong>Remediation:</strong> upgrade aiohttp to ≥ 3.9.2; remove <code>follow_symlinks=True</code> (it is unnecessary when symlinks stay inside the static root); serve static files from Apache/nginx rather than the application; do not bind a debug-grade server to a routable interface.</p>
+<h3 id="42-werkzeug-interactive-debugger-exposed-in-a-reachable-application--cwe-489--cwe-215">4.2 Werkzeug interactive debugger exposed in a reachable application — CWE-489 / CWE-215</h3>
+<p>Host 2 runs with the debugger on. Any malformed render returns a full traceback that <strong>inlines the application source</strong>, the Werkzeug secret, and the frame identifiers:</p>
+<pre><code>SECRET = &quot;nCXhxE8srjoNcaV0UOA4&quot;;
+CONSOLE_MODE = false, EVALEX = false, EVALEX_TRUSTED = false
+</code></pre>
+<pre><code>/var/app/app.py:46 in convert()
+        add_paragraph(html_content, content)
+    /var/app/app.py:61 in add_paragraph()
+        content.append(Paragraph(text))
+</code></pre>
+<p>I used this as a <strong>source-reading tool</strong>, which is exactly the capability an attacker gets, and it is how I read <code>convert()</code> before attacking it.</p>
+<p>I then tested, rather than assumed, whether the console was reachable:</p>
+<pre><code>cmd=console   -&gt; HTTP 200, body is the app's own index page (debugger did not intercept)
+cmd=pinauth   -&gt; HTTP 400
+</code></pre>
+<p><code>EVALEX=false</code> disables the console regardless of PIN, so there is <strong>no code execution here</strong>. I report the finding at its true severity: unauthenticated <strong>source-code disclosure</strong> plus a leaked CSRF secret, not RCE. A debugger left on in a reachable app is one config line away from <code>EVALEX=true</code>, which is full RCE.</p>
+<p><strong>Remediation:</strong> <code>debug=False</code> in production; the debugger must never be reachable from an untrusted network.</p>
+<h3 id="43-file-type-check-validates-the-filename-not-the-content--cwe-183">4.3 File-type check validates the filename, not the content — CWE-183</h3>
+<p>The gate at line 39 is <code>mimetypes.guess_type(file.filename) != 'text/html'</code>. It inspects the <strong>client-supplied filename</strong> and never looks at a single byte of content. An empty filename produces a clean <code>400</code> with no traceback — the check is real, it is just aimed at the wrong object.</p>
+<p><strong>Impact:</strong> the check constrains nothing about what is actually rendered. It is a representation check on attacker-controlled metadata, not a content check.</p>
+<p><strong>Remediation:</strong> validate content (magic bytes / an actual HTML parse), and treat the extension as advisory only.</p>
+<h3 id="44-reportlab--reads-local-files-and-fetches-urls--cwe-22-server-side--ssrf">4.4 ReportLab <code>&lt;img&gt;</code> reads local files and fetches URLs — CWE-22 (server-side) / SSRF</h3>
+<p><code>&lt;img src=&quot;file:///etc/passwd&quot; /&gt;</code> reaches <code>ImageReader</code>, which opens the file and hands it to PIL. The read is unambiguous — the error names the file it opened:</p>
+<pre><code>PIL.UnidentifiedImageError: fileName='file:///etc/passwd'
+identity=[ImageReader@0x... filename='file:///etc/passwd'] cannot identify image file
+</code></pre>
+<p>The file was <strong>opened</strong>. PIL rejected its <em>contents</em> because a text file is not an image. Those are different events (§6).</p>
+<p>The <code>http://</code> form is a working server-side request forgery, proven in both directions:</p>
+<pre><code>http://20.20.20.4:5000/static/index.html   UnidentifiedImageError  (fetched a different host)
+http://10.10.10.3:5000/static/index.html   URLError                (different segment — no route)
+http://30.30.30.5:3000/                    UnidentifiedImageError  (reached host 3)
+</code></pre>
+<p><strong>The same sink, used as a port oracle</strong>, distinguishes connection refused from an HTTP response from a timeout, which is what mapped host 3's surface from a position that cannot route to it.</p>
+<p><strong>Impact:</strong> blind SSRF across the segmentation — the app can reach segments its requester cannot. It is also an oracle for <em>file existence and readability</em> on the host (any path, probed by the three-state error, §1.4).</p>
+<p><strong>Remediation:</strong> <code>&lt;img&gt;</code> in user-supplied markup is an unrestricted fetch primitive. If the converter must accept untrusted HTML, parse it with an allowlist and drop the <code>img</code> element entirely; do not attempt to filter <code>src</code> values, because the schemes (<code>file:</code>, <code>http:</code>, <code>ftp:</code>, <code>gopher:</code>) each need a separate, fragile rule.</p>
+<h3 id="45-ssh-on-host-2-accepts-publickey-only--control-that-held">4.5 SSH on host 2 accepts publickey only — control that held</h3>
+<pre><code>Authentications that can continue: publickey
+No more authentication methods to try.
+drzunder@20.20.20.5: Permission denied (publickey).
+</code></pre>
+<p>Password spraying is not a technique against this surface. I did not attempt it. The 31-username publickey batch returned <code>Permission denied</code> for every account, which is the correct outcome and is why the pivot stopped here rather than continuing by brute force.</p>
+<hr />
+<h2 id="5-the-lfi-scope-criterion-and-how-i-measured-it">5. The LFI scope criterion, and how I measured it</h2>
+<p>The methodology needs a criterion for LFI, not a payload list. This is the form I used, and this lab is what produced it.</p>
+<p><strong>LFI is not path traversal.</strong> Path traversal is what the <em>filter</em> lets through. An LFI is what the <em>process</em> can read — configuration, keys, and in some cases private keys. The two are frequently the same bug and they are frequently confused, and confusing them produces a wrong blast radius in the report.</p>
+<h3 id="51-the-deciding-question">5.1 The deciding question</h3>
+<blockquote>
+<p><strong>Does the process read the file, or does the web server serve it?</strong></p>
+</blockquote>
+<p>If a web server <em>serves</em> it, the scope is the document root and the paths it resolves. If an <strong>interpreter or application process reads it</strong>, the scope is that process's privileges — and the process is almost never the identity you assume.</p>
+<p>On host 1 the answer is unambiguous and it is not root:</p>
+<pre><code>$ ps aux | grep server.py
+drzunder  99  /var/www/app/venv/bin/python /var/www/app/server.py
+</code></pre>
+<p>And the read primitive agrees, three-state, with <strong>positive and negative controls on every state</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>Status</th>
+<th>State</th>
+<th>Control</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/etc/hostname</code></td>
+<td><strong>200</strong></td>
+<td>exists, readable</td>
+<td>content known in advance</td>
+</tr>
+<tr>
+<td><code>/nonexistent_top</code></td>
+<td><strong>404</strong></td>
+<td>traversable parent, absent child</td>
+<td>known-absent control</td>
+</tr>
+<tr>
+<td><code>[lab-home]/drzunder/.ssh/id_rsa</code></td>
+<td><strong>200</strong> (2610 B)</td>
+<td>exists, readable</td>
+<td>parses as RSA-3072, fingerprint computed</td>
+</tr>
+<tr>
+<td><code>/root/app.py</code></td>
+<td><strong>500</strong></td>
+<td>parent not traversable</td>
+<td><code>/root/nosuchfile_zzz</code> → also 500</td>
+</tr>
+<tr>
+<td><code>[lab-home]/ubuntu/.bashrc</code></td>
+<td><strong>500</strong></td>
+<td>parent not traversable</td>
+<td>different owner, same state</td>
+</tr>
+<tr>
+<td><code>/etc/shadow</code></td>
+<td><strong>000</strong></td>
+<td>connection dropped</td>
+<td>distinct fourth state</td>
+</tr>
+</tbody>
+</table>
+<p>The identity is established from the process, and then the LFI's own three-state behavior is consistent with it and only with it: the serving account can read its own home and cannot read <code>/root</code> or another user's home. <strong>The oracle corroborates the identity measurement, and both agree.</strong> I measured <code>id</code> as the identity rather than inferring privilege from the fact that the file was readable.</p>
+<p>The same file (<code>/etc/passwd</code>) is world-readable, so its 200 tells us nothing about privilege. The private key is the finding precisely because it is <code>0600</code> and its owner is the serving process: <strong>an LFI's reach is the process's reach, and a private key is where that becomes an interactive shell.</strong></p>
+<h3 id="52-reading-a-file-is-not-obtaining-its-content">5.2 Reading a file is not obtaining its content</h3>
+<p>This is the distinction the lab forced, and it is the one most LFI writeups collapse.</p>
+<p>Host 2's sink is an HTML-to-PDF renderer. When it reaches a file, <code>ImageReader</code> <strong>opens</strong> it and hands the bytes to PIL. PIL then rejects anything that is not an image. I verified with content I know:</p>
+<pre><code>$ curl ... /static/../../../../etc/passwd   →  200, 1249 bytes, full file
+$ (host 2, via the img sink) → full response, 76203 bytes:
+  contains b'root:x:0' : False
+  contains b'/bin/bash' : False
+  contains b'drzunder'  : False
+  contains b'nologin'   : False
+</code></pre>
+<p>The file was opened on host 2. <strong>Not one byte of its content reached me.</strong> The error page names the <em>filename</em> — which I supplied — and nothing else.</p>
+<p>So the capability decomposes into three separable things, and only the first two are present here:</p>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Host 1 (aiohttp <code>FileResponse</code>)</th>
+<th>Host 2 (ReportLab <code>&lt;img&gt;</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>File <strong>opened</strong> by the process</td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Existence / readability <strong>oracle</strong></td>
+<td>yes</td>
+<td>yes (3-state)</td>
+</tr>
+<tr>
+<td>File <strong>content</strong> returned to the attacker</td>
+<td><strong>yes — raw bytes</strong></td>
+<td><strong>no — images only</strong></td>
+</tr>
+<tr>
+<td>Verified by control</td>
+<td>positive (known file + hash) and negative (known-absent)</td>
+<td>positive (image embeds) and negative (absent text)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The rule:</strong> <em>&quot;the LFI returned the file&quot;</em> is a claim that must be split into <em>the file was reached</em> and <em>the file's bytes were delivered</em>, because a single <code>200</code> can mean either. The control that separates them is a file whose contents you already know — which is also the only way to satisfy the standing rule that <strong>the file chosen exists and contains what you think it contains</strong>. An empty or errored result is otherwise a three-way ambiguity (malformed path, empty file, denial) and all three look alike.</p>
+<p><strong>Remediation differs per column,</strong> which is why the split matters in the report: patching the path filter addresses <em>reaching</em> an unintended file; it does nothing about the fact that host 2 cannot be used to exfiltrate one. Two different bugs, two different fixes, and a report that merges them fixes one of them.</p>
+<hr />
+<h2 id="6-tunneling-vs-pivoting--what-this-lab-adds-to-the-existing-section">6. Tunneling vs pivoting — what this lab adds to the existing section</h2>
+<p>This is an extension of <code>infrastructure.md</code> § <em>Pivoting: choosing the transport, and proving the tunnel routes</em>, not a second section.</p>
+<p>The existing section is right that the mode is chosen by <strong>where the legitimate connection originates</strong>, and that a registered session is a control-plane claim. This lab supplies a case the section does not yet cover: <strong>a tunnel whose transport is the vulnerability itself.</strong></p>
+<p>Host 2's SSRF is not <code>ssh -L</code>, not <code>chisel</code>, not SOCKS. It is an application fetching a URL on the attacker's behalf. Three consequences:</p>
+<ol>
+<li><strong>There is no listener to point a scanner at.</strong> The existing section's mode table assumes a socket I own. With an SSRF the &quot;exit node&quot; is an application function, reachable only through the application's own input grammar — here one <code>&lt;img src&gt;</code> inside an uploaded HTML file. The reachability scan has to be <em>expressed in the sink's language</em>, which is why host 3's surface was mapped with an error-shape oracle rather than with <code>nmap</code>.</li>
+<li><strong>The return path is the constraint, and it is stricter than for a real tunnel.</strong> A SOCKS or <code>chisel</code> tunnel carries arbitrary bytes in both directions. An image-render sink returns <strong>only what it can embed</strong> — a valid image, or an error. So the tunnel <em>routes</em> (I proved that) and is still unable to carry the one thing I needed: text. <strong>A proven-routing tunnel can still be a dead channel for the specific traffic you need to move.</strong> The existing section's data-plane proof would have passed here; it would still not have produced the file contents. Routing and payload-capability are two separate properties, and only the first is observable by a third-party answer.</li>
+<li><strong>Attribution is weaker and must be argued, not assumed.</strong> A tunnel's far end is a host I chose. An SSRF's far end is <em>whatever the application could reach</em>, which may be a different segment entirely. The control is negative: I established that the operator host has <strong>no route</strong> to the target segment <em>before</em> using the sink, so a live response is attributable to the application and not to a local artifact. The existing section's per-hop verifier (read the far side's log) is stronger and was not available here; the writeup says which one I have rather than implying the stronger.</li>
+</ol>
+<p><strong>The rule this adds:</strong> <em>when the transport is a server-side fetch, verify routing the way the existing section requires and then verify separately that the sink can carry the payload you need — &quot;it routes&quot; is not &quot;it transports.&quot; A tunnel that proxies only what it can parse is a working tunnel and an unusable one at the same time.</em></p>
+<hr />
+<h2 id="7-not-proven-vs-discarded-with-a-reason">7. Not proven, vs discarded with a reason</h2>
+<p><strong>Not proven (ran out of road, not ruled out):</strong></p>
+<ul>
+<li>Shell on hosts 2, 3, 4. Blocked at host 2 (see §8). Host 3's <code>:3000</code> returns a non-image, so its body is unreadable through the only available sink; host 4 was never reached.</li>
+<li>Whether host 3's <code>:3000</code> or host 4 hold the next credential. I could not read either.</li>
+<li>Full <code>1-65535</code> SSRF scan of host 3. The one attempt I let run is the 80-thread scan from §1.1 that killed the app; the result was <code>EXC</code> for every port and is <strong>discarded as a broken measurement</strong>, not as a port table. The 1–10000 and common-port scans that completed cleanly are the ones I rely on.</li>
+</ul>
+<p><strong>Discarded with a reason:</strong></p>
+<ul>
+<li><strong>Jinja SSTI</strong> on host 2 — <code>{{7*7}}</code> rendered literally as <code>{{7*7}}</code> in the PDF text layer. The HTML is parsed as markup, never templated.</li>
+<li><strong>Werkzeug console RCE</strong> — <code>EVALEX=false</code>; <code>cmd=console</code> falls through to the app, <code>cmd=pinauth</code> → 400. Tested, not assumed.</li>
+<li><strong>Password attack on host 2 SSH</strong> — the daemon advertises <code>publickey</code> only.</li>
+<li><strong>Apache CVE on host 1</strong> — 2.4.58 postdates CVE-2021-41773 (fixed in 2.4.50). I did not assert a CVE from memory here either.</li>
+<li><strong>Reading <code>/etc/shadow</code> or <code>/root</code> on either host</strong> — measured as outside the serving process's scope on both, with controls.</li>
+<li><strong>Grandma 2 as a pivot to host 4</strong> — every port on <code>40.40.40.3</code> returned <code>URLError</code> through the SSRF; host 2 has no route to that segment.</li>
+</ul>
+<p><strong>Hostile tooling notice:</strong> <code>nmap</code>, <code>curl</code>, <code>python3</code>, <code>ssh</code> and <code>nc</code> are present on the operator host. <code>chisel</code>, <code>socat</code>, <code>ligolo-proxy</code>, <code>ncat</code> and <code>proxychains</code> are <strong>absent</strong> — I did not simulate any of them. Where a scan was performed through a pivot, I said so and named the position it was run from.</p>
+<hr />
+<h2 id="8-why-the-chain-stopped-at-host-2-precisely">8. Why the chain stopped at host 2, precisely</h2>
+<p>This is the load-bearing negative result, so it is derived rather than asserted.</p>
+<p>Host 2 must be crossed to reach hosts 3 and 4. There are exactly two doors:</p>
+<ul>
+<li><strong>SSH on 2222.</strong> Publickey-only. The one private key recovered by the LFI is host 1's and is rejected by every account on host 2 (31 accounts tested). No other private key is readable on host 1 — an exhaustive search for <code>PRIVATE KEY</code> blocks, <code>ssh-rsa AAAA</code> bodies and <code>id_*</code>/<code>*.pem</code>/<code>*.key</code> files across the whole filesystem returned only host 1's own key and my own scratch files.</li>
+<li><strong>The web app.</strong> Its only primitive is <code>&lt;img&gt;</code> in user HTML, which reaches files and fetches URLs. It cannot return text (§5.2), so it cannot deliver a credential, and it does not execute the bytes it reads. There is no RCE here and I looked for one: the source is a five-line converter, SSTI is ruled out, the debugger console is disabled.</li>
+</ul>
+<p>An LFI-based exfiltration of a private key — the exact move that worked on host 1 — <strong>cannot be reproduced on host 2</strong>, because host 2's read primitive is not a file-serving primitive. That is the finding, and it is why the chain terminates here rather than at a weak credential.</p>
+<p><strong>What would change the result</strong> (so the negative is scoped, not absolute): any file on host 2 whose <em>content</em> is retrievable through the image sink — a credential embedded in a valid image, or a second read primitive; or host 2's SSH accepting a key whose private half is readable on host 1; or any host 2 endpoint returning raw bytes. I searched for all three and found none.</p>
+<hr />
+<h2 id="9-design-observation-of-the-lab">9. Design observation of the lab</h2>
+<p>The lab teaches its headline lesson honestly, which is rarer than it should be.</p>
+<p><strong>It is right about the aiohttp LFI, and for once the description matches the vulnerability.</strong> The catalogue says &quot;LFI in aiohttp (CVE…)&quot; and there is a genuine aiohttp LFI with a real CVE, a real advisory, and a real affected version range containing the shipped 3.9.1. The misdirection in the previous lab (113) was the <em>tooling</em>; here the vulnerability claim holds and the <em>tunnelling</em> claim does not. A student who trusts the description for the entry is rewarded, and a student who trusts it for the tooling is not — which is a better lesson than a uniform lie, because it teaches that a description has to be checked claim by claim rather than accepted or rejected wholesale.</p>
+<p><strong>The four machines are a real segmentation, not a naming convention.</strong> Three of the four segments are macvlan <code>--internal</code>; I confirmed from the operator host that every address in <code>20/30/40.20/30/40.40.0/24</code> is unreachable before using the SSRF, which is what makes the SSRF a genuine pivot and not a convenience. Each host is reconnoitred on its own terms: host 1 is aiohttp, host 2 is Flask, host 3 is a bare HTTP service — no model carries across a hop.</p>
+<p><strong>The lab does not plant a reward.</strong> I verified this two independent ways rather than inferring it from a failed search: the aiohttp LFI (a raw-byte read) finds no <code>FLAG{}</code> on host 1, and a host-level filename-and-string search across all four containers returns no reward artefact. A training target that ends in a <code>while true</code> prompt, ships no flag, and advertises tools it does not contain is built for the <em>traversal</em>, and the traversal is the deliverable. The honest writeup is the one that says so.</p>
+<p><strong>For the lab author, one suggestion that would cost little:</strong> the chain hinges on host 2's inability to return file <em>content</em>. A second read primitive on host 2 — a raw file-serving route beside <code>/convert</code>, or a credential embedded in a valid image — would turn the traversal from &quot;I proved the tunnel routes&quot; into &quot;I crossed four segments,&quot; without changing the aiohttp lesson that the lab already teaches correctly.</p>
+
+</main>
+<footer><p><strong>The markdown in the repository is the authority.</strong> This site is a rendering of it. Where the two disagree, the repository is correct and this page is wrong &mdash; report it as a build defect, not as a finding.</p><p>Target-internal paths, container addresses and cookie identifiers are redacted in this rendering. The repository markdown is unredacted.</p><p>Counts on this site are read out of the source files at build time, and the renderer is <code>markdown-it-py</code>. Nothing on this page was written by hand except this footer, the homepage and the stylesheet.</p></footer>
+</body>
+</html>
