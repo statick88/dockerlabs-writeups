@@ -3,7 +3,7 @@
 The evidence corpus behind the decision layer in
 [`PenTestMethodology`](https://github.com/statick88/PenTestMethodology).
 
-60 lab engagements, resolved and audited (plus 2 recorded as unobtainable). This repo holds **what
+62 lab engagements, resolved and audited (plus 2 recorded as unobtainable). This repo holds **what
 happened**. The methodology repo holds **what to conclude next time**. They are
 separate on purpose: the methodology has to stay portable and citable, and the
 evidence has to stay specific and unedited by summary.

@@ -1,4 +1,4 @@
-# Corpus index — 59 writeups + 2 unobtainable
+# Corpus index — 62 writeups + 2 unobtainable
 
 | # | Lab | Difficulty | Writeup | Class | Reward |
 |---|-----|-----------|---------|-------|--------|

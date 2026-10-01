@@ -4,7 +4,7 @@ The resolution layer: for every engagement, **the class, the discriminator that
 settled it, and where the evidence is**. Derived from the writeups, not from
 anyone's memory — which is why the columns can be checked.
 
-**Read this first if you read nothing else.** Forty-five of the fifty-two engagements carry
+**Read this first if you read nothing else.** Thirty-seven of the sixty-two engagements carry
 no reward value, and that is a *measurement*, not an oversight — the criterion is stated
 below, because an unstated criterion is how a count rots. Four produced a
 class the queue had mislabelled. Six carry a defect in the lab's own design. One
