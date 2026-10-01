@@ -164,7 +164,7 @@ gets you `apache`; pickle gets you `matsi`; a sudoers rule gets you `root`.*
 
 ### 2.2 Convergence note
 
-`corpus/INDEX.md:18` already carries a pickle row — lab 148, where pickle is a
+`corpus/INDEX.md:35` already carries a pickle row — lab 148, where pickle is a
 **gadget in a stack buffer overflow**. Per PIPELINE.md §"Feeding forward", an
 existing rule that survives a fresh case is stronger than a new rule with one, and
 the honest outcome here is **extend, do not duplicate**: our deserialisation
@@ -762,7 +762,7 @@ Three things here are worth carrying forward, and none of them is "a new class":
    account of it** (§2.1). This lab declares "pickle → root" and delivers
    "pickle → `matsi`", with a third unrelated sudoers bug supplying root. The
    descriptor is a claim about the author's intent; the `id` inside the sink is a
-   measurement. `corpus/INDEX.md:18` already attributes pickle to lab 148; this lab
+   measurement. `corpus/INDEX.md:35` already attributes pickle to lab 148; this lab
    widens that class from *gadget-in-memory-corruption* to *`pickle.loads` on network
    bytes*, which is CWE-502 in its own right.
 3. **A `sudoers` entry without an argument list is not the command it names.**

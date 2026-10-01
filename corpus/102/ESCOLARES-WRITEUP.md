@@ -315,7 +315,9 @@ host. Logged in, 200, with the metadata database rendered:
 [4] 'wordpressuser' 'contrapoderosa123'  pmaAuth=True  db_page_ok=True
 ```
 
-(8 candidate pairs tested in total; the six failures are the negative set.)
+(11 candidate pairs tested in total; the **9** failures are the negative set — the same
+denominator D3 records for the corrected harness. An earlier draft of this line said
+"8 pairs / six failures", which contradicts D3 and the two successes shown above.)
 Scope is limited — see C4 — so this is an information-disclosure and
 attack-surface finding, not a foothold to root.
 
@@ -557,7 +559,8 @@ credential pairs. It was wrong: the login had **succeeded**, and the giveaway wa
 in the cookie jar, which I read only after suspecting the answer.
 
 ```
-session cookies: {'phpMyAdmin': 'ajj11hi6ql4v', 'pma_lang': 'en', 'pmaUser-1': '%2B130cqH81h', 'pmaAuth-1': '2HhtjN%2ByIP'}
+session cookies: {'phpMyAdmin': 'ajj11hi6ql4v', 'pma_lang': 'en', 'pmaUser-1': '<redacted>',
+                'pmaAuth-1': '<redacted — session token value>'}   # values dropped, keys kept
 ```
 
 `pmaAuth-1` is set only on successful authentication. The re-run with a real

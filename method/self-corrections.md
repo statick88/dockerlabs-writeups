@@ -340,7 +340,7 @@ position it cannot compute is the same mistake written down.
 Lab 117 filed a security finding that WordPress' auth cookie key "derives from a
 public constant" because `wp-config.php` ships all eight keys as the install
 placeholder. It quoted three runtime lines as proof — including
-`wp_salt('auth') strlen=128`. **A 33-character placeholder cannot produce a
+`wp_salt('auth') strlen=128`. **A 27-character placeholder cannot produce a
 128-character salt, so the quoted output was already refuting the sentence next to
 it.** The two real errors:
 
@@ -417,6 +417,41 @@ len(re.split(r'(?<!\\)\|', row.strip())) - 2 == len(header_cells)
 
 Run it over **every** row, not the ones that look wrong. Neither worker noticed,
 and both reported their row as verified.
+
+### The same check has a second half, and its absence is how three labs got counted twice
+
+The cell-count check **passes on a duplicated row**. A byte-identical copy has exactly
+as many cells as its original, so §24 as written above is blind to the failure it
+was most needed for.
+
+It happened here. `corpus/INDEX.md` carried **64 data rows for 61 unique labs**: labs
+**162**, **166** and **245** each appeared **twice**, the second copy **byte-identical**
+to the first — same six cells, same order, same text. Every row passed the cell-count
+check. Nothing rendered wrong. The index simply claimed three engagements twice, and
+**any rollup over it double-counts them**: reward tallies, class frequencies, per-class
+counts, "labs that refute rule N". Those are the numbers this repo exists to produce,
+and they were silently inflated by three.
+
+**Rule.** The cell-count check and the **id-uniqueness** check are one gate, run
+together, over the same rows:
+
+```python
+import re, collections
+def cells(line):                      # unescaped pipes only — see above
+    return [c.strip() for c in re.split(r'(?<!\\)\|', line.strip()[1:-1])]
+rows = [cells(l) for l in open('corpus/INDEX.md', encoding='utf-8')
+        if l.startswith('| ') and not l.startswith('|---') and not l.startswith('| # ')]
+assert all(len(r) == 6 for r in rows), 'cell count'          # §24
+ids = [r[0] for r in rows]
+dups = [i for i, n in collections.Counter(ids).items() if n > 1]
+assert not dups, f'duplicate lab ids: {dups}'                # this half
+```
+
+Two things worth stating, because the check is cheap and neither is visible from the
+file: **duplicate ids are always a transcription defect**, never a legitimate second
+row (a lab has one engagement and one writeup — `corpus/<id>/` is unique on disk, and
+that is the authority, not the table); and the row count must equal the unique-id count
+**before** any figure derived from this table is published anywhere.
 
 ## 25. A clone of the target is not the target
 

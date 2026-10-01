@@ -265,7 +265,7 @@ filename, and I am not claiming one.
 </Directory>
 ```
 
-### F2 — The shipped plugin is fatally incomplete: two required classes are absent, so **all 15 of its own AJAX actions return HTTP 500** (lab-design / availability defect)
+### F2 — The shipped plugin is fatally incomplete: two required classes are absent, so **every one of its 15 registered AJAX actions dies at the same missing `require_once`** (lab-design / availability defect) — **4 of them were sent and returned HTTP 500; the other 11 are inferred from the shared load path, not probed**
 
 The lab's declared attack surface is the plugin. It cannot be reached.
 
@@ -305,9 +305,13 @@ which is why the ordinary admin pages render fine and only the plugin's own surf
 `POST /wp-admin/admin-ajax.php` requests with `sed_page_ajax` set — `action=add_zipped_font`
 (×3, once per freshly-minted nonce) and `action=sed_app_refresh_nonces` (×1) — all returned
 **HTTP 500, 181 bytes, identical body**, and the fatal count in `/var/log/apache2/error.log`
-rose from 1 to **5** (5 `PHP Fatal error:` lines in `evidence/apache-error.log`, timestamps
-09:10:07 + four within 0.7 s at 09:13:19–09:13:20). A control that has never fired is not a
-control; this one fired four times in a row.
+rose from 1 to **5** (a **delta of 4**). `evidence/apache-error.log` holds **11** `PHP Fatal
+error:` lines from **three unrelated causes**; the **5** that count here are the ones whose cause
+is the missing dependency classes — 1 already present at 09:10:07 plus the 4 this control added
+within 0.7 s at 09:13:19–09:13:20. The other 6 are not this finding: 3 from `create_function()`
+being removed in PHP 8 (May 2024, 3 timestamps), 2 `add_action()` called before WordPress
+loaded (09:01:53, 09:02:26), and 1 `Undefined constant "ABSPATH"` (09:06:02). A control that
+has never fired is not a control; this one fired four times in a row.
 
 **Consequence for the writeup.** The 15 registered actions —
 `add_zipped_font`, `sed_upload_attachment`, `customize_save`, `sed_save_preset`, `sed_create_preset`,
@@ -341,10 +345,12 @@ container** ~35 s after start. **Reproduced twice**, from a clean `docker run`, 
 `Exited (1)`. The declared escalation half is therefore untestable here, and the reason is
 hardware, not configuration.
 
-The seed data MongoDB was supposed to load is still on disk, readable by `www-data` (mode 666):
+The seed data MongoDB was supposed to load is still on disk, **writable by `www-data`** (mode
+`777` — the `rwx` bits are there too, but the fact this finding needs is world-**write**, and
+quoting it as "666" understated the executable bit):
 
 ```
--rwxrw-rw- 1 root root 127 May 16  2024 /opt/accesos.usuarios.json
+-rwxrwxrwx 1 root root 127 May 16  2024 /opt/accesos.usuarios.json
 [{
   "_id": { "$oid": "6645f4456682cdae1b46b799" },
   "nombre": "dbadmin",
@@ -411,7 +417,7 @@ running after 20 minutes* (runtime). Both are stated; neither is inferred from t
 | No `FLAG{}` on the filesystem | **7 roots listed** (`/var/www/html`, `/opt`, `/root`, `/home`, `/etc`, `/tmp`, `/usr/local`), **26 698 files visited**, **605 996 069 bytes visited**, `grep -rIl` → **0 matches** | Evidence, measured absence |
 | No privilege escalation from `www-data` | `sudo -n -l` → `sh: 1: sudo: not found` (**sudo is not installed**); `/etc/sudoers` `readable=0`; `/etc/sudoers.d` `scandir=ERR`; setuid sweep `find / -xdev -perm -4000` → **10 files, all stock** (`passwd`, `chsh`, `gpasswd`, `newgrp`, `chfn`, `mount`, `umount`, `su`, `ssh-keysign`, `dbus-daemon-launch-helper`); `/etc/cron.d` → **4 entries**, `/etc/crontab` `exists=0`, `/var/spool/cron/crontabs/root` `exists=0`; `users_with_uid0` → `root` only; `/etc/shadow` `readable=0`; `/root` `readable=0` | Evidence, measured absence |
 | No MongoDB to attack | `mongod --version` → `Illegal instruction (core dumped)`; `/proc/net/tcp` listeners `22, 80, 3306` — **0** on 27017; `/proc/net/udp` — **0** sockets; `nmap -p-` → 65 535 closed; `/var/lib/mongo` `exists=0` | **NOT tested** — see below |
-| Plugin AJAX surface dead | 4 requests, **4/4** HTTP 500, 181 bytes each; fatal count in the error log 1 → **5** (5 `PHP Fatal error:` lines in `evidence/apache-error.log`) | Evidence, measured absence |
+| Plugin AJAX surface dead | 4 requests, **4/4** HTTP 500, 181 bytes each; fatal count in the error log 1 → **5** (a **delta of +4**; the file's 11 `PHP Fatal error:` lines span 3 causes, 5 of them this one) | Evidence, measured absence — the remaining 11 actions are inferred from the shared load path, not probed |
 | `weird.CSS` skipped by the plugin's filter | 9 entry names tested against the artefact's own regex list (`icon-library.php:247`): `ok.css` WRITE, `control.txt` SKIP, `poc.css.php` WRITE, `control.php.css` WRITE, `x.php` SKIP, `dir/ok.svg` WRITE, `weird.CSS` SKIP, `poc.phpml` SKIP, `a.json.php` WRITE — **9/9 verdicts** | Evidence (§7, defect 3) |
 | Password guessing | First run: **15 candidates, all reported as successes** (defect below). Second run with a clean cookie jar: **3 candidates, 1 accepted**, 2 correctly rejected (`http=200, logged_in_cookies=0`) | The corrected run is the evidence; the first is §7 defect 1 |
 
