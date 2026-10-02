@@ -67,7 +67,7 @@
 | 268 | kmspwned | (no engagement) | — | **NO OBTENIBLE**: el servidor trunca el archivo al 75–95% de sus 116 916 224 bytes y `Range` devuelve `200` en vez de `206`, así que la cola es inalcanzable y no hay reanudación posible | **nunca alcanzado** — ver [`HOW-IT-WAS-RESOLVED.md`](HOW-IT-WAS-RESOLVED.md) |
 | 254 | Gotham | (no engagement) | — | **NO OBTENIBLE — truncado, y el servidor miente sobre `Content-Length`**: sirve 107 479 040 bytes = **102,5 MiB exactos**, un límite redondo de proxy, y reporta ESA longitud como completa. Las propias entradas del archivo declaran 107 575 879, así que **faltan 96 839 bytes**. El `gotham.tar` interno declararía 337 918 976 sin comprimir. Seis descargas, tamaño y fallo idénticos | **nunca alcanzado** — §32 |
 
-**39 of the 59 engagements have no reward value.** *Criterion, stated so it can be
+**43 of the 62 engagements have no reward value.** *Criterion, stated so it can be
 re-checked:* a row counts as **reward obtained** only when its Reward cell records a value
 **actually retrieved in the target** — a literal `prefix{…}` token, a credential, a hash, or
 file content read out — not when it merely asserts that a token exists somewhere. That
@@ -75,9 +75,35 @@ distinction is load-bearing here: **3 rows (115, 220, 282)** record tokens that 
 never reached, and they count as **no reward**. A literal token search over the cells miscounts
 it, because `FLAG{` also appears inside **negative-claim prose** in ~10 cells (*"ausencia
 medida: 2 ficheros `FLAG{` = clase CSS"* and similar); those are **not** rewards. By the
-criterion above: **17 obtained**, **3 exist-but-unreached**, **39 none**, and the 2
-`NO OBTENIBLE` rows (254, 268) are counted apart, having no engagement at all — 61 unique
-rows in total. A reward that is invented teaches the reader nothing about the finding it is
+criterion above: **19 obtained**, **3 exist-but-unreached**, **40 measured-absent**, and the 2
+`NO OBTENIBLE` rows (254, 268) are counted apart, having no engagement at all — 64 unique
+rows in total. Those four groups are **disjoint and exhaustive**: `19 + 3 + 40 + 2 = 64`, so the
+43 with no reward is `3 + 40`, not `40` — the earlier version of this paragraph read
+"39 of the 59 … 17 obtained, 3 exist-but-unreached, 39 none", where the 39 omitted the 3, and the
+bucket that named them was not part of the total it was counted in. A tally whose parts do not
+sum to its whole is the failure this corpus exists to catch, and it survived here in the file that
+publishes the tally. A reward that is invented teaches the reader nothing about the finding it is
 attached to, which is the standard every cell above was held to.
+
+*Re-check:* the tally is a pure function of the Reward column, so it can be recomputed and
+refuted without trusting this paragraph. Cells leading with `—` carry no reward; cells
+asserting an unreachable token are the existence-only set; everything else is obtained.
+Two cells resist the mechanical rule and are named in `JUDGED` so the choice stays visible
+instead of buried — 167 (a user retrieved in the target, but the cell opens with `—` and
+declares itself unresolved) and 188 (a `CTF{` hit count whose one identified file is the
+operator's own script). Flip either entry to re-count them.
+
+```bash
+cd /home/search14/dockerlabs-writeups && python3 -c "
+import re
+rows=[l for l in open('corpus/INDEX.md',encoding='utf-8') if re.match(r'^\|\s*\d{1,3}\s*\|',l)]
+cells={r.split('|')[1].strip(): r.split('|')[-2].strip() for r in rows}
+eng={k:v for k,v in cells.items() if 'nunca alcanzado' not in v}
+JUDGED={'167','188'}
+unreached={k for k,v in eng.items() if 'ninguna alcanzable' in v or 'no desde dentro del contenedor' in v}
+obt={k for k,v in eng.items() if not v.startswith('—') and k not in unreached and k not in JUDGED}
+print(len(obt),'obtained |',len(unreached),'exist-but-unreached |',len(eng)-len(obt)-len(unreached),'none |',len(eng),'engagements |',len(cells),'rows')
+"
+```
 
 [`PILOT-SUMMARY.md`](PILOT-SUMMARY.md) covers the first five as a set.

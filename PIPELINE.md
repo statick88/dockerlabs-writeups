@@ -128,7 +128,10 @@ Per solved lab the parent does, and verifies by **count, never by report**:
 2. `labs.manifest` — one `id|Name|difficulty|gap` line
 3. `RUNBOOK.md` §5 — add the class if absent, **extend the row if present**
 4. `method/self-corrections.md` — add any instrument defect that misled a worker
-5. Reconcile: `manifest count == corpus count + 1` (the `+1` is the unobtainable lab)
+5. Reconcile: `manifest count == corpus count + unobtainable`, where `unobtainable` is
+   the **count** of permanently unobtainable labs, not a `+1` — it is **2** today
+   (**254 Gotham** and **268 kmspwned**: CDN truncation with no `Range` support), so
+   `64 == 62 + 2`. Write the number down; a bare `+1` is what produced the wrong total.
 
 **An existing rule that survived a fresh case is stronger than a new rule with
 one.** Extend before you add.

@@ -14,12 +14,13 @@
 <p>The resolution layer: for every engagement, <strong>the class, the discriminator that
 settled it, and where the evidence is</strong>. Derived from the writeups, not from
 anyone's memory — which is why the columns can be checked.</p>
-<p><strong>Read this first if you read nothing else.</strong> Thirty-seven of the sixty-two engagements carry
-no reward value, and that is a <em>measurement</em>, not an oversight — the criterion is stated
-below, because an unstated criterion is how a count rots. Four produced a
-class the queue had mislabelled. Six carry a defect in the lab's own design. One
-cannot be obtained at all. A report that says &quot;52 of 52 solved&quot; is wrong in five
-different ways, and this file is where those five are named.</p>
+<p><strong>Read this first if you read nothing else.</strong> Forty-one of the sixty-two engagements carry
+no reward value — <strong>thirty-eight</strong> measured as none at all, plus <strong>three</strong> whose token exists
+but was never reached — and that is a <em>measurement</em>, not an oversight: the criterion is
+<a href="labs.html"><code>INDEX.md</code></a>'s own, restated at the foot of that table, because an unstated
+criterion is how a count rots. Four produced a class the queue had mislabelled. Six carry a
+defect in the lab's own design. <strong>Two</strong> cannot be obtained at all. A report that says
+&quot;52 of 52 solved&quot; is wrong in five different ways, and this file is where those five are named.</p>
 <hr />
 <h2 id="the-shape-of-a-resolution">The shape of a resolution</h2>
 <p>Every chain in this corpus ends the same way, and that is the transferable part:</p>
@@ -148,6 +149,24 @@ names which.</strong></p>
 <td>absent, proven</td>
 </tr>
 <tr>
+<td><a href="writeups/73-chocoping.html">73</a> ChocoPing</td>
+<td>a deny-list gate whose <strong>escape hatch is the bypass detector</strong> → unescaped <code>shell_exec</code> → sudoers → ZipCrypto → pcap</td>
+<td><code>is_bypass_command</code> is <code>preg_match('/[a-zA-Z]+\\')</code> — <strong>any <code>x\</code> opens it</strong> — and <code>ping.php:22</code> is a bare <code>shell_exec($ip)</code> where <code>:17</code> escapes; <code>error.log</code> names <code>:17</code>'s own argument, so the empty first <code>&lt;pre&gt;</code> is the decoy, not a refusal</td>
+<td>el par de credenciales del <code>.pcap</code>; <strong>ambos fallan contra <code>su</code></strong>, así que no es un login — sin token de flag, <code>balutin</code> <code>uid=1000</code>, root no alcanzado</td>
+</tr>
+<tr>
+<td><a href="writeups/77-galeria.html">77</a> galeria</td>
+<td>upload sin comprobación en la aplicación; los tres chequeos se reparten</td>
+<td><code>.php5</code> es el <strong>único</strong> nombre que voltea en el diferencial de cuatro estados de <code>.htaccess</code>: <code>AllowOverride All</code> vuelve decisiva la línea 2, que el mapa global <code>\.php(\..+)?$</code> rechaza; <code>dpkg -V libapache2-mod-php8.3</code> → <code>??5??????</code> sobre <code>php8.3.conf:29-31</code></td>
+<td>absent, proven — root alcanzado y <code>FLAG{</code> ausente en 14 193 ficheros a <code>euid=0</code> y en 35 270 796 724 B fuera</td>
+</tr>
+<tr>
+<td><a href="writeups/78-bypassme.html">78</a> Bypassme</td>
+<td>bypass de autenticación por <strong>subcadena</strong>, sin SQL en la aplicación</td>
+<td><code>'1'='1zzz</code> sigue autenticando (<code>Location: index.php?page=welcome</code>) — ningún motor SQL aceptaría basura final; y <code>php -m</code> lista <code>PDO</code> <strong>sin driver</strong>, <code>/var/www</code> → <strong>0</strong> ficheros que mencionen <code>mysqli</code>, <code>pgsql</code> o <code>sqlite</code></td>
+<td>absent, proven: 9 prefijos, ambos casos y ambas llaves, <strong>0</strong> de 13 782 ficheros / 812 440 752 B, control verde primero</td>
+</tr>
+<tr>
 <td><a href="writeups/82-ejotapete.html">82</a> Ejotapete</td>
 <td><strong>Drupal 8.5.0</strong>, no WordPress</td>
 <td>el fix son 99 líneas <strong>una capa por encima</strong> de todo formulario: <code>diff -u</code> de <code>FormBuilder.php</code> 8.5.0→8.5.1 <strong>no produce salida</strong>, y <code>find -name RequestSanitizer.php</code> → <strong>0</strong></td>
@@ -262,10 +281,22 @@ names which.</strong></p>
 <td><code>FLAG{}</code> recovered</td>
 </tr>
 <tr>
+<td><a href="writeups/162-pkgpoison.html">162</a> PkgPoison</td>
+<td><code>sudoers</code> <strong>argument specification</strong> delegating a package installer</td>
+<td><code>install *</code>: 14 forms measured, and <code>sudo -n /usr/bin/pip3 install ;id</code> reaches pip <strong>literalmente</strong> (<code>rc=2</code>, 6 274 B) — el <code>setup.py</code> elegido corre como <code>uid=0</code></td>
+<td>absent, proven a <code>uid=0</code>: 17 577 ficheros / 500 149 523 B / 6 patrones / 0</td>
+</tr>
+<tr>
 <td><a href="writeups/163-ofuskeit.html">163</a> Ofuskeit</td>
 <td>JS deobfuscation</td>
 <td>the client string table is attack surface</td>
 <td><code>FLAG{}</code> recovered</td>
+</tr>
+<tr>
+<td><a href="writeups/166-influencerhate.html">166</a> InfluencerHate</td>
+<td>dos rutas de fuerza bruta sobre <strong>dos almacenes de identidad</strong></td>
+<td><strong>el almacén, no la tasa</strong>: ruta A corre apr1 a 3 577/s contra 3 263 628/s de 1×MD5 = <strong>912×</strong>, y la ruta B evalúa <strong>cero</strong> candidatos por barrido; una escalera in-band da la respuesta <strong>equivocada</strong> (A es 1.71× más rápida)</td>
+<td>absent, proven a <code>euid=0</code>: 6 patrones / 12 275 ficheros / 0, con 3 controles verdes</td>
 </tr>
 <tr>
 <td><a href="writeups/167-winfake.html">167</a> WinFake</td>
@@ -278,6 +309,12 @@ names which.</strong></p>
 <td>ejecución de comandos; el filtro es <strong>ninguno</strong></td>
 <td>la app se distribuye <strong>sin su dependencia</strong> (<code>ping_rc=127</code>): el <code>200</code> de 359 B es el fallo del sumidero y <code>&amp;&amp;</code> <strong>nunca dispara</strong> — y la ausencia de filtro la establecen <strong>recuentos con control positivo</strong>, no un 403</td>
 <td>ausente, probado: <code>FLAG{</code> en 0 de 15 132 ficheros</td>
+</tr>
+<tr>
+<td><a href="writeups/169-spiderroot.html">169</a> SpiderRoot</td>
+<td><strong>la rama de detección del filtro es la divulgación</strong> → SSH → panel de loopback → directorio escribible por grupo</td>
+<td>la blacklist de 5 ítems de <code>multiverse.php:15</code> (<code>[ ' &quot; UNION -- #</code>) <strong>no interseca</strong> con la regex de ofuscación <code>:46</code>, que casa <code>or</code> y <code>and</code> con cada letra en mayúscula o minúscula: el token literal <code>or</code> la atraviesa y dispara la rama que vuelca <code>$users</code></td>
+<td><code>Grooti16</code> — <code>/root/flag.txt</code> leído a <code>euid=0</code> (insignia en braille + la firma); <strong>no hay token <code>FLAG{}</code></strong>, y no se barrió el árbol en busca de él</td>
 </tr>
 <tr>
 <td><a href="writeups/172-crossfi.html">172</a> Crossfi</td>
@@ -316,10 +353,22 @@ names which.</strong></p>
 <td><code>FLAG{}</code> recovered</td>
 </tr>
 <tr>
+<td><a href="writeups/219-talent.html">219</a> Talent</td>
+<td><strong>la vulnerabilidad decisiva está en el artefacto de build, no en la web</strong></td>
+<td><code>/entrypoint.sh:115-116</code> corre <code>wp core install --admin_user=&quot;admin&quot; --admin_password=&quot;admin&quot;</code> — ningún CVE de WordPress la alcanza; y la escalada que sí anuncia está <strong>rota</strong>: <code>sudoers</code> nombra <code>/usr/bin/python3</code>, que <strong>no existe en la imagen</strong> (<code>sudo -l</code> verde, <code>command not found</code> al ejecutarlo)</td>
+<td><code>LNDSG98DSFG7D8SGY8SDFG9</code> — <code>[lab-home]/flag.txt</code> es <code>644 www-data:www-data</code>, así que la recompensa cae en el <strong>primer</strong> salto; root <strong>no</strong> obtenido</td>
+</tr>
+<tr>
 <td><a href="writeups/220-cuentaatras.html">220</a> CuentaAtrás</td>
 <td>account lifecycle</td>
 <td>a confirmation channel that <strong>does not exist</strong></td>
 <td>absent; reward unreachable</td>
+</tr>
+<tr>
+<td><a href="writeups/234-secornotsec.html">234</a> SECorNOTsec</td>
+<td>blocklist de cadenas; el bypass es un token que <strong>nunca se listó</strong></td>
+<td><code>app.py:47</code> omite <code>&amp;</code>, <code>&lt;</code>, <code>&gt;</code> y el salto de línea — y <code>app.py:58</code> lo dice: <em>&quot;Vulnerable a inyección via '&amp;' o '%0a'&quot;</em> — mientras <strong>13 de 13</strong> tokens listados se bloquean a 2 239 B / 0.00 s con control positivo verde; los cuatro estados se separan por <strong>bytes</strong> (2 239 / 2 532 / 2 598 / 2 227), nunca por el código de estado</td>
+<td>absent, proven a <code>euid=0</code>: 14 291 ficheros / 485 926 780 B, 4 controles positivos</td>
 </tr>
 <tr>
 <td><a href="writeups/238-autoescuela.html">238</a> Autoescuela</td>
@@ -328,10 +377,22 @@ names which.</strong></p>
 <td>absent, proven</td>
 </tr>
 <tr>
+<td><a href="writeups/242-workconnect.html">242</a> WorkConnect</td>
+<td>oráculo de existencia sobre un identificador estructurado; <strong>la etiqueta de la cola es el hallazgo</strong></td>
+<td><code>grep -rIo -i &quot;dns&quot; /opt/workconnect</code> → <strong>0</strong> y 0 sockets UDP retiran la clase DNS; <code>main.py:69-73</code> nombra la real, y 26 000 candidatos dan dos conjuntos de tamaño <strong>disjuntos</strong> (2 268 presente / 1 332 ausente), <strong>0</strong> INDETERMINADOS</td>
+<td>absent, proven a <code>euid=0</code>: <code>FLAG{</code> → 0 de 13 969 ficheros / 291 034 473 B</td>
+</tr>
+<tr>
 <td><a href="writeups/243-duque.html">243</a> Duque</td>
 <td>dos bugs web, y son <strong>independientes</strong></td>
 <td>el admin entra <strong>sin inyección alguna</strong> (<code>Admin</code>/<code>admin123</code>, 200/79 B) ⇒ arreglar la SQLi no arregla el otro; y el caso intermedio es un <strong>refusal</strong> (5 467 B, <code>Acceso Denegado</code>), no una lectura cruzada</td>
 <td>ausente, probado, con control positivo</td>
+</tr>
+<tr>
+<td><a href="writeups/245-trailpack.html">245</a> TrailPack</td>
+<td>cuatro bugs declarados: una puerta, tres colgantes, uno inerte</td>
+<td><code>X-Forwarded-For</code> <strong>es</strong> la clave del cubo y <strong>nunca se valida como IP</strong>: un valor constante <strong>reutilizado</strong> sigue limitando (contador <code>2 → 1 → 0</code>, 9 265 B, cuenta atrás 59) mientras los valores rotados lo <strong>congelan</strong> en <code>2</code>; 1 846 peticiones / 6.257 s = 295.0 req/s frente a 55.57 h</td>
+<td><code>FLAG{cl13nt_s1d3_r0l3_1s_n0_s3cur1ty}</code></td>
 </tr>
 <tr>
 <td><a href="writeups/249-adopting.html">249</a> Adopting</td>
@@ -400,9 +461,15 @@ names which.</strong></p>
 <td><code>FLAG{}</code> recovered</td>
 </tr>
 <tr>
-<td><a href="labs.html">6→268</a> kmspwned</td>
+<td><a href="labs.html">254</a> Gotham</td>
 <td>—</td>
-<td><strong>unobtainable</strong>: truncated at 75–95%, no Range</td>
+<td><strong>unobtainable, y no existe writeup</strong>: el servidor sirve <strong>107 479 040 B = 102.5 MiB exactos</strong>, un límite redondo de proxy, y reporta <em>esa</em> longitud como <code>Content-Length</code> completa; las propias entradas del archivo declaran 107 575 879, así que <strong>faltan 96 839 B</strong>. Seis descargas, tamaño y fallo idénticos (§32)</td>
+<td>never reached</td>
+</tr>
+<tr>
+<td><a href="labs.html">268</a> kmspwned</td>
+<td>—</td>
+<td><strong>unobtainable, y no existe writeup</strong>: <code>kmspwned.zip</code> muere entre el 75% y el 95% de sus <strong>116 916 224 B</strong> en cuatro intentos seguidos con <code>curl</code> saliendo en <strong>0</strong>, y <code>Range</code> se responde <code>200</code> en vez de <code>206</code>: la cola es inalcanzable</td>
 <td>never reached</td>
 </tr>
 </tbody>
@@ -440,8 +507,17 @@ identity reached, 168 ships an application whose own binary is missing, 282's
 execute as written. Reported as the lab's problem, not the tester's.</p>
 </li>
 <li>
-<p><strong>One is permanently unobtainable.</strong> 268 is truncated by the server and there is
-no Range, so it cannot be resumed. Not pending work.</p>
+<p><strong>Two are permanently unobtainable, for two different reasons.</strong> <strong>268 kmspwned</strong>
+(<code>kmspwned.zip</code>, 116 916 224 B) dies between 75% and 95% on four consecutive
+attempts with <code>curl</code> exiting <strong>0</strong>, and <code>Range</code> is answered <code>200</code> instead of
+<code>206</code> — the tail is unreachable, so the transfer cannot be resumed. <strong>254 Gotham</strong>
+is a separate failure and not a restatement of it: the platform serves
+<strong>107 479 040 B, exactly 102.5 MiB</strong>, a round proxy boundary, and reports <em>that
+truncated length</em> as the complete <code>Content-Length</code>; the archive's own last entry
+declares 107 575 879, so <strong>96 839 B are missing</strong> and the headers say nothing
+about it (§32). Six downloads produced the identical size and the identical
+failure. Neither is pending work, and the second one is the one that a
+<code>size == expected</code> check cannot see.</p>
 </li>
 <li>
 <p><strong>Four did not fully succeed and say so.</strong> Lab 115 reached no RCE and lists its

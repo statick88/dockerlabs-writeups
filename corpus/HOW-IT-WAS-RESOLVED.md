@@ -4,12 +4,13 @@ The resolution layer: for every engagement, **the class, the discriminator that
 settled it, and where the evidence is**. Derived from the writeups, not from
 anyone's memory — which is why the columns can be checked.
 
-**Read this first if you read nothing else.** Thirty-seven of the sixty-two engagements carry
-no reward value, and that is a *measurement*, not an oversight — the criterion is stated
-below, because an unstated criterion is how a count rots. Four produced a
-class the queue had mislabelled. Six carry a defect in the lab's own design. One
-cannot be obtained at all. A report that says "52 of 52 solved" is wrong in five
-different ways, and this file is where those five are named.
+**Read this first if you read nothing else.** Forty-one of the sixty-two engagements carry
+no reward value — **thirty-eight** measured as none at all, plus **three** whose token exists
+but was never reached — and that is a *measurement*, not an oversight: the criterion is
+[`INDEX.md`](INDEX.md)'s own, restated at the foot of that table, because an unstated
+criterion is how a count rots. Four produced a class the queue had mislabelled. Six carry a
+defect in the lab's own design. **Two** cannot be obtained at all. A report that says
+"52 of 52 solved" is wrong in five different ways, and this file is where those five are named.
 
 ---
 
@@ -67,6 +68,9 @@ names which.**
 | [61](61/BADPLUGIN-WRITEUP.md) BadPlugin | plugin trust: activated code | 46 REST routes, all `manage_options`, **zero** `__return_true` | absent, proven |
 | [62](62/RAAS-WRITEUP.md) Raas | reversing a ransomware binary | round-trip oracle on its own `system()` | functional reward, no `FLAG{}` |
 | [65](65/SEEKER-WRITEUP.md) Seeker | subdomain fuzzing over virtual hosting | a name that **cannot exist** shares the baseline hash | absent, proven |
+| [73](73/CHOCOPING-WRITEUP.md) ChocoPing | a deny-list gate whose **escape hatch is the bypass detector** → unescaped `shell_exec` → sudoers → ZipCrypto → pcap | `is_bypass_command` is `preg_match('/[a-zA-Z]+\\')` — **any `x\` opens it** — and `ping.php:22` is a bare `shell_exec($ip)` where `:17` escapes; `error.log` names `:17`'s own argument, so the empty first `<pre>` is the decoy, not a refusal | el par de credenciales del `.pcap`; **ambos fallan contra `su`**, así que no es un login — sin token de flag, `balutin` `uid=1000`, root no alcanzado |
+| [77](77/GALERIA-WRITEUP.md) galeria | upload sin comprobación en la aplicación; los tres chequeos se reparten | `.php5` es el **único** nombre que voltea en el diferencial de cuatro estados de `.htaccess`: `AllowOverride All` vuelve decisiva la línea 2, que el mapa global `\.php(\..+)?$` rechaza; `dpkg -V libapache2-mod-php8.3` → `??5??????` sobre `php8.3.conf:29-31` | absent, proven — root alcanzado y `FLAG{` ausente en 14 193 ficheros a `euid=0` y en 35 270 796 724 B fuera |
+| [78](78/BYPASSME-WRITEUP.md) Bypassme | bypass de autenticación por **subcadena**, sin SQL en la aplicación | `'1'='1zzz` sigue autenticando (`Location: index.php?page=welcome`) — ningún motor SQL aceptaría basura final; y `php -m` lista `PDO` **sin driver**, `/var/www` → **0** ficheros que mencionen `mysqli`, `pgsql` o `sqlite` | absent, proven: 9 prefijos, ambos casos y ambas llaves, **0** de 13 782 ficheros / 812 440 752 B, control verde primero |
 | [82](82/EJOTAPETE-WRITEUP.md) Ejotapete | **Drupal 8.5.0**, no WordPress | el fix son 99 líneas **una capa por encima** de todo formulario: `diff -u` de `FormBuilder.php` 8.5.0→8.5.1 **no produce salida**, y `find -name RequestSanitizer.php` → **0** | secreto funcional, no `FLAG{}` (0 de 23 898 ficheros; el único `flag{` es una clase jQuery UI) |
 | [83](83/GROOTI-WRITEUP.md) Grooti | enumeración; escalada = un bit de modo | `root:grooti` modo **764**: el grupo tiene `w` y `grooti` es su grupo primario — y el crontab de `grooti` **no puede dispararse nunca**, `/opt/cleanup.sh` es 754 y da **rc=126** leído como `grooti` | arte braille en `/root/grooti.txt` a `euid=0`; no `FLAG{}` |
 | [84](84/WAFFY-WRITEUP.md) Waffy | ModSecurity + OWASP CRS | the CRS scores **variables**; the sink composes them | absent, proven |
@@ -86,18 +90,25 @@ names which.**
 | [141](141/DOCKERLABS-WRITEUP.md) DockerLabs | container security | socket exposed; a container **with** the socket as positive control | `FLAG{}` recovered |
 | [146](146/ELEVATOR-WRITEUP.md) Elevator | global MIME→handler mapping | a 3-state `.htaccess` differential | `FLAG{}` recovered |
 | [148](148/SPAIN-WRITEUP.md) Spain | buffer overflow + pickle | the KDF's **absence** in the import table | `FLAG{}` recovered |
+| [162](162/PKGPOISON-WRITEUP.md) PkgPoison | `sudoers` **argument specification** delegating a package installer | `install *`: 14 forms measured, and `sudo -n /usr/bin/pip3 install ;id` reaches pip **literalmente** (`rc=2`, 6 274 B) — el `setup.py` elegido corre como `uid=0` | absent, proven a `uid=0`: 17 577 ficheros / 500 149 523 B / 6 patrones / 0 |
 | [163](163/OFUSKEIT-WRITEUP.md) Ofuskeit | JS deobfuscation | the client string table is attack surface | `FLAG{}` recovered |
+| [166](166/INFLUENCERHATE-WRITEUP.md) InfluencerHate | dos rutas de fuerza bruta sobre **dos almacenes de identidad** | **el almacén, no la tasa**: ruta A corre apr1 a 3 577/s contra 3 263 628/s de 1×MD5 = **912×**, y la ruta B evalúa **cero** candidatos por barrido; una escalera in-band da la respuesta **equivocada** (A es 1.71× más rápida) | absent, proven a `euid=0`: 6 patrones / 12 275 ficheros / 0, con 3 controles verdes |
 | [167](167/WINFAKE-WRITEUP.md) WinFake | el código fuente **es** la entrada | CSS inválido (`top: pipe;`, `index.html:14`) **nombra la cuenta**, y el caso especial `su root` (`windows.py:215`) está **ausente** de la blocklist de 18 de la línea 35 | parcial: `user.txt` leído en el target como `uid=1000`; `root.txt` sólo como propiedad de la imagen |
 | [168](168/PINGCTF-WRITEUP.md) PingCTF | ejecución de comandos; el filtro es **ninguno** | la app se distribuye **sin su dependencia** (`ping_rc=127`): el `200` de 359 B es el fallo del sumidero y `&&` **nunca dispara** — y la ausencia de filtro la establecen **recuentos con control positivo**, no un 403 | ausente, probado: `FLAG{` en 0 de 15 132 ficheros |
+| [169](169/SPIDERROOT-WRITEUP.md) SpiderRoot | **la rama de detección del filtro es la divulgación** → SSH → panel de loopback → directorio escribible por grupo | la blacklist de 5 ítems de `multiverse.php:15` (`[ ' " UNION -- #`) **no interseca** con la regex de ofuscación `:46`, que casa `or` y `and` con cada letra en mayúscula o minúscula: el token literal `or` la atraviesa y dispara la rama que vuelca `$users` | `Grooti16` — `/root/flag.txt` leído a `euid=0` (insignia en braille + la firma); **no hay token `FLAG{}`**, y no se barrió el árbol en busca de él |
 | [172](172/CROSSFI-WRITEUP.md) Crossfi | CSRF, two levels | the token lives in the cookie ⇒ forgeable | `FLAG{}` recovered |
 | [186](186/TOKENASO-WRITEUP.md) Tokenaso | race condition | the check and the act, measured apart | absent, proven |
 | [188](188/WARGAMES-WRITEUP.md) Wargames | reconocimiento; la credencial vive en la **capa de build** | la credencial existe **sólo en una capa de build**: el `chpasswd` de `docker history` la deja en claro y **ningún fichero de ejecución** la contiene — `/etc/shadow` guarda un hash yescrypt, no hay `.bash_history`, ni `authorized_keys`, ni script de build | `WOPR{…}` recuperado a `euid=0`; no hay `FLAG{}` |
 | [189](189/ROLAROLA-WRITEUP.md) Rolarola | command injection + pickle | an **undeclared** sudoers grant, no arg restriction | absent, proven |
 | [209](209/PROFETAS-WRITEUP.md) Profetas | XXE + deobfuscation | a return value known in advance | `FLAG{}` recovered |
 | [218](218/INTERNAL-WRITEUP.md) Internal | two-layer PHP WAF | two 403 bodies, one WAF — hash them separately | `FLAG{}` recovered |
+| [219](219/TALENT-WRITEUP.md) Talent | **la vulnerabilidad decisiva está en el artefacto de build, no en la web** | `/entrypoint.sh:115-116` corre `wp core install --admin_user="admin" --admin_password="admin"` — ningún CVE de WordPress la alcanza; y la escalada que sí anuncia está **rota**: `sudoers` nombra `/usr/bin/python3`, que **no existe en la imagen** (`sudo -l` verde, `command not found` al ejecutarlo) | `LNDSG98DSFG7D8SGY8SDFG9` — `/home/flag.txt` es `644 www-data:www-data`, así que la recompensa cae en el **primer** salto; root **no** obtenido |
 | [220](220/CUENTAATRAS-WRITEUP.md) CuentaAtrás | account lifecycle | a confirmation channel that **does not exist** | absent; reward unreachable |
+| [234](234/SECORNOTSEC-WRITEUP.md) SECorNOTsec | blocklist de cadenas; el bypass es un token que **nunca se listó** | `app.py:47` omite `&`, `<`, `>` y el salto de línea — y `app.py:58` lo dice: *"Vulnerable a inyección via '&' o '%0a'"* — mientras **13 de 13** tokens listados se bloquean a 2 239 B / 0.00 s con control positivo verde; los cuatro estados se separan por **bytes** (2 239 / 2 532 / 2 598 / 2 227), nunca por el código de estado | absent, proven a `euid=0`: 14 291 ficheros / 485 926 780 B, 4 controles positivos |
 | [238](238/AUTOESCUELA-WRITEUP.md) Autoescuela | WebSocket → RCE | the advisory, read from four sources | absent, proven |
+| [242](242/WORKCONNECT-WRITEUP.md) WorkConnect | oráculo de existencia sobre un identificador estructurado; **la etiqueta de la cola es el hallazgo** | `grep -rIo -i "dns" /opt/workconnect` → **0** y 0 sockets UDP retiran la clase DNS; `main.py:69-73` nombra la real, y 26 000 candidatos dan dos conjuntos de tamaño **disjuntos** (2 268 presente / 1 332 ausente), **0** INDETERMINADOS | absent, proven a `euid=0`: `FLAG{` → 0 de 13 969 ficheros / 291 034 473 B |
 | [243](243/DUQUE-WRITEUP.md) Duque | dos bugs web, y son **independientes** | el admin entra **sin inyección alguna** (`Admin`/`admin123`, 200/79 B) ⇒ arreglar la SQLi no arregla el otro; y el caso intermedio es un **refusal** (5 467 B, `Acceso Denegado`), no una lectura cruzada | ausente, probado, con control positivo |
+| [245](245/TRAILPACK-WRITEUP.md) TrailPack | cuatro bugs declarados: una puerta, tres colgantes, uno inerte | `X-Forwarded-For` **es** la clave del cubo y **nunca se valida como IP**: un valor constante **reutilizado** sigue limitando (contador `2 → 1 → 0`, 9 265 B, cuenta atrás 59) mientras los valores rotados lo **congelan** en `2`; 1 846 peticiones / 6.257 s = 295.0 req/s frente a 55.57 h | `FLAG{cl13nt_s1d3_r0l3_1s_n0_s3cur1ty}` |
 | [249](249/ADOPTING-WRITEUP.md) Adopting | cache deception | the cache is **in-process**, key has no `Host` | functional; no `FLAG{}` |
 | [255](255/PINGUPENGUIN-WRITEUP.md) PinguPenguin | Spring Boot actuator | the version read from the artefact | `FLAG{}` recovered |
 | [264](264/APKADMIN-WRITEUP.md) ApkAdmin | mobile / APK | `targetSdk≥31` makes `exported` a **decision** | absent, searched at root |
@@ -109,7 +120,8 @@ names which.**
 | [293](293/ZABBIXPLOIT-WRITEUP.md) Zabbixploit | SQLi → session hijack | the token at a **fixed offset**, same in both cases | `FLAG{}` recovered |
 | [295](295/BAREMETAL-WRITEUP.md) Baremetal | IPMI → hash → GRUB | bare metal and BMC, absent from a container world | `FLAG{}` recovered |
 | [296](296/ASTURIAS-WRITEUP.md) Asturias | unprotected endpoints | derive the sink, never look for the label | `FLAG{}` recovered |
-| [6→268](INDEX.md) kmspwned | — | **unobtainable**: truncated at 75–95%, no Range | never reached |
+| [254](INDEX.md) Gotham | — | **unobtainable, y no existe writeup**: el servidor sirve **107 479 040 B = 102.5 MiB exactos**, un límite redondo de proxy, y reporta *esa* longitud como `Content-Length` completa; las propias entradas del archivo declaran 107 575 879, así que **faltan 96 839 B**. Seis descargas, tamaño y fallo idénticos (§32) | never reached |
+| [268](INDEX.md) kmspwned | — | **unobtainable, y no existe writeup**: `kmspwned.zip` muere entre el 75% y el 95% de sus **116 916 224 B** en cuatro intentos seguidos con `curl` saliendo en **0**, y `Range` se responde `200` en vez de `206`: la cola es inalcanzable | never reached |
 
 ---
 
@@ -137,8 +149,17 @@ names which.**
    identity reached, 168 ships an application whose own binary is missing, 282's
    `sudoers` grant points at a decoy secret, and 83's advertised database leg cannot
    execute as written. Reported as the lab's problem, not the tester's.
-4. **One is permanently unobtainable.** 268 is truncated by the server and there is
-   no Range, so it cannot be resumed. Not pending work.
+4. **Two are permanently unobtainable, for two different reasons.** **268 kmspwned**
+   (`kmspwned.zip`, 116 916 224 B) dies between 75% and 95% on four consecutive
+   attempts with `curl` exiting **0**, and `Range` is answered `200` instead of
+   `206` — the tail is unreachable, so the transfer cannot be resumed. **254 Gotham**
+   is a separate failure and not a restatement of it: the platform serves
+   **107 479 040 B, exactly 102.5 MiB**, a round proxy boundary, and reports *that
+   truncated length* as the complete `Content-Length`; the archive's own last entry
+   declares 107 575 879, so **96 839 B are missing** and the headers say nothing
+   about it (§32). Six downloads produced the identical size and the identical
+   failure. Neither is pending work, and the second one is the one that a
+   `size == expected` check cannot see.
 5. **Four did not fully succeed and say so.** Lab 115 reached no RCE and lists its
    escalation as an inference under NOT tested. Lab 167 proves its `uid=0` leg on a
    **clone of the same image** and does not count it as the target. Lab 282 completes
